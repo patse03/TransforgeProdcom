@@ -1,0 +1,198 @@
+INITIALIZE () =
+
+DECLARE
+  h_frpr_name       = VARCHAR(24)  NOT NULL,
+  h_command         = VARCHAR(99)  NOT NULL,
+  h_return          = INTEGER      NOT NULL,
+  h_attempts        = INTEGER1     NOT NULL,
+  h_retries         = INTEGER1     NOT NULL,
+  h_retries_allowed = INTEGER1     NOT NULL,
+  h_retry_or_not    = CHAR(5)      NOT NULL,
+  h_table           = CHAR(25)     NOT NULL,
+  h_ref             = VARCHAR(3)   NOT NULL,
+
+  lp_drop_table       = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_error_check      = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name       = 'ah_create_motd';
+  h_attempts        = 0;
+  h_retries_allowed = 3;
+  h_table           = 'tt_ah_create_motd';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+  /*--------------------------------------------------------------------------
+     Sort out reference counter.
+  --------------------------------------------------------------------------*/
+
+  SELECT ref AS :h_ref
+  FROM   msg_ref_counter;
+  commit;
+
+  MESSAGE 'h_ref = {' +:h_ref +'}' WITH STYLE = POPUP;
+
+  h_ref = RIGHT(VARCHAR(INTEGER(:h_ref)+1),3); 
+ 
+  IF LENGTH(:h_ref) = 1
+  THEN 
+    h_ref = '00' +:h_ref;
+  ELSEIF LENGTH(:h_ref) = 2
+  THEN
+    h_ref = '0' +:h_ref;
+  ENDIF;
+
+  IF h_ref = '000'
+  OR h_ref = ''
+  THEN
+    h_ref = '001';
+  ENDIF;
+
+  MESSAGE 'h_ref = {' +:h_ref +'}' WITH STYLE = POPUP;
+
+  UPDATE msg_ref_counter
+  SET    ref = :h_ref;
+  COMMIT;
+
+  s_ref = :h_ref; 
+
+  REDISPLAY;
+
+  RESUME FIELD :s_persist;
+
+} 
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'Broadcast', KEY FRSKEY4 =
+{
+  INSERT INTO msg_current_messages
+            ( ref,
+              date,
+              text1,
+              text2,
+              text3,
+              text4,
+              text5,
+              persist )
+  VALUES    ( :s_ref,
+              'today',
+              :s_text1,
+              :s_text2,
+              :s_text3,
+              :s_text4,
+              :s_text5,
+              :s_persist );
+  commit;
+  MESSAGE'BROADCAST SENT...';
+  SLEEP 2;
+  CLEAR SCREEN;
+  EXIT;
+}     
+
+'Abort', KEY FRSKEY14 = 
+{
+  EXIT;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(36) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name  = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  h_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF h_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
