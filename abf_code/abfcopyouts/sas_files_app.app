@@ -1,0 +1,134 @@
+COPYAPP	6	5	2019_02_27 13:52:41 GMT  
+OC_APPL:	0	sas_files_app	Copies tables to flat files ready for input to SAS system	
+	/prodcom/source/prodcode/sources/sas_files_app		0		1	0	2		sas_fp_lookup_tables		SQL			0
+CUC_ADEPEND:
+	DUMMY		0	0		0
+OC_OSLPROC:	1	sas_fp_totdata		
+	sas_fp_totdata.osq	II01002sas_fp_totd	-30	integer	5	0	3							0
+CUC_AODEPEND:
+	g_period	produser	2130	3507		0
+	g_results_industry	produser	2110	3506		0
+	g_period	produser	2110	3506		0
+	g_path_name2	produser	2110	3506		0
+	g_periods	produser	2110	3506		0
+	sas_check_inq_ing	produser	2050	3504		0
+	sas_fp_log_message	produser	2050	3504		0
+	sas_fp_drop_table	produser	2050	3504		0
+OC_OSLPROC:	1	sas_fp_start	1 - Starting Process	
+	sas_fp_start.osq	II01003sas_fp_star	-30	integer	5	0	3							0
+CUC_AODEPEND:
+	g_inquiry	produser	2110	3506		0
+	g_path_name1	produser	2110	3506		0
+	g_input_period	produser	2110	3506		0
+	g_path_name2	produser	2110	3506		0
+	g_results_industry	produser	2110	3506		0
+	g_results_span	produser	2110	3506		0
+	g_dbname	produser	2110	3506		0
+	g_user_id	produser	2110	3506		0
+	sas_fp_totdata	produser	2050	3504		0
+	sas_fp_xfer_tables	produser	2050	3504		0
+	sas_fp_contdata	produser	2050	3504		0
+	sas_fp_log_message	produser	2050	3504		0
+	sas_check_inq_ing	produser	2050	3504		0
+	sas_fp_lookup_tables	produser	2050	3504		0
+	sas_fp_period_select	produser	2050	3504		0
+OC_OSLPROC:	1	sas_fp_period_select		
+	sas_fp_period_select.osq	II01004sas_fp_peri	-30	integer	5	0	3							0
+CUC_AODEPEND:
+	g_period	produser	2130	3507		0
+	g_inquiry	produser	2110	3506		0
+	g_input_per_spanno	produser	2110	3506		0
+	g_period	produser	2110	3506		0
+	g_periods	produser	2110	3506		0
+	g_results_span	produser	2110	3506		0
+	sas_fp_log_message	produser	2050	3504		0
+	sas_check_inq_ing	produser	2050	3504		0
+OC_OSLPROC:	1	sas_fp_lookup_tables		
+	sas_fp_lookup_tables.osq	II01006sas_fp_look	-30	integer	5	0	3							0
+CUC_AODEPEND:
+	g_user_id	produser	2110	3506		0
+	g_dbname	produser	2110	3506		0
+	g_path_name1	produser	2110	3506		0
+	g_path_name2	produser	2110	3506		0
+	sas_fp_log_message	produser	2050	3504		0
+	sas_check_inq_ing	produser	2050	3504		0
+	sas_fp_drop_table	produser	2050	3504		0
+OC_OSLPROC:	1	sas_fp_log_message		
+	sas_fp_log_message.osq	II01001sas_fp_log_	-30	integer	5	0	3							0
+CUC_AODEPEND:
+	g_user_id	produser	2110	3506		0
+OC_OSLPROC:	1	sas_fp_drop_table		
+	sas_fp_drop_table.osq	II01000sas_fp_drop	-30	integer	5	0	3							0
+CUC_AODEPEND:
+	sas_check_inq_ing	produser	2050	3504		0
+	sas_fp_log_message	produser	2050	3504		0
+OC_OSLPROC:	1	sas_fp_contdata		
+	sas_fp_contdata.osq	II01005sas_fp_cont	-30	integer	5	0	3							0
+CUC_AODEPEND:
+	g_period	produser	2130	3507		0
+	g_user_id	produser	2110	3506		0
+	g_path_name1	produser	2110	3506		0
+	g_period	produser	2110	3506		0
+	g_periods	produser	2110	3506		0
+	g_inquiry	produser	2110	3506		0
+	g_results_industry	produser	2110	3506		0
+	sas_fp_log_message	produser	2050	3504		0
+	sas_check_inq_ing	produser	2050	3504		0
+	sas_fp_drop_table	produser	2050	3504		0
+OC_OSLPROC:	1	sas_check_inq_ing	Standard Procedure	
+	sas_check_inq_ing.osq	II01sas_check_inq_	-30	integer	5	0	3							0
+CUC_AODEPEND:
+OC_GLOBAL:	1	g_user_id	user id	
+			21	varchar(10)	12	0	2							0
+CUC_AODEPEND:
+	DUMMY		0	0		0
+OC_GLOBAL:	1	g_results_span	results span	
+			30	integer1	1	0	2							0
+CUC_AODEPEND:
+	DUMMY		0	0		0
+OC_GLOBAL:	1	g_results_industry	name of results industry file	
+			21	varchar(24)	26	0	2							0
+CUC_AODEPEND:
+	DUMMY		0	0		0
+OC_GLOBAL:	1	g_periods	number of periods available	
+			30	integer4	4	0	2							0
+CUC_AODEPEND:
+	DUMMY		0	0		0
+OC_RECORD:	1	g_period	basis for global variable g_period	
+			0		0	0	2							0
+OC_RECMEM:	2	period	periods in span	
+	0	30	integer	4	0
+CUC_AODEPEND:
+	DUMMY		0	0		0
+OC_GLOBAL:	1	g_period		
+			43	g_period	1	0	2							0
+CUC_AODEPEND:
+	g_period		2130	3507		0
+OC_GLOBAL:	1	g_path_name2		
+			21	varchar(100)	102	0	2							0
+CUC_AODEPEND:
+	DUMMY		0	0		0
+OC_GLOBAL:	1	g_path_name1		
+			21	varchar(100)	102	0	2							0
+CUC_AODEPEND:
+	DUMMY		0	0		0
+OC_GLOBAL:	1	g_inquiry	inquiry	
+			30	integer1	1	0	2							0
+CUC_AODEPEND:
+	DUMMY		0	0		0
+OC_GLOBAL:	1	g_input_period	run period	
+			30	integer4	4	0	2							0
+CUC_AODEPEND:
+	DUMMY		0	0		0
+OC_GLOBAL:	1	g_input_per_spanno		
+			30	integer4	4	0	2							0
+CUC_AODEPEND:
+	DUMMY		0	0		0
+OC_GLOBAL:	1	g_industry	industry	
+			30	integer4	4	0	2							0
+CUC_AODEPEND:
+	DUMMY		0	0		0
+OC_GLOBAL:	1	g_dbname	database name	
+			21	varchar(30)	32	0	2							0
+CUC_AODEPEND:
+	DUMMY		0	0		0
