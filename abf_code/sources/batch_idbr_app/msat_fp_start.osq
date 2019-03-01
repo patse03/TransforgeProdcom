@@ -1,0 +1,229 @@
+/*-S--------------------------------------------------------------------
+ Procedure msat_fp_start - Start of Application
+
+e.g. $IMAGES/batch_idbr_app -dprodlivedb -a 15 200106 1 1
+ 15       = inquiry
+ 200106   = period
+ 1        = process to start
+ 1        = process to end
+
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msat_fp_start () =
+
+DECLARE start_proc           = INTEGER1 NOT NULL,
+        end_proc             = INTEGER1 NOT NULL,
+        h_span_end           = INTEGER4 NOT NULL,
+        h_param_list         = VARCHAR(100) NOT NULL,
+        h_varchar_variable   = VARCHAR(100) NOT NULL,
+        h_integer_variable   = INTEGER1 NOT NULL,
+        h_param1             = VARCHAR(20) NOT NULL,
+        h_param2             = VARCHAR(20) NOT NULL,
+        h_param3             = VARCHAR(20) NOT NULL,
+        h_param4             = VARCHAR(20) NOT NULL,
+        ret_val              = INTEGER1 NOT NULL,
+        h_frpr_name          = VARCHAR(24) NOT NULL
+
+{
+    SELECT DBMSINFO('username') AS g_user_id;
+    SELECT DBMSINFO('database') AS g_database;
+
+    IF g_database = 'prodlivedb'
+    THEN
+	g_path_name1 = '/prodcom/live5/files/text/';
+	g_path_name2 = '/admin/scratch/';
+    ELSE
+	g_path_name1 = '/prodcom/source/produser/files/text/';
+	g_path_name2 = '/c8scratch/';
+    ENDIF;
+
+    h_frpr_name = 'msat_fp_start';
+
+    h_param_list = CALLPROC CommandLineParameters();
+
+    h_varchar_variable = squeeze (h_param_list);
+
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param1         =   left (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = shift (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param2         =   left (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = shift (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param3         =   left (h_varchar_variable,h_integer_variable - 1);
+
+    h_varchar_variable = shift (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param4         =   left (h_varchar_variable,h_integer_variable - 1);
+
+    g_inquiry = INT1(:h_param1);
+    g_period = INT4(:h_param2);
+    start_proc = INT1(:h_param3);
+    end_proc = INT1(:h_param4);
+
+    IF :g_inquiry <> 14 AND :g_inquiry <> 15
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid Inquiry = ' + VARCHAR(:g_inquiry),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF :start_proc < 1 OR :start_proc > 2
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid Start = ' + VARCHAR(:start_proc),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF :end_proc < 1 OR :end_proc > 2
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid End = ' + VARCHAR(:end_proc),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF :start_proc > :end_proc
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid Start = ' + VARCHAR(:start_proc) +
+                    ', End = ' + VARCHAR(:end_proc),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Get latest period for this Inquiry - 
+    which must be the period supplied
+    ------------------------------------------------------------------*/
+
+    SELECT span_end AS h_span_end
+    FROM   inquiry
+    WHERE  inquiry = :g_inquiry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error selecting from inquiry',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF h_span_end <> g_period
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    VARCHAR(:g_period) + ' is not the span end (' +
+                    VARCHAR(:h_span_end) + ')',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Process 1 - Loads register data onto PRODCOM tables and updates 
+                 contributor table
+    ------------------------------------------------------------------*/
+
+    IF :start_proc = 1
+    THEN
+        ret_val = CALLPROC msat_fp_up_address ();
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'IDBR address update Fails in Process 1',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ELSE
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'IDBR address update - Process 1 ends OK',
+                        :h_frpr_name,
+                        0,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Process 2 - Creates 2 files - 1 containing additions and one 
+		 containing deselections since the time of IDBR
+		 selection.
+                 An up to date version of Inquiry_selection_parameters 
+                 table is copied from a flat file from IDBR and this is
+                 used to calculate the cell_number for the additions
+		 only
+		 example of files sent to IDBR
+		 /idbr/live20/infer/iss/addselhis015_199709
+		 /idbr/live20/infer/iss/deselect015_199709
+
+    ------------------------------------------------------------------*/
+
+    IF :start_proc <= 2 AND :end_proc >= 2
+    THEN
+
+        ret_val = CALLPROC msat_fp_sel_markers ();
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'IDBR selection history update Fails in Process 2',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ELSE
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'IDBR Selection history update - Process 2 ends OK',
+                        :h_frpr_name,
+                        0,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+    ENDIF;
+
+
+    /*------------------------------------------------------------------
+     End
+    ------------------------------------------------------------------*/
+
+    RETURN 0;
+}

@@ -1,0 +1,701 @@
+INITIALIZE () =
+
+DECLARE h_param_list         = VARCHAR(100) NOT NULL,
+        h_varchar_variable   = VARCHAR(100) NOT NULL,
+        h_integer_variable   = INTEGER1 NOT NULL,
+        h_param1             = VARCHAR(20) NOT NULL,
+        h_param2             = VARCHAR(20) NOT NULL,
+        h_retries_allowed    = INTEGER1 NOT NULL,
+        h_retries            = INTEGER1 NOT NULL,
+        h_retry_or_not       = CHAR(5) NOT NULL,
+        h_frpr_name          = VARCHAR(24) NOT NULL,
+        h_inquiry            = INTEGER1 NOT NULL,
+        h_table              = VARCHAR(24) NOT NULL,
+        h_field_name         = VARCHAR(24) NOT NULL,
+        h_rows               = INTEGER4 NOT NULL,
+        ret_val              = INTEGER1 NOT NULL,
+        lp_load_data         = PROCEDURE RETURNING INTEGER
+
+{
+    h_frpr_name = 'msatb_fr_view_key';
+    h_retries_allowed = 3;
+    h_table = 'temp_view_key';
+    g_help = CALLPROC msa_cp_getvar('PROD_HELP');
+    SELECT DBMSINFO('username') AS g_user_id;
+
+    CLEAR FIELD ALL;
+    msa_date = 'now';
+
+    SET_FORMS FIELD '' (MODE(tf) = 'READ',
+                        DISPLAYONLY(industry) = 0,
+                        REVERSE(industry) = 0,
+                        UNDERLINE(industry) = 1,
+                        DISPLAYONLY(period) = 0,
+                        REVERSE(period) = 0,
+                        UNDERLINE(period) = 1);
+
+    h_param_list = CALLPROC CommandLineParameters();
+
+    h_varchar_variable = SQUEEZE (h_param_list);
+
+    h_integer_variable = LOCATE (h_varchar_variable, ' ');
+    h_param1         =   LEFT (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = SHIFT (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = LOCATE (h_varchar_variable, ' ');
+    h_param2         =   LEFT (h_varchar_variable,h_integer_variable - 1);
+
+    IF h_param1 <> '' AND h_param2 <> ''
+    THEN
+        industry = INT4(h_param1);
+        period = INT4(h_param2);
+
+        ret_val = CALLPROC lp_load_data ();
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+    ENDIF;
+}
+
+FIELD industry =
+{
+    MESSAGE 'Checking Industry . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT IFNULL(MAX(period),0) AS period
+        FROM   industry_period
+        WHERE  industry = :industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing industry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1 OR period = 0
+    THEN
+        MESSAGE 'This Industry does not exist'
+        WITH STYLE = POPUP;
+        RESUME FIELD industry;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(industry) = 1,
+                        REVERSE(industry) = 1,
+                        UNDERLINE(industry) = 0);
+
+    RESUME FIELD period;
+}
+
+FIELD period =
+{
+    MESSAGE 'Checking Period . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT inquiry AS h_inquiry
+        FROM   industry_period
+        WHERE  industry = :industry
+        AND    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing industry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This Industry is not valid for this Period'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_data ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Clear' =
+{
+    CLEAR FIELD ALL;
+    msa_date = 'now';
+
+    SET_FORMS FIELD '' (DISPLAYONLY(industry) = 0,
+                        REVERSE(industry) = 0,
+                        UNDERLINE(industry) = 1,
+                        DISPLAYONLY(period) = 0,
+                        REVERSE(period) = 0,
+                        UNDERLINE(period) = 1);
+
+    RESUME FIELD industry;
+}
+
+'Despatch' =
+{
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name <> 'tf'
+    THEN
+        MESSAGE 'Please highlight the required Reference'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'Please highlight the required Reference'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    CALL APPLICATION (exec = '$IMAGES/despatch_app '
+			     + '-numeric_overflow=ignore msaeb_fr_desp_contrib',
+                     param = VARCHAR(:period) + ' ' +
+                             VARCHAR(:tf.contributor_reference) + ' ' +
+                             VARCHAR(:h_inquiry) + ' ' +
+                             VARCHAR(:tf.contributor_industry));
+    msa_date = 'now';
+
+}
+
+'Questions', KEY FRSKEY4 =
+{
+
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name <> 'tf'
+    THEN
+        MESSAGE 'Please highlight the required Reference'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'Please highlight the required Reference'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    ret_val = CALLFRAME msatb_fr_view_key_q (
+              contributor_reference = :tf.contributor_reference,
+              period                = :period);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+    msa_date = 'now';
+}
+
+
+'ContactDetails' =
+{
+    CALL APPLICATION (exec= '$IMAGES/communicate',
+                      param = VARCHAR(:tf.contributor_reference));
+}
+
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                   L O C A L   P R O C E D U R E
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_data () =
+{
+    SET_FORMS FIELD '' (DISPLAYONLY(industry) = 1,
+                        REVERSE(industry) = 1,
+                        UNDERLINE(industry) = 0);
+
+    message_1a = 'Belong To ' + VARCHAR(industry);
+    message_1b = '& Key To ' + VARCHAR(industry);
+    message_2a = 'Belong To ' + VARCHAR(industry);
+    message_2b = '& Key To Others';
+    message_3a = 'Belong To Others';
+    message_3b = '& Key To ' + VARCHAR(industry);
+
+    MESSAGE 'Selecting Key Responders . . ';
+
+    ret_val = CALLPROC msa_fp_drop_table (h_table = :h_table);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table
+        AS SELECT    DISTINCT contributor_reference,
+                     contributor_industry,
+                     'N' AS form_received,
+                     'N' AS form_cleared,
+                     'N' AS belong_and_key,
+                     'N' AS belong_and_key_to_other,
+                     'N' AS belong_to_other_and_key
+        FROM         key_responder_data
+        WHERE        for_period = :period
+        AND          (contributor_industry = :industry
+                      OR question_industry = :industry);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'There are no Contributors who are Key to' +
+                ' Industry ' + VARCHAR(industry) + ' for ' +
+                VARCHAR(period)
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(period) = 1,
+                        REVERSE(period) = 1,
+                        UNDERLINE(period) = 0);
+
+    MESSAGE 'Modifying . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        MODIFY    :h_table TO BTREE
+        UNIQUE ON contributor_reference;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error modifying ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Belong to the Industry and are Key to it
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Contributors belonging to ' + VARCHAR(industry) +
+            ' who are Key to ' + VARCHAR(industry) + ' . . . ';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        SET    belong_and_key = 'Y'
+        WHERE  contributor_reference IN
+        (SELECT  b.contributor_reference 
+        FROM   key_responder_data b
+        WHERE  b.for_period = :period
+        AND    a.contributor_reference = b.contributor_reference
+        AND    b.contributor_industry = :industry
+        AND    b.question_industry = :industry);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in first key update on ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Belong to the Industry and are Key to others
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Contributors belonging to ' + VARCHAR(industry) +
+            ' who are Key to other Industries . . . ';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        SET    belong_and_key_to_other = 'Y'
+        WHERE  contributor_reference IN
+        (SELECT  b.contributor_reference 
+        FROM   key_responder_data b
+        WHERE  b.for_period = :period
+        AND    a.contributor_reference = b.contributor_reference
+        AND    b.contributor_industry = :industry
+        AND    b.question_industry <> :industry);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in second key update on ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Belong to another Industry and are Key to the one you're looking at
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Contributors belonging to other Industries who are' +
+            ' Key to ' + VARCHAR(industry) + ' . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        SET    belong_to_other_and_key = 'Y'
+        WHERE  contributor_reference IN
+        (SELECT  b.contributor_reference 
+        FROM   key_responder_data b
+        WHERE  b.for_period = :period
+        AND    a.contributor_reference = b.contributor_reference
+        AND    b.contributor_industry <> :industry
+        AND    b.question_industry = :industry);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in third key update on ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Form Received
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Form Received Markers . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   contributor_period b
+        SET    form_received = 'Y'
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    b.period = :period
+        AND    b.receipt_date <> '';
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in form_received update on ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Form Cleared
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Form Cleared Markers . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   contributor_period b
+        SET    form_cleared = 'Y'
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    b.period = :period
+        AND    b.correct_date <> '';
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in form_cleared update on ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    MESSAGE 'Selecting to Screen . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT   contributor_reference,
+                 contributor_industry,
+                 form_received,
+                 form_cleared,
+                 belong_and_key,
+                 belong_and_key_to_other,
+                 belong_to_other_and_key
+        FROM     :h_table
+        ORDER BY contributor_reference;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(no_contributors),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading screen'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows loaded onto screen'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+}

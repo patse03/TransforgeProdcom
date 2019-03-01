@@ -1,0 +1,105 @@
+INITIALIZE ()=
+DECLARE		h_rec_min   = ingresdate not null,       
+		h_rec_max   = ingresdate not null,       
+		h_count     = integer4 not null,	
+		h_exists    = integer4 not null,	
+		h_user_name = varchar(24) not null,
+		h_period    = integer4 not null	
+
+{
+msa_date = 'now';
+
+	select min(receipt_date) as h_rec_min,
+		max(receipt_date) as h_rec_max,
+		max(period) as h_period
+		from contributor_period;
+	rec_from := h_rec_max;
+	rec_to := h_rec_max;
+
+select user_name as h_user_name
+from iidbconstants;
+
+select count(table_name) as h_exists
+from iitables
+where table_name = 'working_industries'
+and table_owner = :h_user_name;
+
+if h_exists > 0
+then drop working_industries;
+endif;
+
+create table working_industries(industry integer4 not null);
+
+SET_FORMS FIELD ''(MODE(key_tab)='READ');
+
+key_tab =
+	select contributor_reference,
+	contributor_industry,
+	period,
+	form_taken_on,
+	receipt_date
+	from contributor_period
+	where keyresp = 1
+	and receipt_date =  :h_rec_max
+	order by receipt_date desc;
+
+INQUIRE_INGRES(row_count = ROWCOUNT);
+}
+'Go'=
+{
+delete from working_industries;
+
+UNLOADTABLE ind_tab
+{
+insert into working_industries(industry)
+values (:ind_tab.industry);
+};
+
+select count(industry) as h_count
+from working_industries
+where industry != 0;
+
+if rec_from is null or rec_from = '' then rec_from = h_rec_min; endif;
+if rec_to is null or rec_to = '' then rec_to = h_rec_max; endif;
+
+if h_count > 0 then
+key_tab =
+	select contributor_reference,
+	contributor_industry,
+	period,
+	form_taken_on,
+	receipt_date
+	from contributor_period
+	where keyresp = 1
+	and contributor_industry in
+		(select industry from working_industries)
+	and receipt_date >=  :rec_from
+	and receipt_date <=  :rec_to
+	order by receipt_date desc;
+else
+key_tab =
+	select contributor_reference,
+	contributor_industry,
+	period,
+	form_taken_on,
+	receipt_date
+	from contributor_period
+	where keyresp = 1
+	and receipt_date >=  :rec_from
+	and receipt_date <=  :rec_to
+	order by receipt_date desc;
+endif;
+
+INQUIRE_INGRES(row_count = ROWCOUNT);
+}
+
+'Clear industries'=
+{
+delete from working_industries;
+ind_tab = select industry from working_industries;
+}
+
+'End', KEY FRSKEY6=
+{
+RETURN 0;
+}

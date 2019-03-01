@@ -1,0 +1,682 @@
+/*---------------------------------------------------------------------
+ Start of Inc/Key Responder Application
+New program used from April 2005 after new spec from Stephen Curtis
+
+e.g.  msatb_fp_start -a 14 200400 inc 25 <table_name>
+
+1. inquiry
+2. period (the one you want key/inc responders for. This period may not
+           even be on inquiry_period yet, so the previous period to the
+           one supplied will be checked for validity)
+3. RunType (INC for inclusion or KEY for key contributors)
+4. the percentage cutoff (usually 20 for key, and 25 for inc)
+
+and optionally
+
+5. table name (from where a list of industries to be processed is
+               obtained. This table must have the column 'industry' on
+               it. If this parameter is not supplied, the table industry
+               is used instead and ALL industries are run - which will
+               be the usual option)
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msatb_fp_start () =
+
+DECLARE 
+
+  h_param_list         = VARCHAR(100) NOT NULL WITH DEFAULT,
+  h_varchar_variable   = VARCHAR(100) NOT NULL WITH DEFAULT,
+  h_integer_variable   = INTEGER1     NOT NULL WITH DEFAULT,
+  h_industry           = INTEGER4     NOT NULL WITH DEFAULT,
+  h_prev_period        = INTEGER4     NOT NULL WITH DEFAULT,
+  h_param1             = VARCHAR(20)  NOT NULL WITH DEFAULT,
+  h_param2             = VARCHAR(20)  NOT NULL WITH DEFAULT,
+  h_param3             = VARCHAR(20)  NOT NULL WITH DEFAULT,
+  h_param4             = VARCHAR(20)  NOT NULL WITH DEFAULT,
+  h_param5             = VARCHAR(20)  NOT NULL WITH DEFAULT,
+  h_copy_table         = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_data_table         = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_main_table         = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_table1             = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_industry_table     = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_file               = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_text               = VARCHAR(99)  NOT NULL WITH DEFAULT,
+  h_return             = INTEGER1     NOT NULL WITH DEFAULT,
+  h_frpr_name          = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_osm_table          = VARCHAR(30)  NOT NULL WITH DEFAULT,
+  h_osm_filename       = VARCHAR(50)  NOT NULL WITH DEFAULT,
+
+  lp_drop_table           = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,  
+  lp_error_check          = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  h_frpr_name = 'msatb_fp_start';
+
+  /*------------------------------------------------------------------
+      Set up variables
+  ------------------------------------------------------------------*/
+
+  IF g_database = 'prodlivedb'
+  THEN
+    g_path_name = '/prodcom/live5/files/sas/';
+  ELSE
+    g_path_name = '/prodcom/source/produser/files/sas/';
+  ENDIF;
+
+  h_copy_table = 'temp_inc_copy';
+
+  h_param_list = CALLPROC CommandLineParameters();
+
+  h_varchar_variable = SQUEEZE (h_param_list);
+
+  h_integer_variable = LOCATE (h_varchar_variable, ' ');
+  h_param1           = LEFT (h_varchar_variable,h_integer_variable - 1);
+  h_varchar_variable = SHIFT (h_varchar_variable, - h_integer_variable);
+  h_integer_variable = LOCATE (h_varchar_variable, ' ');
+  h_param2           = LEFT (h_varchar_variable,h_integer_variable - 1);
+  h_varchar_variable = SHIFT (h_varchar_variable, - h_integer_variable);
+  h_integer_variable = LOCATE (h_varchar_variable, ' ');
+  h_param3           = LEFT (h_varchar_variable,h_integer_variable - 1);
+  h_varchar_variable = SHIFT (h_varchar_variable, - h_integer_variable);
+  h_integer_variable = LOCATE (h_varchar_variable, ' ');
+  h_param4           = LEFT (h_varchar_variable,h_integer_variable - 1);
+  h_varchar_variable = SHIFT (h_varchar_variable, - h_integer_variable);
+  h_integer_variable = LOCATE (h_varchar_variable, ' ');
+  h_param5           = LEFT (h_varchar_variable,h_integer_variable - 1);
+
+  g_inquiry = 14;
+  g_period = INT4(:h_param2);
+  g_run_type = LOWERCASE(:h_param3);
+  g_cutoff = INT1(:h_param4);
+
+  h_osm_table    = 'temp_inc_osm_keys_removed';
+  h_osm_filename = '/admin/scratch/key_inc_removed_osm_'
+                 + VARCHAR(:g_period)+'.txt';
+
+  /*------------------------------------------------------------------
+    Validate run type.
+  ------------------------------------------------------------------*/
+
+  IF g_run_type != 'inc' AND g_run_type != 'key'
+  THEN
+      INSERT INTO error_log
+      VALUES(     'now',
+                  'ERROR: Invalid RunType of {' +:g_run_type +'} '
+                  + 'supplied. It should be {inc} or {key}.',
+                  :h_frpr_name,
+                  2,
+                  :g_user_id);
+      COMMIT;
+      RETURN 9;
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+      Log start of process. (Cant do this till we have valid run type.)
+  -----------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = '*SIGNON*');
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'STARTING: BATCH ' +UPPER(:g_run_type) +' '
+                       + 'CONTRIBS PROCESS STARTING.');
+
+  IF h_param5 != ''
+  THEN
+
+    h_industry_table = LOWERCASE(:h_param5);
+
+    h_text = 'NOTE: Non-standard industry table ' +:h_industry_table +' used.';
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  ELSE
+
+    h_industry_table = 'new_industry';
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    As inclusion runs COULD go before a period has been created, find
+    the PREVIOUS period, and test if that is a valid one.
+  ------------------------------------------------------------------*/
+
+  CALLPROC msa_fp_prev_periods 
+         ( period       = :g_period,
+           prev_period1 = BYREF(:h_prev_period));
+
+  SELECT period AS h_prev_period
+  FROM   inquiry_period
+  WHERE  inquiry = :g_inquiry
+  AND    period = :h_prev_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Invalid period of ' +VARCHAR(:g_period) +' used.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  h_file = 'include_' + VARCHAR(:g_period) + '.txt';
+  g_table = 'csl_' + VARCHAR(:g_run_type) + '_contributors';
+  h_main_table = VARCHAR(:g_run_type) + '_responder';
+  h_data_table = VARCHAR(:g_run_type) + '_responder_data';
+
+  /*------------------------------------------------------------------
+  Create this periods working table for the run type.
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :g_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in local procedure */
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE :g_table 
+       ( contributor_reference CHAR(11)    NOT NULL WITH DEFAULT,
+         for_period            INTEGER4    NOT NULL WITH DEFAULT,
+         contributor_industry  INTEGER4    NOT NULL WITH DEFAULT,
+         stratum               CHAR(5)     NOT NULL WITH DEFAULT,
+         question              INTEGER4    NOT NULL WITH DEFAULT,
+         question_industry     INTEGER4    NOT NULL WITH DEFAULT,
+         period                INTEGER4    NOT NULL WITH DEFAULT,
+         avalue                INTEGER4    NOT NULL WITH DEFAULT,
+         acell                 CHAR(2)     NOT NULL WITH DEFAULT,
+         total_value           INTEGER4    NOT NULL WITH DEFAULT,
+         percentage            FLOAT8      NOT NULL WITH DEFAULT,
+         gross_total_value     INTEGER4    NOT NULL WITH DEFAULT,
+         gross_percentage      FLOAT8      NOT NULL WITH DEFAULT,
+         text                  VARCHAR(10) NOT NULL WITH DEFAULT);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create ' +:g_table  +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      if INC run, create the osmothaly removals table
+  ------------------------------------------------------------------*/
+   
+  IF :g_run_type = 'inc'
+  THEN
+
+    h_return = CALLPROC lp_drop_table (p_table_name = :h_osm_table);
+
+    IF h_return != 0
+    THEN
+      /* Error message handled in local procedure */
+      RETURN h_return;
+    ENDIF;
+
+    CREATE TABLE :h_osm_table
+    AS
+    SELECT contributor_reference,
+           contributor_industry,
+           register_emp
+    FROM   contributor_period
+    WHERE  1 = 0;
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return > 1
+    THEN
+      h_text = 'ERROR :Failed to create table ' +:h_osm_table +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF; 
+
+  ENDIF; 
+
+  /*------------------------------------------------------------------
+    Process Industries one at a time: data will be inserted for each
+    industry into the working table
+  ------------------------------------------------------------------*/
+
+  SELECT   DISTINCT industry AS h_industry
+  FROM     :h_industry_table
+  ORDER BY h_industry
+  BEGIN
+
+    h_return = CALLPROC msatb_fp_inc_key_pai(p_question_industry = :h_industry);
+
+    IF h_return != 0
+    THEN
+      /* Error messages handled in called procedure */
+      RETURN h_return;
+    ENDIF;
+
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'Failed to select for main processing loop.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*--------------------------------------------------------------
+    Key run.
+  --------------------------------------------------------------*/
+
+  If :g_run_type = 'key'
+  THEN
+
+    /*..............................................................
+      Delete anyone who is not currently selected.
+    ..............................................................*/
+
+    MESSAGE 'Deleting from ' + :g_table + ' . . .';
+      
+    DELETE FROM :g_table
+    WHERE  contributor_reference NOT IN 
+           ( SELECT contributor_reference
+             FROM contributor_period
+             WHERE  period = :g_period);
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return > 1
+    THEN
+      h_text = 'ERROR: Failed to delete non-selected contributors '
+             + 'from ' +:g_table +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+    /*..............................................................
+      Get latest contributor_industry.
+    ..............................................................*/
+
+    MESSAGE 'Updating industry on ' + :g_table + ' . . .';
+      
+    UPDATE :g_table a
+    FROM    contributor_period b
+    SET     contributor_industry = b.contributor_industry
+    WHERE   a.contributor_reference = b.contributor_reference
+      AND   b.period = :g_period;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return > 1
+    THEN
+      h_text = 'ERROR: Failed to update ' +:g_table +' with latest industries.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+  ENDIF; /* End of "KEY" */
+
+  /*--------------------------------------------------------------
+    Inclusion run.
+  --------------------------------------------------------------*/
+
+  IF :g_run_type = 'inc'
+  THEN
+
+    /*..............................................................
+      Copy out the removed osmotherlys to a file.
+    ..............................................................*/
+
+    COPY TABLE :h_osm_table
+             ( contributor_reference = c0tab,
+               contributor_industry  = c0tab,
+               register_emp          = c0nl)
+    INTO :h_osm_filename;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return > 1
+    THEN
+      h_text = 'ERROR: Failed to produce ' +:h_osm_filename +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+    
+    /*..............................................................
+      Copy the included contributors to a file
+    ..............................................................*/
+
+    MESSAGE 'Copying out ' + :h_file + ' . . .';
+
+    CREATE TABLE :h_copy_table
+    AS 
+    SELECT DISTINCT contributor_industry,
+                    contributor_reference,
+                    stratum
+    FROM   :g_table;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return > 1
+    THEN
+      h_text = 'ERROR: Failed to create ' +:h_copy_table +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+    COPY TABLE :h_copy_table 
+             ( contributor_industry = c5,comma = d1,
+               contributor_reference = c0comma,
+               stratum = c0nl)
+    INTO '/admin/scratch/prodcom_copy_area/'+:h_file;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return = 9
+    THEN
+      h_text = 'ERROR: Failed to copy out ' +:h_copy_table +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+    h_return = CALLPROC lp_drop_table(p_table_name = :h_copy_table);
+    IF h_return != 0
+    THEN
+      /* Error message handled in local procedure */
+      RETURN h_return;
+    ENDIF;
+
+  ENDIF;  /* End of "INC" */
+
+  /*------------------------------------------------------------------
+  Only go on to delete from the key_responder/inc_responder tables
+  if it's a proper run, using the table 'industry'.
+
+  If it isn't (i.e. a different table has been used) then don't
+  automaticallly wipe out a good period's data - so just leave the 
+  new data in the temporary working table:
+
+          csl_key_contributors / csl_inc_contributors
+  ------------------------------------------------------------------*/
+
+  IF h_industry_table != 'new_industry'  
+  THEN
+    h_text = 'NOTE: Data from ' +UPPER(:g_run_type )+' is on working table. '
+           + 'Ending process gracefully.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = 'COMPLETE: BATCH ' +UPPER(:g_run_type) +' '
+                         + 'CONTRIBS PROCESS STARTING.');
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = '*SIGNOFF*');
+
+    RETURN 0;
+
+  ENDIF;
+
+
+  /*----------------------------------------------------------------------------
+    1. Delete any existing data from key_responder_data or inc_responder_data
+       and insert new period
+  ----------------------------------------------------------------------------*/
+
+  MESSAGE 'Saving Inc/Key Responder Data . . .';
+
+  DELETE FROM :h_data_table
+  WHERE       for_period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to delete from ' +:h_data_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  INSERT INTO :h_data_table
+  SELECT      *
+  FROM        :g_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to insert all of ' +:g_table +' '
+           + 'into '  +:h_data_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    2. Delete any existing data from key_responder or inc_responder 
+       and insert new period
+  ------------------------------------------------------------------*/
+
+  DELETE FROM :h_main_table
+  WHERE       period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to delete from ' +:h_main_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  INSERT INTO :h_main_table (
+              contributor_reference,
+              contributor_industry,
+              period)
+  SELECT      DISTINCT contributor_reference,
+              contributor_industry,
+              :g_period
+  FROM        :g_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to insert into ' +:h_main_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    3. For key responders only - Clear any pre-existing key marks for 
+       the period, then update contributor_period from key_responder 
+       table setting keyresp = 1
+  ------------------------------------------------------------------*/
+
+  IF g_run_type = 'key'
+  THEN
+
+    UPDATE contributor_period a
+    SET    keyresp = 0
+    WHERE  a.period = :g_period;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return > 1
+    THEN
+      h_text = 'ERROR: Failed to clear keyresp markers on contributor_period.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+    UPDATE contributor_period a
+    FROM   :h_main_table b
+    SET    keyresp = 1
+    WHERE  a.period = :g_period
+    AND    a.period = b.period
+    AND    a.contributor_reference = b.contributor_reference;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return > 1
+    THEN
+      h_text = 'ERROR: Failed to update keyresp markers on contributor_period.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+          Export keys to file for use in key and losses and gains
+    ------------------------------------------------------------------*/
+
+    COPY TABLE :h_main_table
+             ( contributor_reference = c0nl )
+    INTO '/admin/scratch/next_period_keys.txt';
+
+      h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return > 1
+    THEN
+      h_text = 'ERROR: Failed to export key responders to data file.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+          Note completion in process logs.
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'COMPLETE: BATCH ' +UPPER(:g_run_type) +' '
+                       + 'CONTRIBS PROCESS STARTING.');
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = '*SIGNOFF*');
+
+  RETURN 0;
+
+}
+
+
+/****************************** LOCAL PROCEDURES ******************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+
+/*===========================================================================
+        Local procedure for dropping a table via external call.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL) =
+
+DECLARE
+
+  l_return = INTEGER4    NOT NULL WITH DEFAULT,
+  l_text   = VARCHAR(70) NOT NULL WITH DEFAULT,
+
+{
+
+  l_return = CALLPROC msa_fp_drop_table (p_table = :p_table_name);
+
+  IF l_return != 0
+  THEN
+    l_text = 'ERROR: Failed to drop ' +:p_table_name +'. See error log.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :l_return,
+             p_text      = :l_text);
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+
+}
+

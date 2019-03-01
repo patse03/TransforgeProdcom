@@ -1,0 +1,249 @@
+/*-S--------------------------------------------------------------------
+Procedure msat_fp_up_address     
+
+This copies the new address file from the IDBR area of the c8 
+into $TEXTFILES.
+The table contributor_updated is dropped and recreated and data loaded
+from the file eg. newaddre015_200106
+Prodcom's contributor table is then updated using this latest
+information.
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msat_fp_up_address () =
+
+DECLARE ret_val       = INTEGER4 NOT NULL,
+        h_table       = VARCHAR(24) NOT NULL,
+        h_command     = VARCHAR(300) NOT NULL,
+        h_idbr_path1  = VARCHAR(100) NOT NULL,
+        h_idbr_file1  = VARCHAR(100) NOT NULL,
+        h_idbr_file2  = VARCHAR(100) NOT NULL,
+        h_idbr_file3  = VARCHAR(100) NOT NULL,
+        h_frpr_name   = VARCHAR(24) NOT NULL
+
+{
+    h_frpr_name = 'msat_fp_up_address';
+    h_table = 'contributor_updated';
+    h_idbr_path1 = '/idbr/live20/iss/data/';
+
+    IF :g_inquiry = 14
+    THEN
+        h_idbr_file1 = 'newaddr0' + VARCHAR(:g_inquiry) + '_' 
+		       + VARCHAR(:g_period/100) + '12' + '.Z';
+
+        h_idbr_file2 = :g_path_name1 + :h_idbr_file1 ;
+
+        h_idbr_file3 = :g_path_name1 + 'newaddr0' + VARCHAR(:g_inquiry) + '_' 
+		       + VARCHAR(:g_period/100) + '12';
+    ELSE
+        h_idbr_file1 = 'newaddr0' + VARCHAR(:g_inquiry) + '_' + VARCHAR(:g_period) + '.Z';
+
+        h_idbr_file2 = :g_path_name1  + :h_idbr_file1 ;
+
+        h_idbr_file3 = :g_path_name1 + 'newaddr0' + VARCHAR(:g_inquiry) + '_' 
+		       + VARCHAR(:g_period);
+    ENDIF;
+
+   /*-s----------------------------------------------------------------
+    Copy file from idbr are on the c8
+    ----------------------------------------------------------------e-*/
+
+    h_command = 'cp ' + :h_idbr_path1 + :h_idbr_file1 + ' ' + :h_idbr_file2;
+
+ /*********************
+    h_command = '/c18/home/prodcom/admin/prodlive/ftp_c8_get.ux ' +
+                 :h_idbr_file1 + ' ' + :h_idbr_file2;
+ *********************/
+
+    ret_val = CALLPROC msa_cp_callsys(:h_command);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error transferring from c8 ' + :h_idbr_file1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    h_command = 'uncompress ' + :h_idbr_file2;
+
+
+    ret_val = CALLPROC msa_cp_callsys(:h_command);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Remove any '???' from postcodes of IDBR addresses.       
+    ----------------------------------------------------------------e-*/
+
+    h_command = 'sed -e"s/???//g" ' + :h_idbr_file3 +
+		   ' > ' + :h_idbr_file3 + '.tmp; mv ' +
+		   :h_idbr_file3 + '.tmp ' + :h_idbr_file3;
+
+    ret_val = CALLPROC msa_cp_callsys(:h_command);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+		    'Error removing ??? from ' + :h_idbr_file3,
+		    :h_frpr_name,
+		    :ret_val,
+		    :g_user_id);
+        COMMIT;
+	RETURN ret_val;
+    ENDIF;
+
+
+    /*-s----------------------------------------------------------------
+     Create the selection table and copy IDBR data into it
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table;
+
+    CREATE TABLE :h_table (
+                 ruref          CHAR (11) NOT NULL,
+                 runame1        CHAR (35) NOT NULL,
+                 runame2        CHAR (35) NOT NULL,
+                 runame3        CHAR (35) NOT NULL,
+                 ruaddr1        CHAR (30) NOT NULL,
+                 ruaddr2        CHAR (30) NOT NULL,
+                 ruaddr3        CHAR (30) NOT NULL,
+                 ruaddr4        CHAR (30) NOT NULL,
+                 ruaddr5        CHAR (30) NOT NULL,
+                 rupostcode     VARCHAR(8) NOT NULL,
+                 tradstyle1     CHAR (35) NOT NULL,
+                 tradstyle2     CHAR (35) NOT NULL,
+                 tradstyle3     CHAR (35) NOT NULL,
+                 entname1       CHAR(35) NOT NULL,
+                 entname2       CHAR(35) NOT NULL,
+                 entname3       CHAR(35) NOT NULL,
+                 contact        CHAR (30) NOT NULL,
+                 telephone      CHAR (20) NOT NULL,
+                 fax            CHAR (20) NOT NULL,
+                 inclexcl       CHAR (1) NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Unable to create ' + :h_table,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    message 'Copying table ...' + :h_table;
+
+    COPY TABLE :h_table (
+        ruref           =   c0colon,
+        runame1         =   c0colon,
+        runame2         =   c0colon,
+        runame3         =   c0colon,
+        ruaddr1         =   c0colon,
+        ruaddr2         =   c0colon,
+        ruaddr3         =   c0colon,
+        ruaddr4         =   c0colon,
+        ruaddr5         =   c0colon,
+        rupostcode      =   c0colon,
+        tradstyle1      =   c0colon,
+        tradstyle2      =   c0colon,
+        tradstyle3      =   c0colon,
+        entname1        =   c0colon,
+        entname2        =   c0colon,
+        entname3        =   c0colon,
+        contact         =   c0colon,
+        telephone       =   c0colon,
+        fax             =   c0colon,
+        inclexcl        =   c0nl)
+
+    FROM :h_idbr_file3;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Unable to copy from registers file',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update contributor data using IDBRs latest information
+
+    Don't update PRODCOM's contact details columns (phone_contact,
+    contact_phone_no and fax_number)
+    ----------------------------------------------------------------e-*/
+
+    message 'Updating Contributor ...';
+
+    UPDATE contributor a
+    FROM   :h_table b
+    SET    contributor_reference = b.ruref,
+           addressee = UPPERCASE(b.contact),
+           add_name1  = b.runame1,
+           add_name2  = b.runame2,
+           add_name3  = b.runame3,
+           add_tradstyle1 = b.tradstyle1,
+           add_tradstyle2 = b.tradstyle2,
+           add_tradstyle3 = b.tradstyle3,
+           add_line1 = b.ruaddr1,
+           add_line2 = b.ruaddr2,
+           add_line3 = b.ruaddr3,
+           add_line4 = b.ruaddr4,
+           add_line5 = b.ruaddr5,
+           add_postcode = b.rupostcode
+    WHERE  a.contributor_reference  = b.ruref;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+    
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating contributor',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+    RETURN 0;
+}
+    

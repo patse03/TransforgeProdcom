@@ -1,0 +1,278 @@
+/*----------------------------------------------------------------------
+ Sets up start-dates and end-dates for each week for a period.
+
+ Puts records on the table weekno_dates - deletes them if there are
+ already records there for the specified inquiry/period.
+
+ The table weekno_dates is used to keep contributor_period's
+ rec_week_no and corr_week_no up-to-date: occasionally the weeks are
+ not changed over first thing Monday morning.
+----------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_day             = VARCHAR(20) NOT NULL,
+        h_message_day     = VARCHAR(20) NOT NULL,
+        h_date            = DATE NOT NULL,
+        h_table           = VARCHAR(25) NOT NULL,
+        h_max             = INTEGER1 NOT NULL,
+        h_counter         = INTEGER1 NOT NULL,
+        h_return          = INTEGER1 NOT NULL,
+
+        lp_full_error_check  = PROCEDURE RETURNING INTEGER NOT NULL,
+
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msah_fr_weekno_dates';
+    msa_date = 'now';
+    h_table = 'weekno_dates';
+}
+
+
+FIELD period =
+{
+  MESSAGE 'Checking Period . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT period AS period
+    FROM   inquiry_period
+    WHERE  period = :period
+      AND  inquiry = 14;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'ERROR: Invalid period specified. Please correct and try again.'
+    WITH STYLE = POPUP;
+    CLEAR  FIELD period;
+    RESUME FIELD period;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select from the inquiry_period table. '
+          + 'Error code ' +VARCHAR(:h_return) +'.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+ 
+  /*------------------------------------------------------------------
+      Delete any existing records for this inquiry / period
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    DELETE FROM weekno_dates
+    WHERE       inquiry = 14 
+      AND       period = :period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to delete from the weekno_dates table. '
+          + 'Error code ' +VARCHAR(:h_return) +'.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+  RESUME FIELD start_date;
+}
+
+FIELD start_date =
+{
+  SELECT dow(:start_date) AS h_day;
+
+  IF h_day != 'Sun'
+  THEN
+
+    IF     h_day = 'Mon' THEN h_message_day = 'MONDAY';
+    ELSEIF h_day = 'Tue' THEN h_message_day = 'TUESDAY'
+    ELSEIF h_day = 'Wed' THEN h_message_day = 'WEDNESDAY'
+    ELSEIF h_day = 'Thu' THEN h_message_day = 'THURSDAY'
+    ELSEIF h_day = 'Fri' THEN h_message_day = 'FRIDAY'
+    ELSE   h_message_day = 'SATURDAY'
+    ENDIF;
+
+    MESSAGE 'ERROR: The start_date is a ' + :h_message_day + 
+            '. It should be a SUNDAY. Try using this years calendar...'
+    WITH STYLE = POPUP;
+    RESUME FIELD start_date;
+  ENDIF;
+
+  h_max = 53;
+  h_counter = 1;
+  h_date = :start_date;
+
+  /*------------------------------------------------------------------
+      Insert a row for each week
+  ------------------------------------------------------------------*/
+
+  WHILE h_counter <= h_max
+  DO
+    MESSAGE 'Inserting Week No. ' + VARCHAR(:h_counter) + ' . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      INSERT INTO weekno_dates 
+                ( inquiry,
+                  period,
+                  start_date,
+                  end_date,
+                  week)
+      VALUES    ( 14,
+                  :period,
+                  :h_date,
+                  DATE(:h_date + '6 days'),
+                  :h_counter);
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+      RETURN 7;
+
+    ELSEIF h_return > 0
+    THEN
+      MESSAGE 'ERROR: Failed to insert into the weekno_dates table.' +X'0D'
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Week Number ' +VARCHAR(:h_counter) +'.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+
+    ENDIF;
+
+    h_counter = :h_counter + 1;
+    h_date = DATE(:h_date + '7 days');
+
+  ENDWHILE;
+
+  /*------------------------------------------------------------------
+      Update final week's end_date to the end of 2050
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE weekno_dates
+    SET    end_date = DATE('31/12/2050')
+    WHERE  week = :h_max
+      AND  inquiry = 14
+      AND  period=:period ;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return > 0
+  THEN
+    MESSAGE 'ERROR: Failed to update the weekno_dates table. ' 
+          + 'Error code ' +VARCHAR(:h_return) +'.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+  MESSAGE 'COMPLETED: New week dates and numbers inserted successfully.' 
+  WITH STYLE = POPUP;
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}
+
+/*********************** LOCAL PROCEDURES *****************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+                  h_num_row_ck = :p_num_row_ck,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

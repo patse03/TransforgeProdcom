@@ -1,0 +1,750 @@
+/***************************************************************************
+  Calculates key contributors for the industry supplied.
+
+  PARAMETERS:
+  p_question_industry 
+  The question industry that is to have its key contributors calculated.
+
+  CHANGE HISTORY.
+  JUL 2015 -  MYC - Minute #309 Additional code added to handle volume 
+                    component question for selective editing.
+***************************************************************************/
+
+PROCEDURE msatb_fp_inc_key_pai 
+        ( p_question_industry = INTEGER4 NOT NULL ) =
+
+DECLARE 
+  h_return          = INTEGER1    NOT NULL WITH DEFAULT,
+  h_frpr_name       = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_text            = VARCHAR(70) NOT NULL WITH DEFAULT,
+  h_table           = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_vol_table       = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_con_table       = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_avg_table       = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_tot_table_a     = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_tot_table_q1    = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_tot_table_q2    = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_osm_table       = VARCHAR(30) NOT NULL WITH DEFAULT,
+  h_osm_filename    = VARCHAR(42) NOT NULL WITH DEFAULT,
+  h_prev_period1    = INTEGER4    NOT NULL WITH DEFAULT,
+  h_prev_period2    = INTEGER4    NOT NULL WITH DEFAULT,
+
+  lp_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_drop_table  = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,  
+
+
+{
+  h_frpr_name = 'msatb_fp_inc_key_pai';
+
+  h_table        = 'temp_key_inc_contribs';
+  h_con_table    = 'temp_key_inc_con';
+  h_avg_table    = 'temp_key_inc_avg';
+  h_tot_table_a  = 'temp_key_inc_tots_a';
+  h_tot_table_q1 = 'temp_key_inc_tots_q1';
+  h_tot_table_q2 = 'temp_key_inc_tots_q2';
+  h_vol_table    = 'temp_key_vol';
+  h_osm_table    = 'temp_inc_osm_keys_removed';
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Processing question industry ' 
+                       + VARCHAR(:p_question_industry) +'.');
+
+  CALLPROC msa_fp_prev_periods 
+         ( period       = :g_period,
+           prev_period1 = BYREF(:h_prev_period1),
+           prev_period2 = BYREF(:h_prev_period2));
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in local procedure */
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE :h_table 
+       ( contributor_reference CHAR(11)    NOT NULL WITH DEFAULT,
+         for_period            INTEGER4    NOT NULL WITH DEFAULT,
+         contributor_industry  INTEGER4    NOT NULL WITH DEFAULT,
+         stratum               CHAR(5)     NOT NULL WITH DEFAULT,
+         question              INTEGER4    NOT NULL WITH DEFAULT,
+         question_industry     INTEGER4    NOT NULL WITH DEFAULT,
+         period                INTEGER4    NOT NULL WITH DEFAULT,
+         avalue                INTEGER4    NOT NULL WITH DEFAULT,
+         acell                 CHAR(2)     NOT NULL WITH DEFAULT,
+         total_value           INTEGER4    NOT NULL WITH DEFAULT,
+         percentage            FLOAT8      NOT NULL WITH DEFAULT,
+         gross_total_value     INTEGER4    NOT NULL WITH DEFAULT,
+         gross_percentage      FLOAT8      NOT NULL WITH DEFAULT,
+         text                  VARCHAR(10) NOT NULL WITH DEFAULT);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_table +' '
+           + 'for industry ' +VARCHAR(:p_question_industry) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Create list of contributors who have been selected for the previous
+    year, and all of their questions (for the question_industry) for the
+    previous 2 years.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating Contributor Table ' 
+        + VARCHAR(:p_question_industry) + ' . . .';
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_con_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in local procedure */
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE :h_con_table
+  AS 
+  SELECT a.contributor_reference,
+         a.contributor_industry,
+         a.register_emp,
+         '     ' AS stratum,
+         b.period,
+         b.question,
+         b.question_industry,
+         b.avalue,
+         b.acell,
+         INT4(0) AS total_value,
+         FLOAT8(0) AS percentage
+  FROM   contributor_period a,
+         cqpv b 
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.period = :h_prev_period1
+    AND  b.question_industry = :p_question_industry
+    AND  b.contributor_inquiry = :g_inquiry
+    AND  b.period IN (:h_prev_period1,:h_prev_period2)
+    AND  b.acell != 'W'
+    AND  b.quest_order NOT IN (8,9,11)
+    AND  MOD(b.question,10) IN (0,1);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_con_table +' '
+           + 'for industry ' +VARCHAR(:p_question_industry) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Delete any records that where the question is no longer on cqpv 
+    for the current period: e.g. if looking for 199700, delete 
+    questions from 199500 where those questions aren't on for 199600
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Deleting Questions that are not on cqpv for ' 
+        + VARCHAR(:h_prev_period1) + ' . . .';
+
+  DELETE FROM :h_con_table a
+  WHERE       period = :h_prev_period2
+  AND         contributor_reference NOT IN 
+            ( SELECT contributor_reference 
+              FROM   :h_con_table b
+              WHERE  a.question = b.question
+              AND    b.period = :h_prev_period1);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to delete cqpv mismatches from ' +:h_con_table +' '
+           + 'for industry ' +VARCHAR(:p_question_industry) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    If it's an INC(lude) run, we need to record in the osm table 
+    (provided it is not already in there of course) then delete 
+    any records with emp < 10 .
+  ------------------------------------------------------------------*/
+
+  IF :g_run_type = 'inc'
+  THEN
+
+    INSERT INTO :h_osm_table
+    SELECT a.contributor_reference,
+           a.contributor_industry,
+           a.register_emp
+    FROM   :h_con_table a 
+    WHERE  a.register_emp < 10
+      AND  a.contributor_reference NOT IN
+        (  SELECT b.contributor_reference 
+           FROM   :h_osm_table b
+           WHERE  b.contributor_reference = a.contributor_reference);    
+             
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return > 1
+    THEN
+      h_text = 'ERROR:Failed to insert into table ' +:h_osm_table +' '
+             + 'for industry ' +VARCHAR(:p_question_industry) +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+       
+    MESSAGE 'Deleting non-PRN Contributors . . .';
+
+    DELETE FROM :h_con_table 
+    WHERE  register_emp < 10;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return > 1
+    THEN
+      h_text = 'ERROR: Failed to remove osmotherly contributors '
+             + 'for industry ' +VARCHAR(:p_question_industry) +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Put descriptive text into stratum for the employment
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Updating Strata for ' 
+        + VARCHAR(:p_question_industry) + ' . . .';
+
+  UPDATE :h_con_table
+  SET    stratum = '0-9'
+  WHERE  register_emp BETWEEN 0 AND 9;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update 0-9 strata text '
+           + 'for industry ' +VARCHAR(:p_question_industry) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  UPDATE :h_con_table
+  SET    stratum = '10-19'
+  WHERE  register_emp BETWEEN 10 AND 19;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update 10-19 strata text '
+           + 'for industry ' +VARCHAR(:p_question_industry) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  UPDATE :h_con_table
+  SET    stratum = '20-49'
+  WHERE  register_emp BETWEEN 20 AND 49;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update 20-49 strata text '
+           + 'for industry ' +VARCHAR(:p_question_industry) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  UPDATE :h_con_table
+  SET    stratum = '50-99'
+  WHERE  register_emp BETWEEN 50 AND 99;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update 50-99 strata text '
+           + 'for industry ' +VARCHAR(:p_question_industry) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  UPDATE :h_con_table
+  SET    stratum = '100-'
+  WHERE  register_emp >= 100;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update 100+ strata text '
+           + 'for industry ' +VARCHAR(:p_question_industry) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Create totals table for ANNUAL contributors for this question
+    industry for last 2 years
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating Annual Totals Table ' 
+        + VARCHAR(:p_question_industry) + ' . . .';
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_tot_table_a);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in local procedure */
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE :h_tot_table_a
+  AS 
+  SELECT question,
+         period,
+         SUM(avalue) AS total_value
+  FROM   cqpv 
+  WHERE  question_industry = :p_question_industry
+    AND  acell != 'W'
+    AND  quest_order NOT IN (8,11)
+    AND  MOD(question,10) in (0,1)
+    AND  period IN (:h_prev_period1,:h_prev_period2)
+  GROUP  BY question, period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_tot_table_a +' '
+           + 'for industry ' +VARCHAR(:p_question_industry) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Put the Totals onto the contributor table & find % for each ref.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Updating Contributor Table with Totals ' 
+        + VARCHAR(:p_question_industry) + ' . . .';
+
+  UPDATE :h_con_table a
+  FROM   :h_tot_table_a b
+  SET    total_value = b.total_value
+  WHERE  a.question = b.question
+    AND  a.period = b.period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update totals on ' +:h_tot_table_a +' '
+           + 'for industry ' +VARCHAR(:p_question_industry) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  MESSAGE 'Updating Contributor Table with Percentages ' 
+        + VARCHAR(:p_question_industry) + ' . . .';
+
+  UPDATE :h_con_table
+  SET    percentage = avalue * 100.0 / total_value;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update totals on ' +:h_con_table +' '
+           + 'for industry ' +VARCHAR(:p_question_industry) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+
+  /*-------------------------------------------------------------------
+    KEY CONTRIBUTORS 1: Insert contributors who exceed cutoff for the
+    previous year & delete from original table
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Inserting Key Contributors 1 ' 
+        + VARCHAR(:p_question_industry) + ' . . .';
+
+  INSERT INTO :h_table 
+            ( contributor_reference,
+              for_period,
+              contributor_industry,
+              stratum,
+              question,
+              question_industry,
+              period,
+              avalue,
+              acell,
+              total_value,
+              percentage,
+              gross_total_value,
+              gross_percentage,
+              text)
+  SELECT      contributor_reference,
+              :g_period,
+              contributor_industry,
+              stratum,
+              question,
+              :p_question_industry,
+              period,
+              avalue,
+              acell,
+              total_value,
+              percentage,
+              0 as gross_total_value,
+              0 as gross_percentage,
+              ''
+  FROM        :h_con_table
+  WHERE       percentage >= :g_cutoff
+  AND         period = :h_prev_period1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to insert first tranche into ' +:h_con_table +' '
+           + 'for industry ' +VARCHAR(:p_question_industry) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  DELETE FROM :h_con_table
+  WHERE  contributor_reference IN 
+      (  SELECT contributor_reference
+         FROM   :h_table);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to delete first tranche from ' +:h_table +' '
+           + 'for industry ' +VARCHAR(:p_question_industry) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    KEY CONTRIBUTORS 2: Insert contributors whose average over the two
+    previous years exceeds the cutoff.
+    (Find out the average first)
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Inserting Key Contributors 2 ' 
+        + VARCHAR(:p_question_industry) + ' . . .';
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_avg_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled by local procedure. */
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE :h_avg_table
+  AS 
+  SELECT contributor_reference,
+         question,
+         AVG(percentage) AS percentage
+  FROM   :h_con_table
+  GROUP  BY contributor_reference, question
+  HAVING AVG(percentage) >= :g_cutoff;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_avg_table +' '
+           + 'for industry ' +VARCHAR(:p_question_industry) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  INSERT INTO :h_table 
+            ( contributor_reference,
+              for_period,
+              contributor_industry,
+              stratum,
+              question,
+              question_industry,
+              period,
+              avalue,
+              acell,
+              total_value,
+              percentage,
+              gross_total_value,
+              gross_percentage,
+              text)
+  SELECT      a.contributor_reference,
+              :g_period,
+              a.contributor_industry,
+              a.stratum,
+              a.question,
+              a.question_industry,
+              a.period,
+              a.avalue,
+              a.acell,
+              a.total_value,
+              a.percentage,
+              0 as gross_total_value,
+              0 as gross_percentage,
+              'AVERAGE'
+  FROM        :h_con_table a,
+              :h_avg_table b
+  WHERE       a.contributor_reference = b.contributor_reference
+  AND         a.question = b.question;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to insert second tranche into ' +:h_table +' '
+           + 'for industry ' +VARCHAR(:p_question_industry) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*---------------------------------------------------------------------
+      If 01 value question is key then matching 02 volume component 
+      must carry key marker as well. Needed for Selective Editing.  
+  -----------------------------------------------------------------------*/
+
+  /*...................................................................
+       Drop then Create volume working table.
+  ..................................................................*/
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_vol_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in local procedure */
+  ENDIF;
+
+  CREATE TABLE :h_vol_table
+  AS
+  SELECT a.contributor_reference,
+         a.period AS for_period,
+         a.contributor_industry,
+         '     ' AS stratum,
+         a.question,
+         a.question_industry,
+         a.period - 100 AS period,
+         INT4(0)   AS avalue,
+         '  '      AS acell,
+         INT4(0)   AS total_value,
+         FLOAT8(0) AS percentage,
+         INT4(0)   AS gross_total_value,
+         FLOAT8(0) AS gross_percentage,
+         'LINKED'
+  FROM   cqpv a
+  WHERE  a.period = :g_period
+  AND    MOD(a.question,10) = 2
+  AND    a.question -1 IN 
+         ( SELECT b.question
+           FROM   :h_table b
+           WHERE  a.contributor_reference = b.contributor_reference
+           AND    MOD(b.question,10) = 1);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_vol_table +' '
+           + 'for industry ' +VARCHAR(:p_question_industry) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+
+  /*...................................................................
+       Update stratum field from the value question.
+  ...................................................................*/
+
+  UPDATE :h_vol_table a
+  FROM   :h_table b
+  SET    stratum = b.stratum
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.question - 1          = b.question
+    AND  b.period                = :g_period - 100;
+     
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update ' +:h_vol_table +' '
+           + 'for industry ' +VARCHAR(:p_question_industry) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+
+  /*...................................................................
+       Insert linked volumes into working table.
+  ...................................................................*/
+
+  INSERT INTO :h_table
+  SELECT *
+  FROM :h_vol_table;
+                            
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to insert linked vols into ' +:h_table +' '
+           + 'for industry ' +VARCHAR(:p_question_industry) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+
+  /*------------------------------------------------------------------
+      Finally, insert the temp_key_contributors into the working table
+  ------------------------------------------------------------------*/
+
+  INSERT INTO :g_table
+  SELECT      *
+  FROM        :h_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to processed data into ' +:g_table +' '
+           + 'for industry ' +VARCHAR(:p_question_industry) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+
+/*************************** LOCAL PROCEDURES ******************************/
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   l_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  l_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:l_return,9);
+
+}
+
+
+/*===========================================================================
+        Local procedure for dropping a table via external call.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL) = 
+
+DECLARE 
+
+  l_return = INTEGER4    NOT NULL WITH DEFAULT,
+  l_text   = VARCHAR(70) NOT NULL WITH DEFAULT,
+
+{
+
+  l_return = CALLPROC msa_fp_drop_table (p_table = :p_table_name);
+
+  IF l_return != 0
+  THEN
+    l_text = 'ERROR: Failed to drop ' +:p_table_name +'. See error log.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :l_return,
+             p_text      = :l_text);
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+
+}

@@ -1,0 +1,705 @@
+PROCEDURE weekly_adds_dels_pr () = 
+
+DECLARE 
+        h_frpr_name            = VARCHAR(24)  NOT NULL,
+        h_return               = INTEGER1     NOT NULL,        
+        h_return2              = INTEGER1     NOT NULL,        
+	h_text                 = VARCHAR(80)  NOT NULL,
+	h_command              = VARCHAR(200) NOT NULL,
+        h_a_filename           = VARCHAR(100) NOT NULL,
+        h_d_filename           = VARCHAR(100) NOT NULL,
+        h_l_filename           = VARCHAR(100) NOT NULL,
+        h_a_reportname         = VARCHAR(100) NOT NULL,
+        h_d_reportname         = VARCHAR(100) NOT NULL,
+        h_table_1              = VARCHAR(32)  NOT NULL,
+        h_table_2              = VARCHAR(32)  NOT NULL,
+        h_table_3              = VARCHAR(32)  NOT NULL,
+        h_last_run             = INGRESDATE   NOT NULL,
+        h_this_run             = INGRESDATE   NOT NULL,
+        h_period               = INTEGER4     NOT NULL,        
+        h_prev_period          = INTEGER4     NOT NULL,        
+        h_printer              = VARCHAR(10)  NOT NULL,
+        h_day                  = VARCHAR(2)   NOT NULL,
+        h_month                = VARCHAR(2)   NOT NULL,
+
+        lp_error_check         = PROCEDURE RETURNING INTEGER NOT NULL,
+        lp_drop_table          = PROCEDURE RETURNING INTEGER NOT NULL,
+
+{
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  h_frpr_name = 'weekly_adds_dels_pr';
+
+  h_table_1 = 'tt_wad_a';
+  h_table_2 = 'tt_wad_d';
+  h_table_3 = 'tt_wad_l';
+
+  IF g_database = 'prodlivedb'
+  THEN 
+    h_a_filename = '/prodcom/live5/files/sas/weekly_adds';
+    h_d_filename = '/prodcom/live5/files/sas/weekly_dels';
+    h_l_filename = '/prodcom/live5/files/sas/weekly_live';
+    h_a_reportname = '/prodcom/source/prodlive/reports/weekly_adds.rw';
+    h_d_reportname = '/prodcom/source/prodlive/reports/weekly_dels.rw';
+  ELSE
+    h_a_filename = '/admin/scratch/TEST_weekly_adds';
+    h_d_filename = '/admin/scratch/TEST_weekly_dels';
+    h_l_filename = '/admin/scratch/TEST_weekly_live';
+    h_a_reportname = '/prodcom/source/produser/reports/weekly_adds.rw';
+    h_d_reportname = '/prodcom/source/produser/reports/weekly_dels.rw';
+  ENDIF;
+
+   /*------------------------------------------------------------------
+      Log start of process.
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = '*SIGNON*');
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'STARTING: WEEKLY ADDITIONS AND DELETIONS.');
+
+  /*---------------------------------------------------------------------
+       Get printer for report output 
+  ---------------------------------------------------------------------*/
+ 
+  IF g_database = 'prodlivedb'
+  THEN
+    SELECT default_printer AS h_printer
+    FROM   passwords_new
+    WHERE  access_code = 'I5'
+  ELSE
+    SELECT default_printer AS h_printer
+    FROM   passwords_new
+    WHERE  access_code = 'D5'
+  ENDIF;
+
+  h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return2 != 0
+  THEN
+    h_text = 'ERROR: Failed to select printer for report output.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return2,
+             p_text      = :h_text);
+    EXIT;
+  ENDIF;
+ 
+  /*------------------------------------------------------------------
+      Calculate date variables to be used. 
+      (Base calculations on current calendar year as new priods set up
+       in ProdCom several months ahead of the end of the calendar year.)
+  ------------------------------------------------------------------*/
+
+  h_period      = (INTEGER(DATE_PART('year','today'))*100) - 100; 
+  h_prev_period = :h_period - 100;
+  h_this_run    = DATE('today');
+
+  /*------------------------------------------------------------------
+      Get date of last run.
+      (Changed from a fixed 7 day print to automatically correct in
+       case of an operational snafu.)
+  ------------------------------------------------------------------*/
+
+  SELECT last_run AS h_last_run
+  FROM   wad_last_run;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select last run date.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ELSE
+    h_text = 'NOTE: Looking for changes between ' +VARCHAR(:h_last_run) +' '
+           + ' and ' +VARCHAR(:h_this_run) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+  ENDIF;
+
+  /*---------------------------------------------------------------------
+     Create temp table for recent additions.
+  ---------------------------------------------------------------------*/
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_1);
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by local procedure */
+    EXIT;
+  ENDIF;
+
+  CREATE TABLE :h_table_1 
+  AS
+  SELECT a.contributor_reference,
+         a.contributor_industry,
+         a.period,
+         d.emp_cutoff,
+         c.add_name1,
+         b.register_emp,
+         a.date_added,
+         :h_last_run as last_run
+  FROM   added_contributor a, 
+         contributor_period b,
+         contributor c,
+         industry_period d
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.contributor_reference = c.contributor_reference
+    AND  a.period in (:h_period, :h_prev_period)
+    AND  a.period = b.period
+    AND  a.period = d.period
+    AND  a.contributor_industry = d.industry
+    AND  date_added > :h_last_run;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+
+  ELSEIF :h_return = 1
+  THEN
+    h_text = 'WARNING: No additions detected in timeframe.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  ELSE /* Additions present */
+
+    /*---------------------------------------------------------------------
+     Modify additions temp table to sort into order.
+    ---------------------------------------------------------------------*/
+
+    MODIFY :h_table_1 to BTREE
+    ON     period, contributor_reference;
+  
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed to modify ' +:h_table_1 +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return2,
+               p_text      = :h_text);
+      EXIT;
+    ENDIF;
+
+    /*---------------------------------------------------------------------
+       Copy data to flat file.
+    ---------------------------------------------------------------------*/
+
+    COPY TABLE :h_table_1
+             ( contributor_reference = c0colon,
+               contributor_industry  = c0colon,
+               period                = c0colon,
+               emp_cutoff            = c0colon,
+               add_name1             = c0colon,
+               register_emp          = c0colon,
+               date_added            = c0nl )
+    INTO :h_a_filename;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2  != 0
+    THEN
+      h_text = 'ERROR: Failed to create additions output file.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return2,
+               p_text      = :h_text);
+      EXIT;
+    ELSEIF h_return2 = 0
+    THEN
+      h_text = 'NOTE: Additions file saved to ' +:h_a_filename +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return2,
+             p_text      = :h_text);
+    ENDIF;
+
+    /*---------------------------------------------------------------------
+       Create and print report.
+    ---------------------------------------------------------------------*/
+ 
+    h_return2 = CALLPROC msa_cp_callsys
+             ( 'report ' 
+             + :g_database + ' '
+             + '-i' + :h_a_reportname +' '
+             + '-f/prodcom/live5/files/text/weekly_adds.rpt ' );
+
+    IF h_return2 > 1
+    THEN
+      h_text = 'ERROR: Failed to create additions report.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return2,
+               p_text      = :h_text);
+      EXIT;
+    ENDIF;
+
+    h_return2 = CALLPROC msa_cp_callsys
+             ( 'lp -o16l '
+             + '-d' +:h_printer +' '
+             + '/prodcom/live5/files/text/weekly_adds.rpt' );
+  
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed to print additions report.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return2,
+               p_text      = :h_text);
+      EXIT;
+    ELSE
+      h_text = 'NOTE: Additions report sent to printer ' +:h_printer +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return2,
+               p_text      = :h_text);
+    ENDIF;
+
+  ENDIF;  /* End or additions present */
+
+  /*---------------------------------------------------------------------
+     Create temp table for recent deletions.
+  ---------------------------------------------------------------------*/
+
+  h_return2 = CALLPROC lp_drop_table (p_table_name = :h_table_2);
+
+  IF h_return2 != 0
+  THEN
+    /* Error reporting handled by local procedure */
+    EXIT;
+  ENDIF;
+
+  CREATE TABLE :h_table_2 
+  AS
+  SELECT a.contributor_reference,
+         a.contributor_industry,
+         a.period,
+         a.contributor_name,
+         a.register_emp,
+         b.emp_cutoff,
+         a.date_removed,
+         a.reason_removed,
+         a.source
+  FROM   removed_contrib_period a,
+         industry_period b
+  WHERE  a.period = b.period
+    AND  a.contributor_industry = b.industry
+    AND  a.date_removed > :h_last_run;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_table_2 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+
+  ELSEIF :h_return = 1
+  THEN
+    h_text = 'WARNING: No deletions selected in timeframe.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  ELSE /* Deletions present */
+
+    /*---------------------------------------------------------------------
+       Modify additions temp table to sort into order.
+    ---------------------------------------------------------------------*/
+
+    MODIFY :h_table_2 to BTREE
+    ON     period, contributor_reference;
+  
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed to modify ' +:h_table_2 +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return2,
+               p_text      = :h_text);
+      EXIT;
+    ENDIF;
+
+    /*---------------------------------------------------------------------
+       Copy data to flat file.
+       (Reduced colon delimited file now supplied following SAS testing.)
+    ---------------------------------------------------------------------*/
+
+    COPY TABLE :h_table_2
+             ( contributor_reference = c0colon,
+               contributor_industry  = c0colon,
+               period                = c0colon,
+               register_emp          = c0nl )
+    INTO :h_d_filename;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2  > 1
+    THEN
+      h_text = 'ERROR: Failed to create deletions output file.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return2,
+               p_text      = :h_text);
+      EXIT;
+    ELSEIF h_return2 = 0
+    THEN
+      h_text = 'NOTE: Deletions file saved to ' +:h_d_filename +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return2,
+               p_text      = :h_text);
+    ENDIF;
+
+    /*---------------------------------------------------------------------
+       Copy data to datestamped flat file to provide SAS team 
+       with a backup / audit system.
+    ---------------------------------------------------------------------*/
+
+    h_month =  VARCHAR(DATE_PART('month',:h_this_run));
+    h_day   =  VARCHAR(DATE_PART('day',:h_this_run));
+
+    IF LENGTH(:h_month) = 1
+    THEN
+      h_month = '0' + :h_month;  
+    ENDIF;
+
+    IF LENGTH(:h_day) = 1
+    THEN
+      h_day = '0' + :h_day;  
+    ENDIF;
+
+    h_d_filename = :h_d_filename + '_'
+                 + VARCHAR(DATE_PART('year',:h_this_run))
+                 + :h_month
+                 + :h_day;
+
+    COPY TABLE :h_table_2
+             ( contributor_reference = c0colon,
+               contributor_industry  = c0colon,
+               period                = c0colon,
+               register_emp          = c0nl )
+    INTO :h_d_filename;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2  > 1
+    THEN
+      h_text = 'ERROR: Failed to create deletions audit file.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return2,
+               p_text      = :h_text);
+      EXIT;
+    ELSEIF h_return2 = 0
+    THEN
+      h_text = 'NOTE: Deletions audit saved to ' +:h_d_filename +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return2,
+               p_text      = :h_text);
+    ENDIF;
+
+    /*---------------------------------------------------------------------
+       Create and print deletions report.
+    ---------------------------------------------------------------------*/
+ 
+    h_return2 = CALLPROC msa_cp_callsys
+             ( 'report ' 
+             + :g_database + ' '
+             + '-i' + SQUEEZE(:h_d_reportname) +' '
+             + '-f/prodcom/live5/files/text/weekly_dels.rpt' );
+
+    IF h_return2 > 1
+    THEN
+      h_text = 'ERROR: Failed to create deletions report.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return2,
+               p_text      = :h_text);
+      EXIT;
+    ENDIF;
+
+    h_return2 = CALLPROC msa_cp_callsys ('lp -o16l '
+             + '-d' +:h_printer +' '
+             + '/prodcom/live5/files/text/weekly_dels.rpt');
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed to print deletions report.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return2,
+               p_text      = :h_text);
+      EXIT;
+    ELSE
+      h_text = 'NOTE: Deletions report sent to printer ' +:h_printer +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return2,
+               p_text      = :h_text);
+    ENDIF;
+
+  ENDIF; /* End of deletions present */
+
+  /*---------------------------------------------------------------------
+     Create temp table for live suppliers.
+  ---------------------------------------------------------------------*/
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_3);
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by local procedure */
+    EXIT;
+  ENDIF;
+
+  CREATE TABLE :h_table_3 
+  AS
+  SELECT period,
+         contributor_reference,
+         contributor_industry
+  FROM   contributor_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_table_3 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+
+  ELSEIF :h_return = 1
+  THEN
+    h_text = 'ERROR: NO DATA ON CONTRIBUTOR PERIOD!!!!';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 1,
+             p_text      = :h_text);
+
+  ELSE /* ok to produce file */
+
+    /*---------------------------------------------------------------------
+       Modify live suppliers temp table to sort into order.
+    ---------------------------------------------------------------------*/
+
+    MODIFY :h_table_3 to BTREE
+    ON     period, contributor_reference;
+  
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed to modify ' +:h_table_3 +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return2,
+               p_text      = :h_text);
+      EXIT;
+    ENDIF;
+
+    /*---------------------------------------------------------------------
+       Copy data to flat file.
+    ---------------------------------------------------------------------*/
+
+    COPY TABLE :h_table_3
+             ( period                = c0colon,
+               contributor_reference = c0colon,
+               contributor_industry  = c0nl)
+    INTO :h_l_filename;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2  > 1
+    THEN
+      h_text = 'ERROR: Failed to create deletions output file.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return2,
+               p_text      = :h_text);
+      EXIT;
+    ELSEIF h_return2 = 0
+    THEN
+      h_text = 'NOTE: Live supplier file saved to ' +:h_l_filename +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = 0,
+               p_text      = :h_text);
+    ENDIF;
+
+  ENDIF;
+
+  /*---------------------------------------------------------------------
+     Update last_run table with this_run.
+  ---------------------------------------------------------------------*/
+
+  UPDATE wad_last_run 
+  SET    last_run = :h_this_run;
+  
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update last_run date on wad_last_run.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ENDIF;
+
+  /*---------------------------------------------------------------------
+     Tidy up temp tables.
+  ---------------------------------------------------------------------*/
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_1);
+
+  IF h_return != 0
+  THEN
+    EXIT;
+  ENDIF;
+
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_2);
+
+  IF h_return != 0
+  THEN
+    EXIT;
+  ENDIF;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_3);
+
+  IF h_return != 0
+  THEN
+    EXIT;
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+     Sign off log file.
+  ------------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'COMPLETE: WEEKLY ADDITIONS AND DELETIONS.'); 
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = '*SIGNOFF*'); 
+
+  EXIT;
+
+}
+
+/*************************** LOCAL PROCEDURES *****************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  rETURN IFNULL(:lp_return,9);
+
+}
+
+
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(36) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name  = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    h_text = 'SYSTEM ERROR: Failed whilst selecting '
+           +  VARCHAR(:p_table_name) + ' from iitables prior to droping.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  h_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF h_return != 0 
+  THEN 
+    h_text = 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+

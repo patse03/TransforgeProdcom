@@ -1,0 +1,656 @@
+/*----------------------------------------------------------------------
+ Procedure msaaa_fp_start - Start of Application
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msaaa_fp_start () =
+
+DECLARE 
+  h_start_proc           = INTEGER1     NOT NULL WITH DEFAULT,
+  h_end_proc             = INTEGER1     NOT NULL WITH DEFAULT,
+  h_span_end             = INTEGER4     NOT NULL WITH DEFAULT,
+  h_industry_cycle_point = CHAR(1)      NOT NULL WITH DEFAULT,
+  h_param_list           = VARCHAR(100) NOT NULL WITH DEFAULT,
+  h_varchar_variable     = VARCHAR(100) NOT NULL WITH DEFAULT,
+  h_integer_variable     = INTEGER1     NOT NULL WITH DEFAULT,
+  h_text                 = VARCHAR(80)  NOT NULL WITH DEFAULT,
+  h_param1               = VARCHAR(20)  NOT NULL WITH DEFAULT,
+  h_param2               = VARCHAR(20)  NOT NULL WITH DEFAULT,
+  h_param3               = VARCHAR(20)  NOT NULL WITH DEFAULT,
+  h_param4               = VARCHAR(20)  NOT NULL WITH DEFAULT,
+  h_return               = INTEGER1     NOT NULL WITH DEFAULT,
+  h_frpr_name            = VARCHAR(24)  NOT NULL WITH DEFAULT,
+
+  lp_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+
+{
+
+  /*--------------------------------------------------------------------------
+      Import and validate basic running parameters.
+  --------------------------------------------------------------------------*/
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  h_frpr_name = 'msaaa_fp_start';
+
+  h_param_list = CALLPROC CommandLineParameters();
+
+  h_varchar_variable = squeeze (h_param_list);
+
+  h_integer_variable = locate (h_varchar_variable, ' ');
+  h_param1         =   left (h_varchar_variable,h_integer_variable - 1);
+
+  h_varchar_variable = shift (h_varchar_variable, - h_integer_variable);
+  h_integer_variable = locate (h_varchar_variable, ' ');
+  h_param2         =   left (h_varchar_variable,h_integer_variable - 1);
+
+  h_varchar_variable = shift (h_varchar_variable, - h_integer_variable);
+  h_integer_variable = locate (h_varchar_variable, ' ');
+  h_param3         =   left (h_varchar_variable,h_integer_variable - 1);
+
+  h_varchar_variable = shift (h_varchar_variable, - h_integer_variable);
+  h_integer_variable = locate (h_varchar_variable, ' ');
+  h_param4         =   left (h_varchar_variable,h_integer_variable - 1);
+
+  g_inquiry    = 14;
+  g_type       = UPPER(LEFT(VARCHAR(:h_param1),1));
+  g_period     = INT4(:h_param2);
+  h_start_proc = INT1(:h_param3);
+  h_end_proc   = INT1(:h_param4);
+
+  IF g_database = 'prodlivedb' 
+  OR g_database = 'prodclonedb'
+  THEN
+    g_path_name1 = '/prodcom/live5/files/text';
+    g_path_name2 = '/admin/scratch';
+  ELSE
+    g_path_name1 = '/prodcom/source/produser/files/text';
+    g_path_name2 = '/admin/scratch/prodcom_copy_area';
+  ENDIF;
+
+  IF  g_type != 'D'
+  AND g_type != 'L'
+  THEN
+    h_text = 'ERROR: Incorrect run type parameter provided {' +:g_type +'}.'; 
+    g_log_table = 'dmy_process_log';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_text);
+    g_log_table = 'csl_process_log';    
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_text);
+    INSERT INTO error_log
+    VALUES (    'now',
+                :h_text,
+                :h_frpr_name,
+                2,
+                :g_user_id);
+    RETURN 9;
+  ENDIF;
+
+  IF g_type  = 'D'
+  THEN
+    g_log_table = 'dmy_process_log';
+  ELSE
+    g_log_table = 'csl_process_log';    
+  ENDIF;
+  
+  IF h_start_proc < 1 
+  OR h_start_proc > 13
+  THEN
+    h_text = 'ERROR: Invalid start procedure parameter provided. '
+           + '{' +VARCHAR(:h_start_proc) +'}.'; 
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  IF h_end_proc < 1 
+  OR h_end_proc > 13
+  THEN
+    h_text = 'ERROR: Invalid end procedure parameter provided. '
+           + '{' +VARCHAR(:h_end_proc) +'}.'; 
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  IF h_start_proc > h_end_proc
+  THEN
+    h_text = 'ERROR: Starting procedure later than ending procedure. '
+           + '{' +VARCHAR(:h_start_proc) +'} -> {' +VARCHAR(:h_end_proc) +'}.'; 
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+       Log start of process.
+  ------------------------------------------------------------------*/
+
+  IF h_start_proc = 1
+  THEN
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = '*SIGNON*');
+
+    IF g_type = 'D'
+    THEN
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = 0,
+               p_text      = 'STARTING: DUMMY CONTRIBUTOR SELECTION.');
+    ELSE
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = 0,
+               p_text      = 'STARTING: LIVE CONTRIBUTOR SELECTION.');
+    ENDIF;
+
+  ELSE
+
+    SELECT IFNULL(MAX(log_no),0) AS g_log_no
+    FROM   :g_log_table;
+ 
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to select log number from process log table.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+    IF g_type = 'D'
+    THEN
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = 0,
+               p_text      = 'RESUMING: DUMMY CONTRIBUTOR SELECTION.');
+    ELSE
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = 0,
+               p_text      = 'RESUMING: FINAL CONTRIBUTOR SELECTION.');
+    ENDIF;
+
+  ENDIF;
+
+  IF h_start_proc = h_end_proc
+  THEN
+    h_text = 'NOTE: RUNNING PROCESS ' +VARCHAR(:h_start_proc) + ' ONLY.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+  ELSE
+    h_text = 'NOTE: RUNNING PROCESSES ' +VARCHAR(:h_start_proc) + ' '
+           + 'TO ' +VARCHAR(:h_end_proc) + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Validate suplied period parameter.
+  ------------------------------------------------------------------*/
+
+  SELECT span_end AS h_span_end
+  FROM   inquiry
+  WHERE  inquiry = 14;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to validate supplied period parameter.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  IF h_span_end != g_period
+  THEN
+    h_text = 'ERROR: Supplied period parameter is not the latest data period.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*-s----------------------------------------------------------------
+    Check industry cycle point for all industries is 'A'.
+  ----------------------------------------------------------------e-*/
+
+  SELECT industry_cycle_point AS h_industry_cycle_point
+  FROM   industry
+  WHERE  inquiry = 14
+    AND  industry_cycle_point != 'A';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 0);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to load industry cycle point. ';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN
+    h_text = 'ERROR: Archiving process has not been run. Do that first.'; 
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_text);
+    RETURN 9;
+
+  ENDIF;
+
+  /*-s----------------------------------------------------------------
+     Calulate the previous periods and assign reg table.
+  ----------------------------------------------------------------e-*/
+  
+  g_prev_period1 = :g_period - 100;
+  g_prev_period2 = :g_period - 200;
+  g_prev_period3 = :g_period - 300;
+
+  g_reg_table = 'csl_register_selection';
+
+  /*------------------------------------------------------------------
+     Process 1 - Loads register data onto PRODCOM tables
+  ------------------------------------------------------------------*/
+
+  IF :h_start_proc = 1
+  THEN
+
+    h_return = CALLPROC msaaa_fp_load_idbr_data ();
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Process 1 failed to run correctly.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ELSE
+      h_text = 'NOTE: Process 1 has run correctly.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+    ENDIF;
+
+  ENDIF;
+
+
+  /*------------------------------------------------------------------
+     Process 2 - Updates existing contributor data and inserts new
+                 references
+  ------------------------------------------------------------------*/
+
+  IF  :h_start_proc <= 2 
+  AND :h_end_proc   >= 2
+  THEN
+
+    h_return = CALLPROC msaaa_fp_up_contributor ();
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Process 2 failed to run correctly.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ELSE
+      h_text = 'NOTE: Process 2 has run correctly.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Process 3 - Load new contributor data
+  ------------------------------------------------------------------*/
+
+  IF  :h_start_proc <= 3 
+  AND :h_end_proc   >= 3
+  THEN
+
+    h_return = CALLPROC msaaa_fp_up_contrib_per();
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Process 3 failed to run correctly.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ELSE
+      h_text = 'NOTE: Process 3 has run correctly.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+    ENDIF;
+
+  ENDIF;
+
+
+  /*------------------------------------------------------------------
+     Process 4 - Save selection details into a history table
+  ------------------------------------------------------------------*/
+
+  IF  :h_start_proc <= 4 
+  AND :h_end_proc   >= 4
+  THEN
+
+    h_return = CALLPROC msaaa_fp_sel_history ();
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Process 4 failed to run correctly.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ELSE
+      h_text = 'NOTE: Process 4 has run correctly.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+    ENDIF;
+
+  ENDIF;
+
+
+  /*------------------------------------------------------------------
+     Process 5 - Add local units from IDBR file
+  ------------------------------------------------------------------*/
+
+  IF  :h_start_proc <= 5 
+  AND :h_end_proc   >= 5
+  THEN
+
+    h_return = CALLPROC msaaa_fp_up_localunits ();
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Process 5 failed to run correctly.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ELSE
+      h_text = 'NOTE: Process 5 has run correctly.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+    ENDIF;
+
+  ENDIF;
+
+
+  /*------------------------------------------------------------------
+     Process 6 - Create table of new contributors
+  ------------------------------------------------------------------*/
+
+  IF  :h_start_proc <= 6 
+  AND :h_end_proc   >= 6
+  THEN
+
+    h_return = CALLPROC msaaa_fp_up_new_contribs ();
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Process 6 failed to run correctly.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ELSE
+      h_text = 'NOTE: Process 6 has run correctly.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Process 7 - Create table of old contributors
+  ------------------------------------------------------------------*/
+
+  IF  :h_start_proc <= 7 
+  AND :h_end_proc   >= 7
+  THEN
+
+    h_return = CALLPROC msaaa_fp_up_old_contribs ();
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Process 7 failed to run correctly.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ELSE
+      h_text = 'NOTE: Process 7 has run correctly.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Process 8 - SAS regional data extract.
+  ------------------------------------------------------------------*/
+
+  IF  :h_start_proc <= 8 
+  AND :h_end_proc   >= 8
+  THEN
+
+    h_return = CALLPROC msaaa_fp_sas_regions ();
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Process 8 failed to run correctly.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ELSE
+      h_text = 'NOTE: Process 8 has run correctly.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+    ENDIF;
+
+  ENDIF;
+
+  /*....................................................................
+     NOTE: Processes 9 through 11 were obsolete and have been removed.
+     The only reason that 12 and 13 have not been combined in a single 
+     process conditional on the g_type setting is to allow increased 
+     flexibility in running using prodcom production control. (DF)
+  ....................................................................*/
+
+  /*------------------------------------------------------------------
+     Process 12 - Full gains and losses file production.
+  ------------------------------------------------------------------*/
+
+  IF  :h_start_proc <= 12 
+  AND :h_end_proc   >= 12
+  THEN
+
+    h_return = CALLPROC msaaa_fp_gains_losses ();
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Process 12 failed to run correctly.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ELSE
+      h_text = 'NOTE: Process 12 has run correctly.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+    ENDIF;
+
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+     Process 13 - KEY Gains & Losses file production (DUMMY RUNS)
+  ----------------------------------------------------------------------*/
+
+  IF  :h_start_proc <= 13 
+  AND :h_end_proc   >= 13
+  THEN
+
+    h_return = CALLPROC msaaa_fp_key_gains_losses ();
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Process 13 failed to run correctly.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ELSE
+      h_text = 'NOTE: Process 13 has run correctly.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     If gains and losses file produced, sign off.
+  ------------------------------------------------------------------*/
+
+  IF h_end_proc = 12
+  OR h_end_proc = 13
+  THEN
+ 
+    IF g_type = 'D'
+    THEN
+      CALLPROC write_to_process_log
+      ( p_frpr_name = :h_frpr_name,
+        p_code      = 0,
+        p_text      = 'COMPLETED: DUMMY CONTRIBUTOR SELECTION SUCCESSFUL.');
+
+    ELSE
+
+      UPDATE industry
+      SET industry_cycle_point = 'C';
+
+      h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return != 0
+      THEN
+        h_text = 'ERROR: Failed to update industry cycle point to "C".';
+        CALLPROC write_to_process_log
+               ( p_frpr_name = :h_frpr_name,
+                 p_code      = :h_return,
+                 p_text      = :h_text);
+        RETURN 9;
+      ENDIF;
+
+      h_text = 'NOTE: industry cycle point updated to "C".';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+
+      CALLPROC write_to_process_log
+      ( p_frpr_name = :h_frpr_name,
+        p_code      = 0,
+        p_text      = 'COMPLETED: LIVE CONTRIBUTOR SELECTION SUCCESSFUL.');
+    ENDIF;
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = '*SIGNOFF*');
+
+  ELSE
+
+      CALLPROC write_to_process_log
+      ( p_frpr_name = :h_frpr_name,
+        p_code      = 0,
+        p_text      = 'SUSPENDED: REQUESTED PROCEDURES RAN SUCCESSFULLY.');
+
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/*************************** LOCAL PROCEDURES ********************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

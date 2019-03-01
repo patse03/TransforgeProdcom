@@ -1,0 +1,175 @@
+/*****************************************************************************
+
+msaaa_fp_sas_regions
+
+This procedure produces two output files for use by SAS.
+
+contributor-region-<yyyy00>.csv
+A list of each contributor selected and the region code it has assigned to it.
+
+region-descriptions-<yyyy00>.csv
+A list of teh region codes and their text descriptions.
+
+CHANGE LOG
+Aug 2015 - DF - Initial release.
+
+*****************************************************************************/
+
+PROCEDURE msaaa_fp_sas_regions () =
+
+DECLARE
+  h_return          = INTEGER1    NOT NULL WITH DEFAULT,
+  h_frpr_name       = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_text            = VARCHAR(80) NOT NULL WITH DEFAULT,
+  h_table           = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_filename        = VARCHAR(99) NOT NULL WITH DEFAULT,
+
+  lp_error_check    = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+
+  h_frpr_name = 'msaaa_fp_sas_regions';
+  h_table     = 'csl_sas_regions';
+
+  /*------------------------------------------------------------------
+    Log start of process.
+  ------------------------------------------------------------------*/
+
+  h_text = 'NOTE: Starting process 8.';
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = :h_text);
+
+  /*------------------------------------------------------------------
+    Drop semi-permanent table.
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC batch_fp_drop_table (h_table = :h_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure. */
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Create semi-permanent table.
+  ------------------------------------------------------------------*/
+
+  CREATE TABLE :h_table
+  AS
+  SELECT contributor_reference,
+         region
+  FROM   contributor_period
+  WHERE  period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Modify semi-permanent table.
+  ------------------------------------------------------------------*/
+
+  MODIFY :h_table TO BTREE UNIQUE
+      ON contributor_reference;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Output to contributor regional data to file
+  ------------------------------------------------------------------*/
+
+  h_filename = '/prodcom/live5/files/sas/contributor-region-'
+             + SQUEEZE(VARCHAR(:g_period))
+             + '.csv';
+
+  COPY TABLE :h_table
+           ( contributor_reference = c0comma,
+             region                = c0nl) 
+  INTO :h_filename;
+  
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to copy out ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Output to region description data to file
+  ------------------------------------------------------------------*/
+
+  h_filename = '/prodcom/live5/files/sas/region-descriptions-'
+             + SQUEEZE(VARCHAR(:g_period))
+             + '.txt';
+
+  COPY TABLE region
+           ( region      = c(0)'^',
+             description = c0nl) 
+  INTO :h_filename;
+  
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to copy out region table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+
+/************************* LOCAL PROCEDURES ***************************/
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   l_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  l_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:l_return,9);
+
+}
+

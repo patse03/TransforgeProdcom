@@ -1,0 +1,123 @@
+/****************************************************************************
+
+msaaa_fp_up_new_contribs
+
+Creates table of new contributors for use in losses and gains etc. 
+
+****************************************************************************/
+
+PROCEDURE msaaa_fp_up_new_contribs () =
+
+DECLARE 
+  h_return          = INTEGER1    NOT NULL WITH DEFAULT,
+  h_frpr_name       = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_text            = VARCHAR(80) NOT NULL WITH DEFAULT,
+  h_table           = VARCHAR(24) NOT NULL WITH DEFAULT,
+
+  lp_error_check    = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name = 'msaaa_fp_up_new_contribs';
+  h_table     = 'csl_new_contribs';
+
+  /*------------------------------------------------------------------
+    Log start of process.
+  ------------------------------------------------------------------*/
+
+  h_text = 'NOTE: Starting process 6.';
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = :h_text);
+
+  /*------------------------------------------------------------------
+    Drop semi-permanent table.
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC batch_fp_drop_table (h_table = :h_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure. */
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Create semi-permanent table.
+  ------------------------------------------------------------------*/
+
+  CREATE TABLE :h_table
+  AS 
+  SELECT contributor_reference,
+         contributor_industry,
+         period,
+         register_emp AS reg_emp,
+         structure,
+         company,
+         region
+  FROM   contributor_period
+  WHERE  period = :g_period
+    AND  contributor_reference NOT IN 
+      ( SELECT contributor_reference
+        FROM   contributor_period
+        WHERE  period = :g_prev_period1);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Modify semi-permanent table.
+  ------------------------------------------------------------------*/
+
+  MODIFY :h_table TO BTREE UNIQUE
+      ON contributor_reference;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/************************* LOCAL PROCEDURES ***************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

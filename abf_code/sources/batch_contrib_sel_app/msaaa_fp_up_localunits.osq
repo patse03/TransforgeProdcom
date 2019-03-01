@@ -1,0 +1,244 @@
+/*----------------------------------------------------------------------
+Procedure  msaaa_fp_up_localunits
+----------------------------------------------------------------------*/
+
+PROCEDURE msaaa_fp_up_localunits () =
+
+DECLARE 
+  h_return          = INTEGER1     NOT NULL WITH DEFAULT,
+  h_frpr_name       = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_table           = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_text            = VARCHAR(80)  NOT NULL WITH DEFAULT,
+  h_period          = INTEGER4     NOT NULL WITH DEFAULT,
+  h_idbr_file       = VARCHAR(100) NOT NULL WITH DEFAULT,
+
+  lp_error_check    = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name = 'msaaa_fp_up_localunits';
+  h_table     = 'tt_up_localunits';
+  h_period    = :g_period / 100;
+
+  h_idbr_file = :g_path_name1 + '/ludets014_' + VARCHAR(:h_period) + '12';
+
+  /*------------------------------------------------------------------
+    Log start of process.
+  ------------------------------------------------------------------*/
+
+  h_text = 'NOTE: Starting process 5.';
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = :h_text);
+
+  /*------------------------------------------------------------------
+    Create a temporary table to hold the register lu address file
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC batch_fp_drop_table(h_table = :h_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure. */
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE :h_table 
+       ( ruref          CHAR(11) NOT NULL,
+         entref         CHAR(10) NOT NULL,
+         luref          CHAR(8) NOT NULL,
+         checkletter    CHAR(1) NOT NULL,
+         rusic92        CHAR(5) NOT NULL,
+         rusic2007      CHAR(5) NOT NULL,
+         employees      INTEGER4 NOT NULL,
+         employment     INTEGER4 NOT NULL,
+         FTEemployees   INTEGER4 NOT NULL,
+         luname1        CHAR(35) NOT NULL,
+         luname2        CHAR(35) NOT NULL,
+         luname3        CHAR(35) NOT NULL,
+         luaddr1        CHAR(30) NOT NULL,
+         luaddr2        CHAR(30) NOT NULL,
+         luaddr3        CHAR(30) NOT NULL,
+         luaddr4        CHAR(30) NOT NULL,
+         luaddr5        CHAR(30) NOT NULL,
+         lupostcode     CHAR(8) NOT NULL,
+         tradstyle1     CHAR(35) NOT NULL,
+         tradstyle2     CHAR(35) NOT NULL,
+         tradstyle3     CHAR(35) NOT NULL,
+         region         CHAR(2) NOT NULL);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF; 
+
+  /*------------------------------------------------------------------
+    Copy the data form the register file to the temporary table
+  ------------------------------------------------------------------*/
+
+  COPY TABLE :h_table 
+     ( ruref        = c0colon,
+       entref       = c0colon,
+       luref        = c0colon,
+       checkletter  = c0colon,
+       rusic92      = c0colon,
+       rusic2007    = c0colon,
+       employees    = c0colon,
+       employment   = c0colon,
+       FTEemployees = c0colon,
+       luname1      = c0colon,
+       luname2      = c0colon,
+       luname3      = c0colon,
+       luaddr1      = c0colon,
+       luaddr2      = c0colon,
+       luaddr3      = c0colon,
+       luaddr4      = c0colon,
+       luaddr5      = c0colon,
+       lupostcode   = c0colon,
+       tradstyle1   = c0colon,
+       tradstyle2   = c0colon,
+       tradstyle3   = c0colon,
+       region       = c0nl)
+    FROM :h_idbr_file;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to populate ' +:h_table +' from IDBR file.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF; 
+
+  /*------------------------------------------------------------------
+    Update the IDBR unproven units that start with an 'X' to an '8' as
+    this character field needs to be converted to integer for forms
+    printing
+  ------------------------------------------------------------------*/
+
+  UPDATE :h_table
+  SET    luref = concat('8',right(luref,7))
+  WHERE  (luref LIKE 'X%' OR luref LIKE 'x%');
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to change leading "X" to "8" for unproven LUs.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF; 
+
+  /*------------------------------------------------------------------
+    Delete pre-existing data for this period from permanent table.
+  ------------------------------------------------------------------*/
+
+  DELETE FROM contributor_luaddress
+  WHERE       period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to delete existing data from permanent table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF; 
+
+  /*------------------------------------------------------------------
+    Insert the local units into the permanent table
+  ------------------------------------------------------------------*/
+
+  INSERT INTO contributor_luaddress 
+       ( contributor_reference,
+         lu_reference,
+         period,
+         lu_name1,
+         lu_name2,
+         lu_name3,
+         lu_addr1,
+         lu_addr2,
+         lu_addr3,
+         lu_addr4,
+         lu_addr5,
+         lu_postcode,
+         register_emp,
+         lu_region)
+  SELECT ruref,
+         luref,
+         :g_period,
+         luname1,
+         luname2,
+         luname3,
+         luaddr1,
+         luaddr2,
+         luaddr3,
+         luaddr4,
+         luaddr5,
+         lupostcode,
+         employment,
+         region
+  FROM   :h_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to insert this periods data into permanent table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF; 
+
+  /*------------------------------------------------------------------
+    Tidy up temp table.
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC batch_fp_drop_table(h_table = :h_table);
+
+  RETURN 0;
+
+}
+
+/************************* LOCAL PROCEDURES *******************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

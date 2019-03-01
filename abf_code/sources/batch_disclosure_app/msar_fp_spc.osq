@@ -1,0 +1,818 @@
+
+/*----------------------------------------------------------------------------e
+   Ingres 4GL code for procedure msar_fp_spc
+
+   Description    : Send disclosure files to SPC to print forms. 
+
+
+   Author         : Claire Gladwin
+
+   Date written   : Feb 11 
+
+   Version        : 1
+
+   Application    : batch_disclosure_app
+
+   Calls          :
+
+   Called by      : msar_fp_cr_letters
+
+   Change history :  
+----------------------------------------------------------------------------*/
+PROCEDURE msar_fp_spc (h_table_name = varchar(24) not null,
+		       h_type = char(1) not null) = 
+
+DECLARE ret_val         = SMALLINT     NOT NULL,
+        h_frpr_name     = VARCHAR(24) NOT NULL,
+	h_table_name_3  = VARCHAR(30)  NOT NULL,
+	h_table_name_4  = VARCHAR(30)  NOT NULL,
+        h_print_month   = CHAR(6)      NOT NULL,
+	h_command1      = VARCHAR(250) NOT NULL,
+        h_user_id       = CHAR(10)     NOT NULL,
+	h_first_name    = CHAR(15)     NOT NULL,
+        h_prev_period   = INTEGER4     NOT NULL,
+        h_supplier_no	= CHAR(11)     NOT NULL,
+        h_total_pages	= INTEGER      NOT NULL,
+        h_prev_user_id	= CHAR(10)     NOT NULL,
+        h_prev_month	= INTEGER4     NOT NULL,
+        h_source_month	= INTEGER4     NOT NULL,
+        h_check_month   = INTEGER4     NOT NULL,
+
+        lp_tables_exist     = PROCEDURE RETURNING INTEGER,
+        lp_upd_table_1      = PROCEDURE RETURNING INTEGER,
+        lp_checkletter      = PROCEDURE RETURNING INTEGER,
+        lp_copy_tables      = PROCEDURE RETURNING INTEGER
+
+BEGIN
+
+/*------------------------------------------------------------------------
+Set up the table names.
+------------------------------------------------------------------------*/
+
+h_table_name = :h_table_name;
+h_table_name_3 = 'disc_supps'; 
+h_table_name_4 = 'disc_items';
+
+/*------------------------------------------------------------------------
+Drop tables.
+------------------------------------------------------------------------*/
+
+    ret_val = CALLPROC lp_tables_exist(table_name = :h_table_name_3);
+
+  IF ret_val != 0 THEN 
+     RETURN 9;
+  ENDIF;
+
+    ret_val = CALLPROC lp_tables_exist(table_name = :h_table_name_4);
+
+  IF ret_val != 0 THEN 
+     RETURN 9;
+  ENDIF;
+
+    ret_val = CALLPROC lp_tables_exist(table_name = 'tt_supplier_nos');
+
+  IF ret_val != 0 THEN 
+     RETURN 9;
+  ENDIF;
+
+    ret_val = CALLPROC lp_tables_exist(table_name = 'tt_checkletter_supps');
+
+  IF ret_val != 0 THEN 
+     RETURN 9;
+  ENDIF;
+
+/*------------------------------------------------------------------------- 
+Create table disc_supps which will produce the file to be passed to SPC.
+-------------------------------------------------------------------------*/
+message 'Creating table ' + :h_table_name_3;
+
+      CREATE TABLE :h_table_name_3
+             (ruref char(11) not null,
+              checkletter char(1) not null,
+              contributor_industry char(5) not null with default,
+              addressee char(30) not null with default,
+              add_name1 char(35) not null with default,
+              add_name2 char(35) not null with default,
+              add_name3 char(35) not null with default,
+              add_tradstyle1 char(35) not null with default,
+              add_tradstyle2 char(35) not null with default,
+              add_tradstyle3 char(35) not null with default,
+              add_line1 char(30) not null with default,
+              add_line2 char(30) not null with default,
+              add_line3 char(30) not null with default,
+              add_line4 char(30) not null with default,
+              add_line5 char(30) not null with default,
+              add_postcode char(8) not null with default,
+              name_1 char(24) not null with default,
+              ext_1 char(4) not null with default,
+	      legal_status char(1) not null with default,
+	      region char(2) not null with default,
+              formtype char(4) not null with default,
+	      welsh char(1) not null with default);
+
+  ret_val = CALLPROC  batch_check_inq_ing (h_num_row_ck = 1,
+					   h_commit = 'Y',
+				           h_rollback = 'N',
+				           h_frpr_name = :h_frpr_name);
+
+  IF ret_val = 9 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'System error creating table ' + :h_table_name_3,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ELSEIF ret_val != 0 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'Failed to create table ' + :h_table_name_3,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ENDIF;
+
+/*------------------------------------------------------------------------- 
+Insert into disc_supps.
+-------------------------------------------------------------------------*/
+message 'Insert into table ' + :h_table_name_3 + ' ' + varchar(date('now'));
+
+      INSERT INTO :h_table_name_3
+      SELECT DISTINCT a.contributor_reference as ruref,
+            ' ' as checkletter,
+            varchar(a.contributor_industry),
+            a.addressee,
+            a.add_name1,
+            a.add_name2,
+            a.add_name3,
+            a.add_tradstyle1,
+            a.add_tradstyle2,
+            a.add_tradstyle3,
+            a.add_line1,
+            a.add_line2,
+            a.add_line3,
+            a.add_line4,
+            a.add_line5,
+            a.add_postcode,
+            a.name1,
+            a.ext1,
+	    varchar(a.legal_status),
+	    a.region,
+            '    ' as formtype,
+	    ' ' as welsh
+            FROM :h_table_name a;
+
+  ret_val = CALLPROC  batch_check_inq_ing (h_num_row_ck = 1,
+					   h_commit = 'Y',
+				           h_rollback = 'N',
+				           h_frpr_name = :h_frpr_name);
+
+  IF ret_val = 9 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'System error inserting into table ' + :h_table_name_3,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ELSEIF ret_val != 0 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'Failed to insert into table ' + :h_table_name_3,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ENDIF;
+
+/*-------------------------------------------------------------------------
+Call local procedure to update table 1 with form type.
+-------------------------------------------------------------------------*/
+MESSAGE 'Call procedure to update form type.';
+
+      ret_val = CALLPROC lp_upd_table_1(lp_table_name_3 = :h_table_name_3,
+                                         lp_table_name = :h_table_name);
+
+  IF ret_val != 0 THEN
+     RETURN :ret_val;
+  ENDIF;
+
+/*-------------------------------------------------------------------------
+Create table disc_items. 
+-------------------------------------------------------------------------*/
+message 'Create table ' + :h_table_name_4 + ' ' + varchar(date('now'));
+
+      CREATE TABLE :h_table_name_4
+      AS SELECT '014' as inq_code,
+	    contributor_reference as ruref,
+	    question,
+            contributor_industry,
+            unit_1,
+            quest_order,
+	    need_count,
+	    text_line1,
+	    text_line2,
+	    text_line3,
+	    text_line4,
+	    text_line5,
+	    text_line6,
+	    text_line7,
+	    text_line8,
+	    text_line9,
+	    text_line10,
+            period
+      FROM  :h_table_name;
+
+  ret_val = CALLPROC  batch_check_inq_ing (h_num_row_ck = 1,
+					   h_commit = 'Y',
+				           h_rollback = 'N',
+				           h_frpr_name = :h_frpr_name);
+
+  IF ret_val = 9 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'System error creating table ' + :h_table_name_4,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ELSEIF ret_val != 0 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'Failed to create table ' + :h_table_name_4,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ENDIF;
+
+/*-------------------------------------------------------------------------
+Call local procedure to copy tables disc_supps & disc_items to spc.
+-------------------------------------------------------------------------*/
+MESSAGE 'Call procedure to copy tables.';
+
+      ret_val = CALLPROC lp_copy_tables(lp_table_name_3 = :h_table_name_3,
+					 lp_table_name_4 = :h_table_name_4);
+
+  IF ret_val != 0 THEN
+     RETURN :ret_val;
+  ENDIF;
+
+
+RETURN 0;
+
+END
+
+/*- Local procedure to check for existence of temporary
+    tables and drop them if they exist. -*/
+
+PROCEDURE lp_tables_exist(table_name = CHAR(24) NOT NULL) = 
+
+BEGIN
+
+SELECT table_name 
+  FROM iitables
+ WHERE table_name = :table_name
+   AND table_owner = :g_user_id;
+
+ret_val = CALLPROC  batch_check_inq_ing (h_num_row_ck = 0);
+
+IF ret_val > 1 THEN RETURN :ret_val; ENDIF;
+
+IF ret_val = 0 THEN RETURN 0; ENDIF;
+
+MODIFY :table_name to TRUNCATED;
+
+ret_val = CALLPROC  batch_check_inq_ing (h_num_row_ck = 0);
+
+IF ret_val > 1 THEN RETURN :ret_val; ENDIF;
+
+DROP TABLE :table_name;
+
+ret_val = CALLPROC  batch_check_inq_ing (h_num_row_ck = 1);
+
+IF ret_val > 1 THEN RETURN :ret_val; ENDIF;
+
+RETURN 0;
+
+END
+
+PROCEDURE lp_upd_table_1(lp_table_name_3 = varchar(30) not null with default,
+			 lp_table_name = varchar(30) not null with default)=
+
+BEGIN
+
+/*-------------------------------------------------------------------------
+Update disc_supps table with formtype.
+-------------------------------------------------------------------------*/
+
+      UPDATE :lp_table_name_3 
+	 SET formtype = '0001'
+      WHERE region != 'YY';  
+
+  ret_val = CALLPROC  batch_check_inq_ing (h_num_row_ck = 1,
+					   h_commit = 'Y',
+				           h_rollback = 'N',
+				           h_frpr_name = :h_frpr_name);
+
+  IF ret_val = 9 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'System error updating GB formtype on  table ' + :h_table_name_3,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ELSEIF ret_val != 0 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'Failed to update GB formtype on table ' + :h_table_name_3,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ENDIF;
+
+      UPDATE :lp_table_name_3 
+	 SET formtype = '0002'
+      WHERE region = 'YY';     
+
+  ret_val = CALLPROC  batch_check_inq_ing (h_num_row_ck = 1,
+					   h_commit = 'Y',
+				           h_rollback = 'N',
+				           h_frpr_name = :h_frpr_name);
+
+  IF ret_val = 9 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'System error updating NI formtype on  table ' + :h_table_name_3,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ELSEIF ret_val != 0 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'Failed to update NI formtype on table ' + :h_table_name_3,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ENDIF;
+/***/
+
+      UPDATE :lp_table_name_3 a 
+        FROM welsh_forms b
+	 SET welsh = 'W'
+      WHERE  a.ruref = b.contributor_reference    
+      AND b.period = :g_period;
+
+  ret_val = CALLPROC  batch_check_inq_ing (h_num_row_ck = 2,
+					   h_commit = 'Y',
+				           h_rollback = 'N',
+				           h_frpr_name = :h_frpr_name);
+
+  IF ret_val = 9 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'System error updating Welsh marker on table ' + :h_table_name_3,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ELSEIF ret_val != 0 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'Failed to update Welsk marker on table ' + :h_table_name_3,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ENDIF;
+/***/
+RETURN 0;
+
+END
+
+PROCEDURE lp_checkletter(lp_table_name_3 = varchar(30) not null with default)=
+
+BEGIN
+
+/*-------------------------------------------------------------------------
+Create table tt_supplier_nos.
+-------------------------------------------------------------------------*/
+
+      CREATE TABLE tt_supplier_nos
+      (supplier_no varchar(11) not null,
+       checkletter char(1) not null);
+
+  ret_val = CALLPROC  batch_check_inq_ing (h_num_row_ck = 1,
+					   h_commit = 'Y',
+				           h_rollback = 'N',
+				           h_frpr_name = :h_frpr_name);
+
+  IF ret_val = 9 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'System error creating table tt_supplier_nos',
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ELSEIF ret_val != 0 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'Failed to create table tt_supplier_nos',
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ENDIF;
+
+/*-------------------------------------------------------------------------
+Insert suppliers from disc_supps into tt_supplier_nos.
+-------------------------------------------------------------------------*/
+
+      INSERT INTO tt_supplier_nos
+      SELECT DISTINCT ruref as supplier_no,
+		      ' ' as checkletter
+      FROM :lp_table_name_3;
+
+  ret_val = CALLPROC  batch_check_inq_ing (h_num_row_ck = 1,
+					   h_commit = 'Y',
+				           h_rollback = 'N',
+				           h_frpr_name = :h_frpr_name);
+
+  IF ret_val = 9 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'System error inserting into table tt_supplier_nos',
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ELSEIF ret_val != 0 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'Failed to insert into table tt_supplier_nos',
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ENDIF;
+
+/*----------------------------------------------------------------------
+Copy tt_supplier_nos out to a file in order to get a checkletter for
+the suppliers.
+-----------------------------------------------------------------------*/
+
+      COPY tt_supplier_nos
+      (supplier_no = c0comma,
+       checkletter = c0nl)
+      INTO :g_path_name2+'/spc_supps_in.csv';
+
+  ret_val = CALLPROC  batch_check_inq_ing (h_num_row_ck = 1,
+					   h_commit = 'Y',
+				           h_rollback = 'N',
+				           h_frpr_name = :h_frpr_name);
+
+  IF ret_val = 9 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'System error copying table tt_supplier_nos',
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ELSEIF ret_val != 0 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'Failed to copy table tt_supplier_nos',
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ENDIF;
+
+/*----------------------------------------------------------------------
+Run the script to allocate a checkletter for each supplier for IDBR purposes.
+-----------------------------------------------------------------------*/
+
+ h_command1 = '/home/prodcom/admin/proddev/scripts/msai_cp_checkletter_3' + ' '
+ + :g_path_name2+'/spc_supps_in.csv' + ' '
+ + :g_path_name2+'/spc_supps_out.csv';
+
+
+  ret_val = CALLPROC msa_cp_callsys(:h_command1);
+
+  IF ret_val != 0 THEN
+     RETURN :ret_val;
+  ENDIF;
+
+/*----------------------------------------------------------------------
+Create table tt_checkletter_supps.
+-----------------------------------------------------------------------*/
+
+      CREATE TABLE tt_checkletter_supps
+      (supplier_no    varchar(11)     not null,
+       checkletter    char(1)         not null);
+
+  ret_val = CALLPROC  batch_check_inq_ing (h_num_row_ck = 1,
+					   h_commit = 'Y',
+				           h_rollback = 'N',
+				           h_frpr_name = :h_frpr_name);
+
+  IF ret_val = 9 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'System error creating table tt_checkletter_supps',
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ELSEIF ret_val != 0 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'Failed to create table tt_checkletter_supps',
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ENDIF;
+
+/*----------------------------------------------------------------------
+Copy the file of supliers and checkletters into table tt_checkletter_supps.
+-----------------------------------------------------------------------*/
+
+      COPY tt_checkletter_supps
+      (supplier_no = c0colon,
+       checkletter = c0nl)
+      FROM :g_path_name2+'/spc_supps_out.csv';
+
+  ret_val = CALLPROC  batch_check_inq_ing (h_num_row_ck = 1,
+					   h_commit = 'Y',
+				           h_rollback = 'N',
+				           h_frpr_name = :h_frpr_name);
+
+  IF ret_val = 9 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'System error copying table tt_checkletter_supps',
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ELSEIF ret_val != 0 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'Failed to copy_tt_checkletter_supps',
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ENDIF;
+
+/*----------------------------------------------------------------------
+Update disc_supps table with the new checkletter.
+-----------------------------------------------------------------------*/
+
+      UPDATE :lp_table_name_3 a
+      FROM tt_checkletter_supps b
+      SET checkletter = b.checkletter
+      WHERE a.ruref = b.supplier_no;
+
+  ret_val = CALLPROC  batch_check_inq_ing (h_num_row_ck = 1,
+					   h_commit = 'Y',
+				           h_rollback = 'N',
+				           h_frpr_name = :h_frpr_name);
+
+  IF ret_val = 9 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'System error updating checkletter on table ' + :h_table_name_3,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ELSEIF ret_val != 0 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'Failed to update checkletter on table ' + :h_table_name_3,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ENDIF;
+
+RETURN 0;
+
+END
+
+PROCEDURE lp_copy_tables(lp_table_name_3 = varchar(30) not null with default,
+			 lp_table_name_4 = varchar(30) not null with default)=
+
+DECLARE	                 lp_file         = varchar(25) not null,
+	                 lp_file2        = varchar(25) not null
+
+BEGIN
+
+/*-------------------------------------------------------------------------
+Copy table disc_supps to admin scratch for SPC to pick up.
+-------------------------------------------------------------------------*/
+IF :h_type = 'l' THEN
+
+lp_file = 'disclosure0' + varchar(:g_inquiry) + '_' + varchar(:g_period);
+lp_file2 = 'disclosureitems0' + varchar(:g_inquiry) + '_' + varchar(:g_period);
+
+ELSEIF :h_type = 'r' THEN
+
+lp_file = 'remdisc0' + varchar(:g_inquiry) + '_' + varchar(:g_period);
+lp_file2 = 'remdiscitems0' + varchar(:g_inquiry) + '_' + varchar(:g_period);
+
+ENDIF;
+
+      COPY TABLE :lp_table_name_3
+           (ruref = c0tab,
+	    contributor_industry = c0tab,
+            addressee = c0tab,
+            add_name1 = c0tab,
+            add_name2 = c0tab,
+            add_name3 = c0tab,
+	    add_tradstyle1 = c0tab,
+	    add_tradstyle2 = c0tab,
+	    add_tradstyle3 = c0tab,
+            add_line1 = c0tab,
+            add_line2 = c0tab,
+            add_line3 = c0tab,
+            add_line4 = c0tab,
+            add_line5 = c0tab,
+            add_postcode = c0tab,
+            name_1 = c0tab,
+            ext_1 = c0tab,
+	    legal_status = c0tab,
+	    region = c0tab,
+            formtype = c0tab,
+	    welsh = c0nl)
+      INTO :g_path_name2+'/' + trim(:lp_file);
+
+  ret_val = CALLPROC  batch_check_inq_ing (h_num_row_ck = 1,
+					   h_commit = 'Y',
+				           h_rollback = 'N',
+				           h_frpr_name = :h_frpr_name);
+
+  IF ret_val = 9 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'System error copying table ' + :h_table_name_3,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ELSEIF ret_val != 0 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'Failed to copy table ' + :h_table_name_3,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ENDIF;
+
+/*-------------------------------------------------------------------------
+Copy table disc_items to admin scratch for SPC to pick up.
+-------------------------------------------------------------------------*/
+
+      COPY TABLE :lp_table_name_4
+          (inq_code               = c(0)'^',
+	   ruref                  = c(0)'^',
+	   question               = c(0)'^',
+	   contributor_industry   = c(0)'^',
+           unit_1                 = c(0)'^',
+           quest_order            = c(0)'^',
+	   need_count             = c(0)'^',
+           text_line1             = c(0)'^',
+           text_line2             = c(0)'^',
+           text_line3             = c(0)'^',
+           text_line4             = c(0)'^',
+           text_line5             = c(0)'^',
+           text_line6             = c(0)'^',
+           text_line7             = c(0)'^',
+           text_line8             = c(0)'^',
+           text_line9             = c(0)'^',
+           text_line10            = c(0)'^',
+           period                 = c0nl)
+      INTO :g_path_name2+'/' + trim(:lp_file2);
+      
+
+  ret_val = CALLPROC  batch_check_inq_ing (h_num_row_ck = 1,
+					   h_commit = 'Y',
+				           h_rollback = 'N',
+				           h_frpr_name = :h_frpr_name);
+
+  IF ret_val = 9 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'System error copying table ' + :h_table_name_4,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ELSEIF ret_val != 0 THEN
+
+     INSERT INTO error_log
+     VALUES ('now',
+	     'Failed to copy table ' + :h_table_name_4,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+     COMMIT;
+     RETURN ret_val;
+
+  ENDIF;
+
+RETURN 0;
+
+END
+

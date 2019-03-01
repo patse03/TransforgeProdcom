@@ -1,0 +1,1034 @@
+/*----------------------------------------------------------------------
+
+procedure msaaa_fp_gains_losses
+
+  This produces a file for IDBR containing the key gains & losses for 
+  a certain period:
+
+  It also produces two files for RAP team:
+   S-type file, containing all losses and gains from sample rotation
+   C-type file, containing all losses and gains from the 1 in 1's.
+
+  It is only possible to run Gains and Losses for the current period.
+
+----------------------------------------------------------------------*/
+
+PROCEDURE msaaa_fp_gains_losses () =
+
+DECLARE 
+  h_return      = INTEGER4     NOT NULL WITH DEFAULT,
+  h_text        = VARCHAR(70)  NOT NULL WITH DEFAULT,
+  h_table       = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_table_c     = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_table_s     = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_table_i     = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_new_table   = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_directory   = VARCHAR(100) NOT NULL WITH DEFAULT,
+  h_filename_c  = VARCHAR(100) NOT NULL WITH DEFAULT,
+  h_filename_s  = VARCHAR(100) NOT NULL WITH DEFAULT,
+  h_filename_i  = VARCHAR(100) NOT NULL WITH DEFAULT,
+  h_command     = VARCHAR(300) NOT NULL WITH DEFAULT,
+  h_old_table   = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_idbr_period = INTEGER(4)   NOT NULL WITH DEFAULT,
+  h_any_s_type  = VARCHAR(1)   NOT NULL WITH DEFAULT,
+  h_frpr_name   = VARCHAR(32)  NOT NULL WITH DEFAULT,
+
+  lp_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name   = 'msaaa_fp_gains_losses';
+  h_table       = 'temp_gains_losses';
+  h_table_c     = 'temp_gains_losses_c';
+  h_table_s     = 'temp_gains_losses_s';
+  h_table_i     = 'temp_gains_losses_i';
+  h_new_table   = 'csl_new_contribs';
+  h_old_table   = 'csl_old_contribs';
+  h_any_s_type  = 'Y';
+  h_idbr_period = :g_period + 12;
+
+  IF :g_database = 'prodlivedb'
+  OR :g_database = 'prodclonedb'
+  THEN
+    h_filename_s = '/admin/scratch/gains_losses_s_' 
+                 + VARCHAR(:g_period) + '.txt';
+    h_filename_c = '/admin/scratch/gains_losses_c_' 
+                 + VARCHAR(:g_period) + '.txt';
+    h_filename_i = '/idbr/live20/infer/iss/prodgainloss014_'
+                 + VARCHAR(:h_idbr_period);
+  ELSE
+    h_filename_s = '/admin/scratch/TEST_gains_losses_s_' 
+                 + VARCHAR(:g_period) + '.txt';
+    h_filename_c = '/admin/scratch/TEST_gains_losses_c_' 
+                 + VARCHAR(:g_period) + '.txt';
+    h_filename_i = '/admin/scratch/TEST_prodgainloss014_'
+                 + VARCHAR(:h_idbr_period);
+  ENDIF;
+
+  /*------------------------------------------------------------------
+       Log start of process.
+  ------------------------------------------------------------------*/
+
+  SELECT IFNULL(MAX(log_no),0) AS g_log_no
+  FROM   :g_log_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select log number from process log table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  h_text = 'NOTE: Starting Process 12.';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  /*------------------------------------------------------------------
+      Drop and create temp table
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC batch_fp_drop_table(h_table = :h_table);
+
+  IF h_return = 9
+  THEN
+    h_text = 'ERROR: Failed to drop table ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table 
+       ( inquiry               CHAR(3)  NOT NULL,
+         period                INTEGER4 NOT NULL,
+         contributor_reference CHAR(11) NOT NULL,
+         gl_type               INTEGER1 NOT NULL,
+         prev_idbr_sic         CHAR(5)  NOT NULL,
+         prev_sic              INTEGER4 NOT NULL,
+         curr_sic              INTEGER4 NOT NULL,
+         prev_cutoff           INTEGER4 NOT NULL,
+         curr_cutoff           INTEGER4 NOT NULL,
+         prev_idbr_emp         INTEGER4 NOT NULL,
+         prev_reg_emp          INTEGER4 NOT NULL,
+         curr_reg_emp          INTEGER4 NOT NULL,
+         prev_cutoff_flag      CHAR(1) NOT NULL,
+         cutoff_flag           CHAR(1) NOT NULL,
+         add_name1             CHAR(35) NOT NULL,
+         add_name2             CHAR(35) NOT NULL,
+         add_name3             CHAR(35) NOT NULL,
+         add_line1             CHAR(30) NOT NULL,
+         add_line2             CHAR(30) NOT NULL,
+         add_line3             CHAR(30) NOT NULL,
+         add_line4             CHAR(30) NOT NULL,
+         add_line5             CHAR(30) NOT NULL,
+         add_postcode          CHAR(8) NOT NULL,
+         region                CHAR(2) NOT NULL,
+         comments              VARCHAR(40) NOT NULL,
+         birthdate             DATE NOT NULL,
+         legal_status          INTEGER1 NOT NULL,
+         selection_type        CHAR(1) NOT NULL);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+   
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create table ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Insert reclassifications twice - first for GAINS (gl_type = 2)
+    gl_type=2 means "Reclassification Gain" (not a TRUE gain).
+  ------------------------------------------------------------------*/
+
+  INSERT INTO  :h_table
+  SELECT       '014',
+               :g_period,
+               a.contributor_reference,
+               2,
+               '0',
+               a.contributor_industry,
+               b.contributor_industry,
+               0,
+               0,
+               0,
+               a.register_emp,
+               b.register_emp,
+               '',
+               '',
+               '',
+               '',
+               '',
+               '',
+               '',
+               '',
+               '',
+               '',
+               '',
+               b.region,
+               '',
+               '',
+               0,
+               'C'
+  FROM         contributor_period a,
+               contributor_period b
+  WHERE        a.period = :g_prev_period1
+    AND        b.period = :g_period
+    AND        a.contributor_reference = b.contributor_reference
+    AND        a.contributor_industry != b.contributor_industry;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to insert reclass gains into ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Insert reclassifications twice - second for LOSSES (gl_type = 4)
+    gl_type=4 means "Reclassification Loss" (not a TRUE loss).
+  ------------------------------------------------------------------*/
+
+  INSERT INTO  :h_table
+  SELECT       '014',
+               :g_period,
+               a.contributor_reference,
+               4,
+               '0',
+               a.contributor_industry,
+               b.contributor_industry,
+               0,
+               0,
+               0,
+               a.register_emp,
+               b.register_emp,
+               '',
+               '',
+               '',
+               '',
+               '',
+               '',
+               '',
+               '',
+               '',
+               '',
+               '',
+               b.region,
+               '',
+               '',
+               0,
+               'C'
+  FROM         contributor_period a,
+               contributor_period b
+  WHERE        a.period = :g_prev_period1
+    AND        b.period = :g_period
+    AND        a.contributor_reference = b.contributor_reference
+    AND        a.contributor_industry != b.contributor_industry;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to insert reclass losses into ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    TRUE Gains: the refs who were not selected for the previous period
+    (gl_type = 1)
+  ------------------------------------------------------------------*/
+
+  INSERT INTO :h_table
+  SELECT      '014',
+              :g_period,
+              contributor_reference,
+              1,
+              '0',
+              0,
+              contributor_industry,
+              0,
+              0,
+              0,
+              0,
+              reg_emp,
+              '',
+              '',
+              '',
+              '',
+              '',
+              '',
+              '',
+              '',
+              '',
+              '',
+              '',
+              region,
+              '',
+              '',
+              0,
+              'C'
+  FROM        :h_new_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to insert true gains into ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    TRUE Losses: the refs who were not selected for the current period
+    (gl_type 3)
+  ------------------------------------------------------------------*/
+
+  INSERT INTO :h_table
+  SELECT      '014',
+              :g_period,
+              contributor_reference,
+              3,
+              '0',
+              contributor_industry,
+              0,
+              0,
+              0,
+              0,
+              reg_emp,
+              0,
+              '',
+              '',
+              '',
+              '',
+              '',
+              '',
+              '',
+              '',
+              '',
+              '',
+              '',
+              region,
+              '',
+              '',
+              0,
+              'C'
+  FROM        :h_old_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to insert true losses into ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Modify
+  ------------------------------------------------------------------*/
+
+  MODIFY :h_table TO BTREE
+  ON     contributor_reference;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify structure of ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Add contributor name & address from contributor
+  ------------------------------------------------------------------*/
+
+  UPDATE :h_table a
+  FROM   contributor b
+  SET    add_name1 = b.add_name1,
+         add_name2 = b.add_name2,
+         add_name3 = b.add_name3,
+         add_line1 = b.add_line1,
+         add_line2 = b.add_line2,
+         add_line3 = b.add_line3,
+         add_line4 = b.add_line4,
+         add_line5 = b.add_line5,
+         add_postcode = b.add_postcode
+  WHERE  a.contributor_reference = b.contributor_reference;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update names and addresses on ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Add prev cutoff from industry_period
+  ------------------------------------------------------------------*/
+
+  UPDATE :h_table a
+  FROM   industry_period b
+  SET    prev_cutoff = b.emp_cutoff
+  WHERE  a.prev_sic = b.industry
+    AND  b.period = :g_prev_period1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update prev emp cutoff on ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Add flag to indicate prev PPS, and change the selection_type to S.
+  ------------------------------------------------------------------*/
+
+  UPDATE :h_table
+  SET    prev_cutoff_flag = 'S',
+         selection_type = 'S'
+  WHERE  prev_reg_emp < prev_cutoff;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update prev PPS cutoff on ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Add curr cutoff from industry_period
+  ------------------------------------------------------------------*/
+
+  UPDATE :h_table a
+  FROM   industry_period b
+  SET    curr_cutoff = b.emp_cutoff
+  WHERE  a.curr_sic = b.industry
+    AND  b.period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update current emp cutoff on ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Add flag to indicate curr PPS, and change the selection_type to S.
+  ------------------------------------------------------------------*/
+
+  UPDATE :h_table a
+  SET    cutoff_flag = 'S',
+         selection_type = 'S'
+  WHERE  curr_reg_emp < curr_cutoff;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update current PPS cutoff on ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Add the birthdate - from the selection file.
+  ------------------------------------------------------------------*/
+
+  UPDATE :h_table a
+  FROM   :g_reg_table b
+  SET    birthdate = b.birthdate
+  WHERE  a.contributor_reference = b.ruref;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update birth dates on ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Add the legal-status: get the most recent one
+  ------------------------------------------------------------------*/
+
+  UPDATE :h_table a
+  FROM   contributor_period b
+  SET    legal_status = b.legal_status
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  b.period =
+      (  SELECT MAX(period)
+          FROM   contributor_period c
+          WHERE  b.contributor_reference = c.contributor_reference
+            AND  c.period IN (:g_period,:g_prev_period1));
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update legal status on ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Update prev_sic and curr_sic with alt_industry.  
+     This will help users when accessing Lotus Notes database.
+  ------------------------------------------------------------------*/
+
+  UPDATE :h_table a
+  FROM   contributor_period b
+  SET    prev_sic = b.alt_industry
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.prev_sic != 0
+    AND  b.period = :g_prev_period1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update prev_sic on ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+
+  UPDATE :h_table a
+  FROM   contributor_period b
+  SET    curr_sic = b.alt_industry
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.curr_sic != 0
+    AND  b.period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update curr_sic on ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Update h_table with prev_idbr_sic  
+  ------------------------------------------------------------------*/
+
+  UPDATE :h_table a
+  FROM   finalsel_period b
+  SET    prev_idbr_sic = b.rusic92
+  WHERE  a.contributor_reference = b.ruref
+    AND  b.period                = :g_prev_period1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update prev_idbr_sic on ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Update h_table with prev_idbr_emp  
+  ------------------------------------------------------------------*/
+
+  UPDATE :h_table a
+  FROM   finalsel_period b
+  SET    prev_idbr_emp = b.employment
+  WHERE  a.contributor_reference = b.ruref
+    AND  b.period                = :g_prev_period1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update prev_idbr_emp on ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+       Update period with h_idbr_period   
+  ------------------------------------------------------------------*/
+
+  UPDATE :h_table 
+  SET    period = :h_idbr_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update idbr_period on ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+    Create table for idbr reduced file production
+  -----------------------------------------------------------------------*/
+
+  h_return = CALLPROC batch_fp_drop_table(h_table = :h_table_i);
+
+  IF h_return = 9
+  THEN
+    /* Error message handled in external procedure */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table_i 
+  AS
+  SELECT a.* 
+  FROM :h_table a
+  WHERE  a.selection_type = 'C'
+     OR  a.contributor_reference IN
+      (  SELECT DISTINCT b.contributor_reference
+         FROM  csl_inc_contributors b
+         WHERE b.contributor_reference = a.contributor_reference
+           AND b.for_period = :g_period ); 
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create ' + :h_table_i + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+    Copy out reduced file for IDBR Team prior to splitting.
+  -----------------------------------------------------------------------*/
+
+  COPY TABLE :h_table_i 
+     ( contributor_reference = c0colon,
+       gl_type               = c0colon,
+       prev_idbr_sic         = c0colon,
+       prev_idbr_emp         = c0colon,
+       selection_type        = c0nl)
+  INTO :h_filename_i;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create IDBR output file.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ELSE
+    h_text = 'NOTE: Created ' +:h_filename_i ;
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Remove any surplus whitespace:
+      First part of edit removes any spaces either side of a colon,
+      second part (after the ";") removes any trailling whitespace.
+  ------------------------------------------------------------------*/
+
+  h_command = 'sed -e"s/ *: */:/g;s/ *$//" ' + h_filename_i +
+              ' > ' + h_filename_i + '.tmp; mv ' + h_filename_i +
+              '.tmp ' + h_filename_i;
+
+  h_return = CALLPROC msa_cp_callsys(:h_command);
+
+  IF h_return = 9
+  THEN
+    h_text = 'ERROR: Failed to remove whitespace from IDBR output file.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Split the main table into two halves for RAP file creation.
+     * Selection_type = 'S' for contributors under the cutoff 
+     * Selection_type = 'C' for those over cutoff (1 in 1s)
+  ------------------------------------------------------------------*/
+
+  /*..................................................................
+       Create S - Type table.
+  ..................................................................*/
+
+  h_return = CALLPROC batch_fp_drop_table(h_table = :h_table_s);
+
+  IF h_return > 1
+  THEN
+    /* Error message handled in external procedure */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table_s
+  AS 
+  SELECT *
+  FROM   :h_table
+  WHERE  selection_type = 'S';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create ' + :h_table_s + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN
+    h_any_s_type = 'N';
+    h_text = 'NOTE: No S-Type gains or losses detected in this run.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  ENDIF;
+
+  /*..................................................................
+       Create C - Type table.
+  ..................................................................*/
+
+  h_return = CALLPROC batch_fp_drop_table(h_table = :h_table_c);
+
+  IF h_return > 1
+  THEN
+    /* Error message handled in external procedure */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table_c
+  AS 
+  SELECT *
+  FROM   :h_table
+  WHERE  selection_type = 'C';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create ' + :h_table_c + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Copy out S-type file for RAP Team if any S-type in keys.
+  ------------------------------------------------------------------*/
+
+  IF h_any_s_type = 'Y'
+  THEN
+
+    COPY TABLE :h_table_s (
+        inquiry               = c0colon,
+        period                = c0colon,
+        contributor_reference = c0colon,
+        gl_type               = c0colon,
+        prev_idbr_sic         = c0colon,
+        prev_sic              = c0colon,
+        curr_sic              = c0colon,
+        prev_cutoff           = c0colon,
+        curr_cutoff           = c0colon,
+        prev_idbr_emp         = c0colon,
+        prev_reg_emp          = c0colon,
+        curr_reg_emp          = c0colon,
+        add_name1             = c0colon,
+        add_name2             = c0colon,
+        add_name3             = c0colon,
+        add_line1             = c0colon,
+        add_line2             = c0colon,
+        add_line3             = c0colon,
+        add_line4             = c0colon,
+        add_line5             = c0colon,
+        add_postcode          = c0colon,
+        region                = c0colon,
+        comments              = c0colon,
+        birthdate             = c0colon,
+        legal_status          = c0colon,
+        selection_type        = c0nl)
+    INTO :h_filename_s;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to create S-Type output file.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ELSE
+      h_text = 'NOTE: Created ' +:h_filename_s;
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Remove any surplus whitespace:
+     first part of edit removes any spaces either side of a colon,
+     second part (after the ";") removes any trailling whitespace.
+    ------------------------------------------------------------------*/
+
+    h_command = 'sed -e"s/ *: */:/g;s/ *$//" ' + h_filename_s +
+                ' > ' + h_filename_s + '.tmp; mv ' + h_filename_s +
+                '.tmp ' + h_filename_s;
+
+    h_return = CALLPROC msa_cp_callsys(:h_command);
+
+    IF h_return > 1
+    THEN
+      h_text = 'ERROR: Failed to remove whitespace from S-Type output file.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Copy out C-type file for RAP Team
+  ------------------------------------------------------------------*/
+
+  COPY TABLE :h_table_c 
+     ( inquiry               = c0colon,
+       period                = c0colon,
+       contributor_reference = c0colon,
+       gl_type               = c0colon,
+       prev_idbr_sic         = c0colon,
+       prev_sic              = c0colon,
+       curr_sic              = c0colon,
+       prev_cutoff           = c0colon,
+       curr_cutoff           = c0colon,
+       prev_idbr_emp         = c0colon,
+       prev_reg_emp          = c0colon,
+       curr_reg_emp          = c0colon,
+       add_name1             = c0colon,
+       add_name2             = c0colon,
+       add_name3             = c0colon,
+       add_line1             = c0colon,
+       add_line2             = c0colon,
+       add_line3             = c0colon,
+       add_line4             = c0colon,
+       add_line5             = c0colon,
+       add_postcode          = c0colon,
+       region                = c0colon,
+       comments              = c0colon,
+       birthdate             = c0colon,
+       legal_status          = c0colon,
+       selection_type        = c0nl)
+  INTO :h_filename_c;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create C-Type output file.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ELSE
+    h_text = 'NOTE: Created ' +:h_filename_c; 
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Remove any surplus whitespace:
+      * First part of edit removes any spaces either side of a colon,
+      * Second part (after the ";") removes any trailling whitespace.
+  ------------------------------------------------------------------*/
+
+  h_command = 'sed -e"s/ *: */:/g;s/ *$//" ' + h_filename_c +
+              ' > ' + h_filename_c + '.tmp; mv ' + h_filename_c +
+              '.tmp ' + h_filename_c;
+
+  h_return = msa_cp_callsys (h_command);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to remove whitespace from S-Type output file.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+                        
+  /*------------------------------------------------------------------
+      Tidy up temp tables.
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC batch_fp_drop_table(h_table = :h_table);
+
+  IF h_return = 9
+  THEN
+    h_text = 'ERROR: Failed to remove table ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  h_return = CALLPROC batch_fp_drop_table(h_table = :h_table_s);
+
+  IF h_return = 9
+  THEN
+    h_text = 'ERROR: Failed to remove table ' +:h_table_s +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  h_return = CALLPROC batch_fp_drop_table(h_table = :h_table_c);
+
+  IF h_return = 9
+  THEN
+    h_text = 'ERROR: Failed to remove table ' +:h_table_c +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  h_return = CALLPROC batch_fp_drop_table(h_table = :h_table_i);
+
+  IF h_return = 9
+  THEN
+    h_text = 'ERROR: Failed to remove table ' +:h_table_i +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/*************************** LOCAL PROCEDURES *****************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

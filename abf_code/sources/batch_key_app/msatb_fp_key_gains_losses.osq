@@ -1,0 +1,225 @@
+
+PROCEDURE msatb_fp_key_gains_losses () =
+
+DECLARE h_retries_allowed = INTEGER1      NOT NULL,
+        h_retries         = INTEGER1      NOT NULL,
+        h_retry_or_not    = CHAR(5)       NOT NULL,
+        h_return          = INTEGER1      NOT NULL,
+        h_prompt          = CHAR(1)       NOT NULL,
+        h_who             = CHAR(3)       NOT NULL,
+        h_fullname        = VARCHAR(40)   NOT NULL,
+        h_dummy           = INTEGER4      NOT NULL,
+        h_frpr_name       = VARCHAR(24)   NOT NULL,
+        h_table           = VARCHAR(24)   NOT NULL,
+        h_message         = VARCHAR(70)   NOT NULL,
+        h_title           = VARCHAR(80)   NOT NULL,
+        h_command         = VARCHAR(1000) NOT NULL,
+        h_period          = CHAR(6)       NOT NULL,
+        h_filename_in     = VARCHAR(60)   NOT NULL,
+        h_filename_out    = VARCHAR(60)   NOT NULL,
+
+        lp_error_check          = PROCEDURE RETURNING INTEGER,
+        lp_drop_table           = PROCEDURE RETURNING INTEGER
+
+{
+
+SELECT DBMSINFO('username') AS g_user_id;
+SELECT DBMSINFO('database') AS g_database;
+
+h_frpr_name    = 'msatb_fp_key_gains_losses';
+h_filename_in  = '/admin/scratch/next_period_keys.txt';
+h_filename_out = '/admin/scratch/key_gains_losses.txt';
+
+/*-------------------------------------------------------------------------
+     Drop old temp tables if existing.
+-------------------------------------------------------------------------*/
+
+h_return = CALLPROC lp_drop_table (p_table_name = 'tt_proposed_keys');
+IF h_return > 1 
+THEN
+  MESSAGE 'ERROR: Failed to drop table tt_proposed_keys. Error code '
+        + VARCHAR(:h_return) +'. Exiting.'
+  WITH STYLE = POPUP;
+  EXIT;
+ENDIF;
+
+h_return = CALLPROC lp_drop_table (p_table_name = 'tt_key_gains_losses');
+IF h_return > 1 
+THEN
+  MESSAGE 'ERROR: Failed to drop table tt_key_gains_losses. Error code '
+        + VARCHAR(:h_return) +'. Exiting.'
+  WITH STYLE = POPUP;
+  EXIT;
+ENDIF;
+
+/*-------------------------------------------------------------------------
+    Create and populate table for proposed future keys.
+-------------------------------------------------------------------------*/
+
+CREATE TABLE tt_proposed_keys
+( contributor_reference CHAR(11) NOT NULL WITH DEFAULT );
+
+h_return = CALLPROC lp_error_check (p_num_row_ck  = 1);
+IF h_return > 1 
+THEN
+  MESSAGE 'ERROR: Failed to create table tt_proposed_keys. Error code '
+        + VARCHAR(:h_return) +'. Exiting.'
+  WITH STYLE = POPUP;
+  EXIT;
+ENDIF;
+
+COPY TABLE tt_proposed_keys
+         ( contributor_reference = c0nl )
+FROM :h_filename_in;
+
+h_return = CALLPROC lp_error_check (p_num_row_ck  = 1);
+IF h_return = 1 THEN
+  MESSAGE 'ERROR: ' +:h_filename_in +' is not present. Unable to contiunue. '
+        + 'Error code ' + VARCHAR(:h_return) +'. Exiting.'
+  WITH STYLE = POPUP;
+  EXIT;
+ELSEIF h_return > 1 
+THEN
+  MESSAGE 'ERROR: Failed to populate table tt_proposed_keys. Error code '
+        + VARCHAR(:h_return) +'. Exiting.'
+  WITH STYLE = POPUP;
+  EXIT;
+ENDIF;
+
+/*-------------------------------------------------------------------------
+    Prompt for period.
+-------------------------------------------------------------------------*/
+
+h_period = PROMPT 'Enter the current period (not the newly created one) ? ' 
+           WITH STYLE = POPUP;
+
+/*-------------------------------------------------------------------------
+    Create and populate table for proposed future keys.
+-------------------------------------------------------------------------*/
+
+CREATE TABLE tt_key_gains_losses
+AS
+SELECT DISTINCT contributor_reference,
+                'G' AS g_l
+FROM            tt_proposed_keys            
+UNION
+SELECT DISTINCT contributor_reference,
+                'L' AS g_l
+FROM            key_responder
+WHERE           period = :h_period;
+
+h_return = CALLPROC lp_error_check (p_num_row_ck  = 1);
+IF h_return > 1 
+THEN
+  MESSAGE 'ERROR: Failed to create table tt_key_gains_losses. Error code '
+        + VARCHAR(:h_return) +'. Exiting.'
+  WITH STYLE = POPUP;
+  EXIT;
+ENDIF;
+
+
+/*-------------------------------------------------------------------------
+     Delete referencess on tt_key_gains_losses that are on both the current 
+     key responder table and the proposed one for the next period.
+-------------------------------------------------------------------------*/
+
+DELETE
+FROM   tt_key_gains_losses a
+WHERE  a.contributor_reference IN  
+       (SELECT b.contributor_reference 
+        FROM   tt_proposed_keys b
+        WHERE  a.contributor_reference = b. contributor_reference )
+  AND  a.contributor_reference IN
+       (SELECT c.contributor_reference 
+        FROM   key_responder c
+        WHERE  a.contributor_reference = c. contributor_reference 
+          AND  c.period = :h_period );
+
+h_return = CALLPROC lp_error_check (p_num_row_ck  = 1);
+IF h_return > 1 
+THEN
+  MESSAGE 'ERROR: Failed to delete from table tt_key_gains_losses. Error code '
+        + VARCHAR(:h_return) +'. Exiting.'
+  WITH STYLE = POPUP;
+  EXIT;
+ENDIF;
+
+/*-------------------------------------------------------------------------
+    Export tt_key_gains_losses to file in admin scratch.
+-------------------------------------------------------------------------*/
+
+COPY TABLE tt_key_gains_losses
+         ( contributor_reference = c0comma,
+           g_l                   =c0nl )
+INTO :h_filename_out;
+ 
+IF h_return > 1 
+THEN
+  MESSAGE 'ERROR: Failed to export from table tt_key_gains_losses into '
+        + :h_filename_out +'. Error code '
+        + VARCHAR(:h_return) +'. Exiting.'
+  WITH STYLE = POPUP;
+  EXIT;
+ENDIF;
+
+MESSAGE 'SUCCESS: Exported key gains and losses to ' + :h_filename_out +'.'
+WITH STYLE = POPUP;
+
+}
+
+
+
+/*********************** LOCAL PROCEDURES ***********************************/
+
+/*===========================================================================
+	      Local procedure for basic error checking.
+============================================================================*/
+
+PROCEDURE lp_error_check
+	  (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT)=
+
+DECLARE l_return = INTEGER4 NOT NULL WITH DEFAULT
+
+
+{
+
+  l_return = CALLPROC batch_check_inq_ing 
+                     ( h_num_row_ck      = :p_num_row_ck,
+                       h_commit          = 'Y',
+                       h_rollback        = 'N',
+                       h_retries         = 1,
+                       h_retries_allowed = 1,
+                       h_frpr_name       = :h_frpr_name);
+  RETURN :l_return;
+
+}
+
+
+/*===========================================================================
+    Local procedure for dropping a table if it exists via extarnal proc.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL) =
+
+DECLARE
+
+  l_return = INTEGER4    NOT NULL WITH DEFAULT,
+  l_text   = VARCHAR(70) NOT NULL WITH DEFAULT,
+
+{
+
+  l_return = CALLPROC msa_fp_drop_table (p_table = :p_table_name);
+
+  IF l_return != 0
+  THEN
+    l_text = 'ERROR: Failed to drop ' +:p_table_name +'. See error log.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :l_return,
+             p_text      = :l_text);
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+
+}

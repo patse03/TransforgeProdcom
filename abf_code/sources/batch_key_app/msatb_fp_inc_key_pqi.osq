@@ -1,0 +1,813 @@
+/*----------------------------------------------------------------------
+Works out QUARTERLY Key Contributors
+----------------------------------------------------------------------*/
+
+PROCEDURE msatb_fp_inc_key_pqi (
+
+        question_industry = INTEGER4 NOT NULL) =
+
+DECLARE h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_table           = VARCHAR(24) NOT NULL,
+        h_con_table1      = VARCHAR(24) NOT NULL,
+        h_con_table2      = VARCHAR(24) NOT NULL,
+        h_tot_table_a     = VARCHAR(24) NOT NULL,
+        h_tot_table_q     = VARCHAR(24) NOT NULL,
+        h_avg_table       = VARCHAR(24) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        h_prev_period1    = INTEGER4 NOT NULL,
+        h_prev_period2    = INTEGER4 NOT NULL,
+        h_prev_period3    = INTEGER4 NOT NULL,
+        h_prev_period4    = INTEGER4 NOT NULL,
+        h_prev_period5    = INTEGER4 NOT NULL
+
+{
+    h_frpr_name = 'msatb_fp_inc_key_pqi';
+
+    h_table = 'temp_key_inc_contribs';
+    h_avg_table = 'temp_key_inc_avg';
+
+    h_con_table1 = 'temp_key_inc_con1';
+    h_con_table2 = 'temp_key_inc_con2';
+
+    h_tot_table_a = 'temp_key_inc_tots_a';
+    h_tot_table_q = 'temp_key_inc_tots_q';
+
+    ret_val = CALLPROC msa_fp_prev_periods (
+              inquiry      = :g_inquiry,
+              period       = :g_period,
+              prev_period1 = BYREF(:h_prev_period1),
+              prev_period2 = BYREF(:h_prev_period2),
+              prev_period3 = BYREF(:h_prev_period3),
+              prev_period4 = BYREF(:h_prev_period4),
+              prev_period5 = BYREF(:h_prev_period5));
+
+    ret_val = batch_fp_drop_table (h_table = :h_table);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_table (
+           contributor_reference CHAR(11) NOT NULL,
+           for_period            INTEGER4 NOT NULL,
+           contributor_industry  INTEGER4 NOT NULL,
+           stratum               CHAR(5) NOT NULL,
+           question              INTEGER4 NOT NULL,
+           question_industry     INTEGER4 NOT NULL,
+           period                INTEGER4 NOT NULL,
+           avalue                INTEGER4 NOT NULL,
+           acell                 CHAR(2) NOT NULL,
+           total_value           INTEGER4 NOT NULL,
+           percentage            FLOAT8 NOT NULL,
+           text                  VARCHAR(10) NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Create list of contributors who have been selected for the previous
+    quarter (from contributor_period). Then look at cqpv and only 
+    include them if they replied with a not-Z/not-N cell code for all
+    four quarters before that.
+
+    Inc need replies that are not-N and not-Z
+    Key need replies that are not-N
+
+    e.g. to find key contributors for 199712
+         look at contributors selected for 199709
+         and only pick them if they gave a non-zero value for:
+         199706 and 199703 and 199612 and 199609
+
+    First, get a list of contributors that fulfil these criteria
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Creating 1st Contributor Table ' +
+            VARCHAR(:question_industry) + ' . . .';
+
+    ret_val = batch_fp_drop_table (h_table = :h_con_table1);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    IF :g_run_type = 'inc'
+    THEN
+        CREATE TABLE :h_con_table1
+        AS SELECT    a.contributor_reference,
+                     a.register_emp,
+                     a.contributor_industry,
+                     b.question,
+                     b.question_industry
+        FROM         contributor_period a,
+                     cqpv b,
+                     cqpv c,
+                     cqpv d,
+                     cqpv e
+        WHERE        a.contributor_reference = b.contributor_reference
+        AND          a.contributor_reference = c.contributor_reference
+        AND          a.contributor_reference = d.contributor_reference
+        AND          a.contributor_reference = e.contributor_reference
+        AND          a.period = :h_prev_period1
+        AND          b.period = :h_prev_period2
+        AND          c.period = :h_prev_period3
+        AND          d.period = :h_prev_period4
+        AND          e.period = :h_prev_period5
+        AND          b.question = c.question
+        AND          b.question = d.question
+        AND          b.question = e.question
+        AND          b.acell NOT IN ('Z','N')
+        AND          c.acell NOT IN ('Z','N')
+        AND          d.acell NOT IN ('Z','N')
+        AND          e.acell NOT IN ('Z','N')
+        AND          b.question_industry = :question_industry
+        AND          b.quest_order NOT IN (8,11)
+        AND          MOD(b.question,10) IN (0,1);
+    ELSE
+        CREATE TABLE :h_con_table1
+        AS SELECT    a.contributor_reference,
+                     a.register_emp,
+                     a.contributor_industry,
+                     b.question,
+                     b.question_industry
+        FROM         contributor_period a,
+                     cqpv b,
+                     cqpv c,
+                     cqpv d,
+                     cqpv e
+        WHERE        a.contributor_reference = b.contributor_reference
+        AND          a.contributor_reference = c.contributor_reference
+        AND          a.contributor_reference = d.contributor_reference
+        AND          a.contributor_reference = e.contributor_reference
+        AND          a.period = :h_prev_period1
+        AND          b.period = :h_prev_period2
+        AND          c.period = :h_prev_period3
+        AND          d.period = :h_prev_period4
+        AND          e.period = :h_prev_period5
+        AND          b.question = c.question
+        AND          b.question = d.question
+        AND          b.question = e.question
+        AND          b.acell <> 'N'
+        AND          c.acell <> 'N'
+        AND          d.acell <> 'N'
+        AND          e.acell <> 'N'
+        AND          b.question_industry = :question_industry
+        AND          b.quest_order NOT IN (8,11)
+        AND          MOD(b.question,10) IN (0,1);
+    ENDIF;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_con_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    If it's an INC(lude) run, remove any non 10-cutoff records
+    ------------------------------------------------------------------*/
+
+    IF :g_run_type = 'inc'
+    THEN
+        MESSAGE 'Deleting non-PRN Contributors . . .';
+
+        DELETE FROM :h_con_table1 a
+        WHERE       contributor_industry IN (
+                    SELECT industry
+                    FROM   industry b
+                    WHERE  a.register_emp < 10
+                    OR     a.register_emp >= b.present_emp_cutoff);
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error deleting non-PRNs',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Now get the actual values for the valid contributors
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Creating 2nd Contributor Table ' +
+            VARCHAR(:question_industry) + ' . . .';
+
+    ret_val = batch_fp_drop_table (h_table = :h_con_table2);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_con_table2
+    AS SELECT    a.contributor_reference,
+                 a.contributor_industry,
+                 a.register_emp,
+                 '     ' AS stratum,
+                 b.period,
+                 a.question,
+                 a.question_industry,
+                 b.avalue,
+                 b.acell,
+                 INT4(0) AS total_value,
+                 FLOAT8(0) AS percentage
+    FROM         :h_con_table1 a,
+                 cqpv b
+    WHERE        a.contributor_reference = b.contributor_reference
+    AND          a.question = b.question
+    AND          b.period IN (:h_prev_period2,:h_prev_period3,:h_prev_period4,:h_prev_period5);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_con_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Put descriptive text into stratum for the employment
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Updating Strata for ' +
+            VARCHAR(:question_industry) + ' . . .';
+
+    UPDATE :h_con_table2
+    SET    stratum = '0-9'
+    WHERE  register_emp BETWEEN 0 AND 9;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating 1st stratum on ' + :h_con_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    UPDATE :h_con_table2
+    SET    stratum = '10-19'
+    WHERE  register_emp BETWEEN 10 AND 19;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating 2nd stratum on ' + :h_con_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    UPDATE :h_con_table2
+    SET    stratum = '20-49'
+    WHERE  register_emp BETWEEN 20 AND 49;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating 3rd stratum on ' + :h_con_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    UPDATE :h_con_table2
+    SET    stratum = '50-99'
+    WHERE  register_emp BETWEEN 50 AND 99;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating 4th stratum on ' + :h_con_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    UPDATE :h_con_table2
+    SET    stratum = '100-'
+    WHERE  register_emp >= 100;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating 5th stratum on ' + :h_con_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Create totals table for QUARTERLY contributors for this question
+    industry for the 4 quarters
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Creating Quarterly Totals Table ' +
+            VARCHAR(:question_industry) + ' . . .';
+
+    ret_val = batch_fp_drop_table (h_table = :h_tot_table_q);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_tot_table_q
+    AS SELECT    question,
+                 period,
+                 SUM(avalue) AS total_value
+    FROM         cqpv
+    WHERE        question_industry = :question_industry
+    AND          quest_order NOT IN (8,11)
+    AND          MOD(question,10) IN (0,1)
+    AND          period IN (:h_prev_period2,:h_prev_period3,:h_prev_period4,:h_prev_period5)
+    GROUP BY     question,
+                 period;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_tot_table_q,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Create totals table for ANNUAL contributors for this question
+    industry for the only year there is data returned for. (This is
+    always the annual version of prev_period5, so:
+
+    To find key contributors for 199712, use contributors selected for
+    199709, and look at their values for 199706, 199703, 199612, 199609.
+    199609 is prev_period5, so add up all the annual contributor's 
+    figures for (199609-->) 199600.
+
+    Then divide by 4 to get a quarterly value, and add this value to
+    ALL four quarters being checked.
+
+    (This means adding 199600/4 to 199706 & 199703 as well as 199612 & 
+    199609 but this is apparently OK)
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Creating Annual Totals Table ' +
+            VARCHAR(:question_industry) + ' . . .';
+
+    ret_val = batch_fp_drop_table (h_table = :h_tot_table_a);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_tot_table_a
+    AS SELECT    question,
+                 SUM(avalue) AS total_value
+    FROM         cqpv
+    WHERE        question_industry = :question_industry
+    AND          quest_order NOT IN (8,11)
+    AND          MOD(question,10) IN (0,1)
+    AND          period = :h_prev_period5 / 100 * 100
+    GROUP BY     question,
+                 period;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_tot_table_a,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Add the ANNUAL/4 Totals to all QUARTERLY Totals
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Updating Quarterly with Annual ' +
+            VARCHAR(:question_industry) + ' . . .';
+
+    UPDATE :h_tot_table_q a
+    FROM   :h_tot_table_a b
+    SET    total_value = a.total_value + (b.total_value / 4)
+    WHERE  a.question = b.question;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating quarterly+annual Totals',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Put the Totals onto the contributor table & find % for each ref.
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Updating Contributor Table with Totals ' +
+            VARCHAR(:question_industry) + ' . . .';
+
+    UPDATE :h_con_table2 a
+    FROM   :h_tot_table_q b
+    SET    total_value = b.total_value
+    WHERE  a.question = b.question
+    AND    a.period = b.period;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating Totals onto ' + :h_con_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    MESSAGE 'Updating Contributor Table with Percentages ' +
+            VARCHAR(:question_industry) + ' . . .';
+
+    UPDATE :h_con_table2
+    SET    percentage = avalue * 100.0 / total_value;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating percentage on ' + :h_con_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    KEY CONTRIBUTORS 1: Insert contributors who exceed cutoff for 
+    two of the four quarters
+    (Find them first)
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Inserting Key Contributors 1 ' +
+            VARCHAR(:question_industry) + ' . . .';
+
+    ret_val = batch_fp_drop_table (h_table = :h_avg_table);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_avg_table
+    AS SELECT    contributor_reference,
+                 question,
+                 COUNT(percentage)
+    FROM         :h_con_table2
+    WHERE        percentage >= :g_cutoff
+    GROUP BY     contributor_reference,
+                 question
+    HAVING       COUNT(percentage) >=2;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_avg_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    INSERT INTO :h_table (
+                contributor_reference,
+                for_period,
+                contributor_industry,
+                stratum,
+                question,
+                question_industry,
+                period,
+                avalue,
+                acell,
+                total_value,
+                percentage,
+                text)
+    SELECT      a.contributor_reference,
+                :g_period,
+                a.contributor_industry,
+                a.stratum,
+                a.question,
+                a.question_industry,
+                a.period,
+                a.avalue,
+                a.acell,
+                a.total_value,
+                a.percentage,
+                '>=2 QTRS'
+    FROM        :h_con_table2 a,
+                :h_avg_table b
+    WHERE       a.contributor_reference = b.contributor_reference
+    AND         a.question = b.question;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error inserting into ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Delete the Refs
+    ------------------------------------------------------------------*/
+
+    DELETE FROM :h_con_table2 a
+    WHERE       contributor_reference IN (
+                SELECT contributor_reference
+                FROM   :h_table b
+                WHERE  a.question = b.question);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error deleting from ' + :h_con_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    KEY CONTRIBUTORS 2: Insert contributors whose average of their total
+    exceeds the cutoff.
+
+    This is to pick up contributors like 39, 39, 39, 100 (which only
+    exceeds the cutoff once individually) but whose total does.
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Inserting Key Contributors 2 ' +
+            VARCHAR(:question_industry) + ' . . .';
+
+    ret_val = batch_fp_drop_table (h_table = :h_avg_table);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_avg_table
+    AS SELECT    contributor_reference,
+                 question,
+                 AVG(percentage)
+    FROM         :h_con_table2
+    GROUP BY     contributor_reference,
+                 question
+    HAVING       AVG(percentage) >= :g_cutoff;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_avg_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    INSERT INTO :h_table (
+                contributor_reference,
+                for_period,
+                contributor_industry,
+                stratum,
+                question,
+                question_industry,
+                period,
+                avalue,
+                acell,
+                total_value,
+                percentage,
+                text)
+    SELECT      a.contributor_reference,
+                :g_period,
+                a.contributor_industry,
+                a.stratum,
+                a.question,
+                a.question_industry,
+                a.period,
+                a.avalue,
+                a.acell,
+                a.total_value,
+                a.percentage,
+                'AVERAGE'
+    FROM        :h_con_table2 a,
+                :h_avg_table b
+    WHERE       a.contributor_reference = b.contributor_reference
+    AND         a.question = b.question;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error inserting into ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Finally, insert the temp_key_contributors into the working table
+    ------------------------------------------------------------------*/
+
+    INSERT INTO :g_table
+    SELECT      *
+    FROM        :h_table;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error inserting into key_contributors',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+}

@@ -1,0 +1,196 @@
+/*-s--------------------------------------------------------------------
+ Start of Creation Application
+ Parameters: Inquiry & Period
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msah_fp_start () =
+
+DECLARE h_param_list         = VARCHAR(100) NOT NULL,
+        h_varchar_variable   = VARCHAR(100) NOT NULL,
+        h_integer_variable   = INTEGER1 NOT NULL,
+        h_param1             = VARCHAR(20) NOT NULL,
+        h_param2             = VARCHAR(20) NOT NULL,
+        h_param3             = VARCHAR(20) NOT NULL,
+        ret_val              = INTEGER1 NOT NULL,
+        h_latest_period      = INTEGER4 NOT NULL,
+        h_next_latest_period = INTEGER4 NOT NULL,
+        h_frpr_name          = VARCHAR(24) NOT NULL
+
+{
+    SELECT DBMSINFO('username') AS g_user_id;
+    SELECT DBMSINFO('database') AS g_database;
+
+    h_frpr_name = 'msah_fp_start';
+
+    h_param_list = CALLPROC CommandLineParameters();
+
+    h_varchar_variable = SQUEEZE (h_param_list);
+
+    h_integer_variable = LOCATE (h_varchar_variable, ' ');
+    h_param1         =   LEFT (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = SHIFT (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = LOCATE (h_varchar_variable, ' ');
+    h_param2         =   LEFT (h_varchar_variable,h_integer_variable - 1);
+
+    g_inquiry = INT1(:h_param1);
+    g_period = INT4(:h_param2);
+
+    IF :g_inquiry <> 14 AND :g_inquiry <> 15
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid Inquiry = ' + VARCHAR(:g_inquiry),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Get latest period for this Inquiry
+    ------------------------------------------------------------------*/
+
+    SELECT span_end AS h_latest_period
+    FROM   inquiry
+    WHERE  inquiry = :g_inquiry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error selecting from inquiry',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Check Period - should be next period up from the latest one
+    ------------------------------------------------------------------*/
+
+    IF :g_inquiry = 14
+    THEN
+        h_next_latest_period = :h_latest_period + 100;
+    ELSE
+        IF MOD(h_latest_period,100) = 12
+        THEN
+            h_next_latest_period = :h_latest_period + 100 - 9;
+        ELSE
+            h_next_latest_period = :h_latest_period + 3;
+        ENDIF;
+    ENDIF;
+
+    IF :g_period <> :h_next_latest_period
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Period = ' + VARCHAR(:g_period) +
+                    ', Should be ' + VARCHAR(:h_next_latest_period) +
+                    ', (Current MaxPer = ' + VARCHAR(:h_latest_period) +
+                    ')',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    INSERT INTO error_log
+    VALUES(     'now',
+                'Creation Starts: Inquiry = ' + VARCHAR(:g_inquiry) +
+                ', Period = ' + VARCHAR(:g_period),
+                :h_frpr_name,
+                0,
+                :g_user_id);
+    COMMIT;
+
+    /*------------------------------------------------------------------
+     Insert into standard tables
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msah_fp_create ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Update inquiry
+    ------------------------------------------------------------------*/
+
+    UPDATE inquiry a
+    FROM   inquiry_period b
+    SET    span_end = b.period,
+           latest_span_no = b.span_no
+    WHERE  a.inquiry = :g_inquiry
+    AND    a.inquiry = b.inquiry
+    AND    b.period = :g_period;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating inquiry',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Update industry_cycle_point on industry
+    ------------------------------------------------------------------*/
+
+    UPDATE industry
+    SET    industry_cycle_point = 'A'
+    WHERE  inquiry = :g_inquiry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating industry',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     End
+    ------------------------------------------------------------------*/
+
+    INSERT INTO error_log
+    VALUES(     'now',
+                'Creation Ends OK: Inquiry = ' + VARCHAR(:g_inquiry) +
+                ', Period = ' + VARCHAR(:g_period),
+                :h_frpr_name,
+                0,
+                :g_user_id);
+    COMMIT;
+
+    RETURN 0;
+}

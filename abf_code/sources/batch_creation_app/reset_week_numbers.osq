@@ -1,0 +1,517 @@
+/*----------------------------------------------------------------------
+ Sets up start-dates and end-dates for each week for a period.
+
+ Puts records on the table weekno_dates - deletes them if there are
+ already records there for the specified inquiry/period.
+
+ The table weekno_dates is used to keep contributor_period's
+ rec_week_no and corr_week_no up-to-date.
+
+----------------------------------------------------------------------*/
+
+PROCEDURE reset_week_numbers () =
+
+DECLARE h_retries_allowed    = INTEGER1     NOT NULL WITH DEFAULT,
+        h_retries            = INTEGER1     NOT NULL WITH DEFAULT,
+        h_retry_or_not       = CHAR(5)      NOT NULL WITH DEFAULT,
+        h_text               = VARCHAR(70)  NOT NULL WITH DEFAULT,
+        h_frpr_name          = VARCHAR(24)  NOT NULL WITH DEFAULT,
+        h_param_list         = VARCHAR(200) NOT NULL WITH DEFAULT,
+        industry_cycle_point = CHAR(1)      NOT NULL WITH DEFAULT,
+        h_varchar_variable   = VARCHAR(200) NOT NULL WITH DEFAULT,
+        h_integer_variable   = INTEGER2     NOT NULL WITH DEFAULT,
+        h_param1             = VARCHAR(10)  NOT NULL WITH DEFAULT,
+        h_period             = INTEGER4     NOT NULL WITH DEFAULT,
+        h_year               = INTEGER4     NOT NULL WITH DEFAULT,
+        h_week_no            = INTEGER4     NOT NULL WITH DEFAULT,
+        h_day                = VARCHAR(10)  NOT NULL WITH DEFAULT,
+        h_date               = DATE         NOT NULL WITH DEFAULT,
+        h_max                = INTEGER1     NOT NULL WITH DEFAULT,
+        h_counter            = INTEGER1     NOT NULL WITH DEFAULT,
+        h_return             = INTEGER1     NOT NULL WITH DEFAULT,
+
+        lp_full_error_check      = PROCEDURE RETURNING INTEGER NOT NULL,
+        lp_write_to_process_log  = PROCEDURE ,
+
+{
+  h_retries_allowed = 3;
+  h_frpr_name = 'reset_week_numbers';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_procs (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  /*------------------------------------------------------------------
+      Log start of process.
+  ------------------------------------------------------------------*/
+
+  CALLPROC lp_write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = '*SIGNON*');
+
+  CALLPROC lp_write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'STARTING: MAIN PROCESS STARTING.');
+
+  /*------------------------------------------------------------------
+    Select the parameters from the UNIX line
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[1/7] Getting parameters...';
+  SLEEP 1;
+
+  h_param_list = CALLPROC COMMANDLINEPARAMETERS();
+
+  h_varchar_variable = SQUEEZE (h_param_list);
+
+  h_integer_variable = LOCATE (h_varchar_variable, ' ');
+  h_param1           = LEFT   (h_varchar_variable,h_integer_variable - 1);
+
+  h_period    = INT4(:h_param1);
+
+  /*----------------------------------------------------------------------
+      Validate h_period
+  ----------------------------------------------------------------------*/
+
+  MESSAGE '[2/7] Validating parameters...';
+  SLEEP 1;
+  
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT period AS h_period
+    FROM   inquiry_period
+    WHERE  period = :h_period
+      AND  inquiry = 14;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return = 1
+  THEN
+    h_text = 'ERROR: Invalid period recieved as p_period parameter.';
+    CALLPROC lp_write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+
+  ELSEIF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to select from the inquiry_period table.';
+    CALLPROC lp_write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+
+  ENDIF;
+ 
+  /*------------------------------------------------------------------
+      Delete any existing records for this period
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[3/7] Deleting any existing data for this period...';
+  SLEEP 1;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    DELETE FROM weekno_dates
+    WHERE       inquiry = 14 
+      AND       period = :h_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to delete from the weekno_dates table.';
+    CALLPROC lp_write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+      Find date of first sunday of survey week one. 
+      (Sunday before the first sunday in Jan beyond the 1st.)
+  -------------------------------------------------------------------------*/ 
+
+  MESSAGE '[4/7]  Finding first sunday for this period...';
+  SLEEP 1;
+
+  h_year = (:h_period/100)+1;
+  h_date = DATE('02/01/'+VARCHAR(:h_year));
+  h_day  = '   ';
+
+  WHILE h_day != 'Sun'
+  DO
+    
+    h_day = dow(:h_date);
+
+    IF h_day != 'Sun'
+    THEN
+      h_date = DATE(:h_date + '1 days')
+    ENDIF;
+
+  ENDWHILE;
+
+  h_date = DATE(:h_date - '7 days');
+
+  h_text = 'NOTE: ' + VARCHAR(:h_date) 
+         + ' used for sunday at start of week one.';
+  CALLPROC lp_write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = :h_text);
+
+  h_max = 53;
+  h_counter = 1;
+
+  /*------------------------------------------------------------------
+      Insert a row for each week
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[5/7]  Inserting a row for each week...';
+  SLEEP 1;
+
+  WHILE h_counter <= h_max
+  DO
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      INSERT INTO weekno_dates 
+                ( inquiry,
+                  period,
+                  start_date,
+                  end_date,
+                  week)
+      VALUES    ( 14,
+                  :h_period,
+                  :h_date,
+                  DATE(:h_date + '6 days'),
+                  :h_counter);
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+      RETURN 7;
+
+    ELSEIF h_return > 0
+    THEN
+      h_text = 'ERROR: Failed to insert week number '
+             + VARCHAR(:h_counter) +'.';
+      CALLPROC lp_write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ELSE
+      h_text = 'NOTE: Successfully inserted week number ' 
+            + VARCHAR(:h_counter) +'.';
+      CALLPROC lp_write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+    ENDIF;
+
+    h_counter = :h_counter + 1;
+    h_date = DATE(:h_date + '7 days');
+
+  ENDWHILE;
+
+  /*------------------------------------------------------------------
+      Update final week's end_date to the end of 2050
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[6/7]  Updating the end of the final week...';
+  SLEEP 1;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE weekno_dates
+    SET    end_date = DATE('31/12/2050')
+    WHERE  week = :h_max
+      AND  inquiry = 14
+      AND  period= :h_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return > 0
+  THEN
+    h_text = 'ERROR: Failed to update with the week 53 distant end date.';
+    CALLPROC lp_write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ELSE
+    h_text = 'NOTE: Successfully updated week number 53 end date.'; 
+    CALLPROC lp_write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Update inquiry_period to correct week.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[7/7]  Resetting the current week on inquiry_period...';
+  SLEEP 1;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+
+    SELECT week AS h_week_no
+    FROM   weekno_dates
+    WHERE  inquiry = 14
+      AND  period  = :h_period
+      AND  DATE('now') BETWEEN start_date AND end_date;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return > 0
+  THEN
+    h_text = 'ERROR: Failed to select the current week no from weekno_dates.';
+    CALLPROC lp_write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE inquiry_period
+    SET    week_no = :h_week_no
+    WHERE  inquiry = 14
+      AND  period= :h_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return > 0
+  THEN
+    h_text = 'ERROR: Failed to update inquiry_period with current week no.';
+    CALLPROC lp_write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ELSE
+    h_text = 'NOTE: Successfully updated inquiry_period with current week no.'; 
+    CALLPROC lp_write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Log end of process.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Process completed successfully.';
+  SLEEP 1;
+
+  CALLPROC lp_write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'COMPLETE: MAIN PROCESS COMPLETED OK.');
+
+  CALLPROC lp_write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = '*SIGNOFF*');
+
+}
+
+/*********************** LOCAL PROCEDURES *****************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+                  h_num_row_ck = :p_num_row_ck,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+/*========================================================================
+  Local procedure to write process feedback to rwn_process_log.
+  Part of a change to move generic process feedback out of error_log
+  and into process specific permanent tables.
+  (Usually an external procedure, left the p_ variables in place.)
+========================================================================*/
+
+PROCEDURE lp_write_to_process_log (
+
+        p_frpr_name = VARCHAR(36) NOT NULL WITH DEFAULT,
+        p_code      = INTEGER1    NOT NULL WITH DEFAULT,
+        p_text      = VARCHAR(70) NOT NULL WITH DEFAULT ) =
+
+DECLARE lp_table     = VARCHAR(36) NOT NULL WITH DEFAULT,
+        lp_top       = VARCHAR(70) NOT NULL WITH DEFAULT 
+
+{
+ lp_table = 'rwn_process_log';
+ lp_top ='*******************************************************************';
+
+ IF p_text = '*SIGNON*'
+ THEN
+   MODIFY :lp_table TO TRUNCATED; 
+   COMMIT;
+   INSERT INTO :lp_table 
+   VALUES    ( 'now',
+               0,
+               0,
+               :lp_top,
+               :p_frpr_name);
+   COMMIT;
+   RETURN; 
+ ENDIF;
+
+ IF p_text = '*SIGNOFF*'
+ THEN
+   p_text = :lp_top;
+ ENDIF;
+
+ g_log_no = g_log_no +1;
+
+ INSERT INTO :lp_table 
+ VALUES    ( 'now',
+             :g_log_no,
+             :p_code,
+             :p_text,
+             :p_frpr_name);
+ COMMIT;
+
+ RETURN;
+}
+

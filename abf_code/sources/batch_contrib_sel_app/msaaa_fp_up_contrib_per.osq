@@ -1,0 +1,850 @@
+/*----------------------------------------------------------------------
+msaaa_fp_up_contrib_per
+
+This calculates the output categories from IDBR file and loads a new
+period onto contributor_period
+
+----------------------------------------------------------------------*/
+
+PROCEDURE msaaa_fp_up_contrib_per () =
+
+DECLARE
+  h_frpr_name       = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_temp_table_1    = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_temp_table_2    = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_hq_table        = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_text            = VARCHAR(80)  NOT NULL WITH DEFAULT,
+  h_command         = VARCHAR(100) NOT NULL WITH DEFAULT,
+  h_return          = INTEGER1     NOT NULL WITH DEFAULT,
+
+  lp_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name    = 'msaaa_fp_up_contrib_per';
+  h_hq_table     = 'head_office_cqpv';
+  h_temp_table_1 = 'tt_cp_update_1';
+  h_temp_table_2 = 'tt_cp_update_2';
+
+  /*------------------------------------------------------------------
+    Log start of process.
+  ------------------------------------------------------------------*/
+
+  h_text = 'NOTE: Starting process 3.';
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = :h_text);
+
+  /*------------------------------------------------------------------
+    Create a temp table to hold cp data
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC batch_fp_drop_table(h_table = :h_temp_table_1);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure. */
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE :h_temp_table_1
+  AS 
+  SELECT    ruref             AS contributor_reference,
+            :g_period         AS period,
+            :g_inquiry        AS inquiry,
+            INT4(rusic92)     AS contributor_industry,
+            INT4(rusic92)     AS alt_industry,
+            'N'               AS form_received,
+            'N'               AS form_taken_on,
+            0                 AS selection_category,
+            ''                AS output_category,
+            region            AS region,
+            entrepmkr         AS structure,
+            9                 AS company,
+            0                 AS keyresp,
+            wowentref         AS enterprise,
+            employment        AS register_emp,
+            ''                AS receipt_date,
+            ''                AS correct_date,
+            0                 AS rec_week_no,
+            0                 AS corr_week_no,
+            live_lu           AS lu_count,
+            'N'               AS consent_marker,
+            INT1(legalstatus) AS legal_status,
+            0                 AS f9_count,
+            '        '        AS user_id,
+            0                 AS form_status,
+            currency
+  FROM     :g_reg_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_temp_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :h_temp_table_1 TO BTREE UNIQUE 
+      ON contributor_reference, region;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify ' +:h_temp_table_1 +' to btree unique.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Change IDBR class/subclass to ProdCom Industry code.
+  ------------------------------------------------------------------*/
+
+  UPDATE :h_temp_table_1 a
+  FROM   industry_class_level b
+  SET    contributor_industry = b.class
+  WHERE  a.contributor_industry = b.sub_class;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update contributor_industry on ' 
+           +:h_temp_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Update lu_count for enterprise reporters as only local units
+    for lu list reporters are passed over on the IDBR file.
+  ------------------------------------------------------------------*/
+
+  UPDATE :h_temp_table_1
+  SET    lu_count = 1
+  WHERE  structure = 'E';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update ' +:h_temp_table_1 +' '
+           + 'with local unit counts.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Update with basic output categories.
+  ------------------------------------------------------------------*/
+  /*..................................................................
+     GB Standard - Output Category = A
+  ..................................................................*/
+
+  UPDATE :h_temp_table_1 a
+  FROM   contributor_period b
+  SET    output_category = 'A'
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.region != 'YY'
+    AND  b.period = :g_prev_period1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update ' +:h_temp_table_1 +' '
+           + 'with output category A.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*....................................................................
+     NI Contributors - Output Category = F
+  ....................................................................*/
+
+  UPDATE :h_temp_table_1 a
+  FROM   contributor_period b
+  SET    output_category = 'F'
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.region = 'YY'
+    AND  b.period = :g_prev_period1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update ' +:h_temp_table_1 +' '
+           + 'with output category F.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*..................................................................
+     GB Reclassified - Output Category H
+  ..................................................................*/
+
+  UPDATE :h_temp_table_1 a
+  FROM   contributor_period b
+  SET    output_category = 'H'
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.contributor_industry != b.contributor_industry
+    AND  a.region != 'YY'
+    AND  b.period = :g_prev_period1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update ' +:h_temp_table_1 +' '
+           + 'with output category H.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*..................................................................
+     NI Reclassified - Output Category J
+  ..................................................................*/
+
+  UPDATE :h_temp_table_1 a
+  FROM   contributor_period b
+  SET    output_category = 'J'
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.contributor_industry != b.contributor_industry
+    AND  a.region = 'YY'
+    AND  b.period = :g_prev_period1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update ' +:h_temp_table_1 +' '
+           + 'with output category J.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Create a table of re-entering references.
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC batch_fp_drop_table (h_table = :h_temp_table_2);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure. */
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE :h_temp_table_2
+  AS
+  SELECT DISTINCT contributor_reference
+  FROM   contributor_period
+  WHERE  period IN (:g_prev_period2,:g_prev_period3)
+    AND  contributor_reference NOT IN 
+      ( SELECT contributor_reference
+        FROM   contributor_period
+        WHERE  period = :g_prev_period1);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_temp_table_2 +' for re-entrants.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*..................................................................
+     GB Re-entrants - Output Category = K
+  ..................................................................*/
+
+  UPDATE :h_temp_table_1 a
+  FROM   :h_temp_table_2 b
+  SET    output_category = 'K'
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.region != 'YY';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update ' +:h_temp_table_1 +' '
+           + 'with output category K.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*..................................................................
+     NI Re-entrants - Output Category = M
+  ..................................................................*/
+
+  UPDATE :h_temp_table_1 a
+  FROM   :h_temp_table_2 b
+  SET    output_category = 'M'
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.region = 'YY';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update ' +:h_temp_table_1 +' '
+           + 'with output category M.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*--------------------------------------------------------------------------
+      Create temp table for new entrants for use in standard new entrants
+      and Osmotherly new entrants.
+  -------------------------------------------------------------------------*/
+
+  h_return = CALLPROC batch_fp_drop_table (h_table = :h_temp_table_2);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure. */
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE :h_temp_table_2
+  AS 
+  SELECT contributor_reference
+  FROM   :h_temp_table_1
+  WHERE  contributor_reference NOT IN 
+      (  SELECT contributor_reference
+         FROM   contributor_period
+         WHERE  period IN (:g_prev_period1, :g_prev_period2, :g_prev_period3));
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_temp_table_2 +' for new entrants.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*..................................................................
+     GB new entrants - Output Category = C
+  ..................................................................*/
+
+  UPDATE :h_temp_table_1 a
+  FROM   :h_temp_table_2 b
+  SET    output_category = 'C'
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.region != 'YY';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update ' +:h_temp_table_1 +' '
+           + 'with output category C.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*..................................................................
+     NI new entrants - Output Category = G
+  ..................................................................*/
+
+  UPDATE :h_temp_table_1 a
+  FROM   :h_temp_table_2 b
+  SET    output_category = 'G'
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.region = 'YY';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update ' +:h_temp_table_1 +' '
+           + 'with output category G.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*..................................................................
+     Osmotherly Existing - Output Category = O
+  ..................................................................*/
+
+  UPDATE :h_temp_table_1 a
+  FROM   csl_osm_births b
+  SET    output_category = 'O'
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.period = b.period
+    AND  a.period = :g_period
+    AND  a.region != 'YY';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update ' +:h_temp_table_1 +' '
+           + 'with output category O.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*..................................................................
+     Osmotherly New - Output Category = W
+  ..................................................................*/
+
+  UPDATE :h_temp_table_1 a
+  FROM   :h_temp_table_2 b
+  SET    output_category = 'W'
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.output_category = 'O';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update ' +:h_temp_table_1 +' '
+           + 'with output category W.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+
+  /*------------------------------------------------------------------
+     Foreign - Output Category = T
+  ------------------------------------------------------------------*/
+
+  UPDATE :h_temp_table_1 a
+  FROM   contributor b
+  SET    output_category = 'T'
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  b.add_postcode like '%XZ9 9XX%';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update ' +:h_temp_table_1 +' '
+           + 'with output category T.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+       Create table of HQ activities (inclexcl H or Q )
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC batch_fp_drop_table(h_table = :h_hq_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure. */
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE :h_hq_table 
+       ( contributor_reference  CHAR (11) NOT NULL,
+         quest_order            INTEGER1 NOT NULL,
+         question               INTEGER4 NOT NULL,
+         period                 INTEGER4 NOT NULL,
+         contributor_inquiry    INTEGER1 NOT NULL,
+         contributor_industry   INTEGER4 NOT NULL,
+         question_industry      INTEGER4 NOT NULL,
+         acell                  CHAR (2) NOT NULL,
+         avalue                 INTEGER4 NOT NULL,
+         acell_type             CHAR (2) NOT NULL,
+         aconstruction_type     INTEGER1 NOT NULL,
+         evalue                 INTEGER4 NOT NULL,
+         fcell                  CHAR (2) NOT NULL,
+         fvalue                 INTEGER4 NOT NULL,
+         fcell_type             CHAR (2) NOT NULL,
+         fconstruction_type     INTEGER1 NOT NULL,
+         confirmation_code      CHAR (1) NOT NULL,
+         confirmation_date      DATE NOT NULL,
+         atypical               CHAR (1) NOT NULL);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_hq_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Insert standard headings
+  ------------------------------------------------------------------*/
+
+  INSERT INTO :h_hq_table 
+       ( contributor_reference,
+         quest_order,
+         question,
+         period,
+         contributor_inquiry,
+         contributor_industry,
+         question_industry,
+         acell,
+         avalue,
+         acell_type,
+         aconstruction_type,
+         evalue,
+         fcell,
+         fvalue,
+         fcell_type,
+         fconstruction_type,
+         confirmation_code,
+         confirmation_date,
+         atypical)
+  SELECT a.contributor_reference,
+         b.quest_order,
+         b.question,
+         a.period,
+         a.inquiry,
+         a.contributor_industry,
+         b.question_industry,
+         'Z',
+         0,
+         '',
+         0,
+         0,
+         'N',
+         0,
+         '',
+         0,
+         'G',
+         '',
+         'N'
+  FROM   :h_temp_table_1 a,
+         question_library b,
+         :g_reg_table c
+  WHERE  a.contributor_reference = c.ruref
+    AND  c.inclexcl IN ('H','Q')
+    AND  a.contributor_industry = b.question_industry
+    AND  b.period = :g_period
+    AND  b.quest_order IN (8,9,10);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to insert headings into ' +:h_hq_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+    Delete preexisting records from cqpv in case of rerun, then insert 
+    into CQPV the Standard Headings for Head Office contributors
+  -----------------------------------------------------------------------*/
+
+  DELETE FROM cqpv a
+  WHERE  a.period = :g_period
+    AND  a.contributor_reference IN
+      (  SELECT b.contributor_reference
+         FROM   :h_hq_table b);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to remove existing data from ' +:h_hq_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  INSERT INTO cqpv
+  SELECT      *
+  FROM        :h_hq_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to insert HQ standard headings into CQPV.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*--------------------------------------------------------------------------
+      Update temporary table to mark HQ contributors as correct and received.
+  --------------------------------------------------------------------------*/
+
+  UPDATE :h_temp_table_1 a
+  SET    rec_week_no   = 1,
+         corr_week_no  = 1, 
+         f9_count      = 1,
+         form_received = 'B',
+         form_taken_on = 'O',
+         receipt_date  = date('today')
+  WHERE  a.period = :g_period 
+    AND  a.contributor_reference IN
+      (  SELECT b.contributor_reference
+         FROM   :h_hq_table b);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to mark HQ contributors as correct and received.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Update temporary table from the register table to set 
+      output_category for Enforcement cases. These are flagged by
+      IDBR as an 'F' in the field inclexcl.
+      output_category = Y
+  ------------------------------------------------------------------*/
+
+  UPDATE :h_temp_table_1 a
+  FROM   :g_reg_table b
+  SET    output_category = 'Y'
+  WHERE  a.contributor_reference = b.ruref
+    AND  b.inclexcl = 'F';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update ' +:h_temp_table_1 +' '
+           + 'with output category Y.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Create stop reminders for enforcement cases.
+
+     Note that Stop Reminder 3 is not used for Enforcements as Enforcement
+     Team would like the CEOs to receive the warning letter. 
+  ------------------------------------------------------------------*/
+
+  INSERT INTO stop_reminder
+  SELECT 14                   AS inquiry,
+         :g_period            AS period,
+         1                    AS reminder,
+         contributor_industry AS industry,
+         contributor_reference,
+         'P'                  AS rem_type,
+         date('today')        AS date_created
+  FROM   :h_temp_table_1
+  WHERE  output_category = 'Y';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to insert enforcement stop reminder 1.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  INSERT INTO stop_reminder
+  SELECT 14                   AS inquiry,
+         :g_period            AS period,
+         2                    AS reminder,
+         contributor_industry AS industry,
+         contributor_reference,
+         'P'                  AS rem_type,
+         date('today')        AS date_created
+  FROM   :h_temp_table_1
+  WHERE  output_category = 'Y';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to insert enforcement stop reminder 2.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     If any contributors used Euros last period, they're going to have
+     to use Euros this period too.
+  ------------------------------------------------------------------*/
+
+  UPDATE :h_temp_table_1 a
+  FROM   contributor_period b
+  SET    currency = 'E'
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  b.period = :g_prev_period1
+    AND  b.currency = 'E';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update with Euro currency marker.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Delete any existing rows from contributor_period
+  ------------------------------------------------------------------*/
+
+  DELETE FROM contributor_period
+  WHERE       period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to delete pre-existing period data from CQPV.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Insert data from temporary table into contributor_period
+  ------------------------------------------------------------------*/
+
+  INSERT INTO contributor_period
+  SELECT      *
+  FROM        :h_temp_table_1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to insert new period data into contributor_period.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Tidy up temp tables.
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC batch_fp_drop_table (h_table = :h_temp_table_1);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure. */
+    RETURN h_return;
+  ENDIF;
+
+  h_return = CALLPROC batch_fp_drop_table (h_table = :h_temp_table_2);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure. */
+    RETURN h_return;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+
+/************************** LOCAL PROCEDURES *******************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

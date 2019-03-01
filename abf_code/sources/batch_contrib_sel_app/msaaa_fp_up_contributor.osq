@@ -1,0 +1,365 @@
+/*----------------------------------------------------------------------
+  This procedure adds any non-existing contributors to the contributor
+  table.They are selected from the file passed from the IDBR section.
+  The addresses are also updated with new information from the IDBR file.
+----------------------------------------------------------------------*/
+
+PROCEDURE msaaa_fp_up_contributor () =
+
+DECLARE 
+  h_frpr_name             = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_table                 = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_text                  = VARCHAR(80) NOT NULL WITH DEFAULT,
+  h_contributor_reference = CHAR(11)    NOT NULL WITH DEFAULT,
+  h_ext_found             = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_character             = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_counter               = INTEGER4    NOT NULL WITH DEFAULT,
+  h_rows                  = INTEGER4    NOT NULL WITH DEFAULT,
+  h_return                = INTEGER1    NOT NULL WITH DEFAULT,
+  h_return_2              = INTEGER1    NOT NULL WITH DEFAULT,
+  h_area_code             = VARCHAR(20) NOT NULL WITH DEFAULT,
+  h_phone                 = VARCHAR(20) NOT NULL WITH DEFAULT,
+  h_ext                   = VARCHAR(20) NOT NULL WITH DEFAULT,
+  h_fax                   = VARCHAR(20) NOT NULL WITH DEFAULT,
+  h_orig_phone            = VARCHAR(20) NOT NULL WITH DEFAULT,
+  h_orig_fax              = VARCHAR(20) NOT NULL WITH DEFAULT,
+  h_test_string           = VARCHAR(20) NOT NULL WITH DEFAULT,
+
+  lp_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+
+  h_frpr_name = 'msaaa_fp_up_contributor';
+  h_table = 'temp_sel_new_contribs';
+
+  /*------------------------------------------------------------------
+    Log start of process.
+  ------------------------------------------------------------------*/
+
+  h_text = 'NOTE: Starting process 2.';
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = :h_text);
+
+  /*------------------------------------------------------------------
+    Update the contributor table with the information from the idbr
+    selection file. 
+
+    Don't update PRODCOM's contact details columns (phone_contact,
+    contact_phone_no and fax_number)
+  ------------------------------------------------------------------*/
+
+  UPDATE contributor a
+  FROM   :g_reg_table b
+  SET    contributor_reference = b.ruref,
+         addressee  = UPPERCASE(b.contact),
+         add_name1  = b.runame1,
+         add_name2  = b.runame2,
+         add_name3  = b.runame3,
+         add_tradstyle1 = b.tradstyle1,
+         add_tradstyle2 = b.tradstyle2,
+         add_tradstyle3 = b.tradstyle3,
+         add_line1 = b.ruaddr1,
+         add_line2 = b.ruaddr2,
+         add_line3 = b.ruaddr3,
+         add_line4 = b.ruaddr4,
+         add_line5 = b.ruaddr5,
+         add_postcode = b.rupostcode
+  WHERE  a.contributor_reference  = b.ruref;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update entries on contributor_table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN h_return;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Prepare new contributors for insertion into contributor table.
+  ------------------------------------------------------------------*/
+
+  h_return = batch_fp_drop_table (h_table = :h_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled by external procedure */
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE :h_table
+  AS 
+  SELECT ruref AS contributor_reference,
+         telephone AS contact_phone_no,
+         fax AS fax_number,
+         '     ' AS phone_area_code,
+         '          ' AS phone,
+         '     ' AS phone_extension,
+         '          ' AS fax
+  FROM   :g_reg_table
+  WHERE   ruref NOT IN 
+              ( SELECT contributor_reference 
+                FROM   contributor);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to insert new refs into contributor table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN h_return;
+    RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN
+    h_text = 'NOTE: No brand new contributors selected for this period.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+    RETURN 0;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+    Re-format idbr phone & fax numbers to make them suitable for ProdCom
+  ------------------------------------------------------------------------*/
+
+  SELECT contributor_reference AS h_contributor_reference,
+         contact_phone_no      AS h_orig_phone,
+         fax_number            AS h_orig_fax
+  FROM   :h_table
+  BEGIN
+
+    h_orig_phone = UPPER(h_orig_phone);
+    h_orig_fax   = UPPER(h_orig_fax);
+
+    h_area_code = '';
+    h_phone     = '';
+    h_ext       = '';
+    h_fax       = '';
+
+    /*---------------------------------------------------------------------
+      Put text into phone, except for text preceding a space if that
+        space appears in the first 6 characters, in which case put it
+        into area_code. (If an X is found, put all following text into
+        extension).
+    ---------------------------------------------------------------------*/
+
+    h_ext_found  = 'n';
+    h_orig_phone = SQUEEZE(h_orig_phone);
+
+    IF locate(h_orig_phone,' ') > 10
+    THEN
+      h_orig_phone = left(h_orig_phone,5) + ' '
+                   + right(h_orig_phone,(length(h_orig_phone) - 5)); 
+    ENDIF;
+
+    h_test_string = '';
+    h_counter     = 1;
+
+    WHILE h_counter <= LENGTH(h_orig_phone)
+    DO
+
+      h_character = ' ';
+      h_character = CHAREXTRACT(h_orig_phone,h_counter);
+
+      IF LOCATE(' 0123456789',h_character) < 12
+      THEN
+
+        IF  h_character = ' ' 
+        AND h_area_code = ''
+        AND LENGTH(h_test_string) <= 5 
+        THEN
+          h_area_code   = h_test_string;
+          h_test_string = '';
+        ELSE
+          h_test_string = h_test_string + h_character;
+        ENDIF;
+
+      ELSEIF h_character = 'X'
+      THEN
+
+        h_phone       = h_test_string;
+        h_ext_found   = 'y';
+        h_test_string = '';
+
+      ENDIF;
+
+      h_counter = h_counter + 1;
+
+    ENDWHILE;
+
+    IF h_ext_found = 'y'
+    THEN
+      h_ext = h_test_string;
+    ELSE
+      h_phone = h_test_string;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+        If a space is in the fax number, make the fax number the
+        text following the space (i.e. lose the area_code - but only
+        if the area code for the phone is the same as that found for
+        the fax)
+    --------------------------------------------------------------*/
+
+    h_orig_fax    = SQUEEZE(h_orig_fax);
+    h_test_string = '';
+    h_counter     = 1;
+
+    WHILE h_counter <= LENGTH(h_orig_fax)
+    DO
+
+      h_character = CHAREXTRACT(h_orig_fax,h_counter);
+
+      IF LOCATE(' 0123456789',h_character) < 12
+      THEN
+
+        IF  h_character = ' ' 
+        AND h_test_string = h_area_code
+        THEN
+          h_test_string = '';
+        ELSE
+          h_test_string = h_test_string + h_character;
+        ENDIF;
+
+      ENDIF;
+
+      h_counter = h_counter + 1;
+
+    ENDWHILE;
+
+    h_fax = h_test_string;
+
+    /*--------------------------------------------------------------------
+       Update, but any overflowing fields will mean data being lost
+    ---------------------------------------------------------------------*/
+
+    UPDATE :h_table
+    SET    phone_area_code = :h_area_code,
+           phone           = :h_phone,
+           phone_extension = :h_ext,
+           fax             = :h_fax
+    WHERE  contributor_reference = :h_contributor_reference;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to update phone or fax for contributor ' 
+             +  VARCHAR(:h_contributor_reference) +'.';
+      CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+  END;
+
+  h_return_2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return_2 != 0
+  THEN
+    h_text = 'ERROR: Failed to select loop data from ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return_2,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Insert new contributors into contributor table.
+  ------------------------------------------------------------------*/
+
+  INSERT INTO contributor
+  SELECT      a.ruref      AS contributor_reference,
+              a.contact    AS addressee,
+              a.runame1    AS add_name1,
+              a.runame2    AS add_name2,
+              a.runame3    AS add_name3,
+              a.tradstyle1 AS add_tradstyle1,
+              a.tradstyle2 AS add_tradstyle2,
+              a.tradstyle3 AS add_tradstyle3,
+              a.ruaddr1    AS add_line1,
+              a.ruaddr2    AS add_line2,
+              a.ruaddr3    AS add_line3,
+              a.ruaddr4    AS add_line4,
+              a.ruaddr5    AS add_line5,
+              a.rupostcode AS add_postcode,
+              a.contact    AS phone_contact,
+              b.phone_area_code  AS phone_area_code,
+              b.phone      AS phone,
+              b.phone_extension  AS phone_extension,
+              b.phone_area_code  AS fax_area_code,
+              b.fax        AS fax,
+              ''           AS email
+  FROM        :g_reg_table a,
+              :h_table b
+  WHERE       a.ruref = b.contributor_reference;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to insert new contributors into contributor table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN h_return;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Note number of new contributors in process log.
+  ------------------------------------------------------------------*/
+
+  h_text = 'NOTE: ' +VARCHAR(:h_rows) +' brand new contributors added.';
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = :h_text);
+
+  RETURN 0;
+
+}
+
+/************************ LOCAL PROCEDURES *********************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  h_rows = 0;
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_num_row    = BYREF(h_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

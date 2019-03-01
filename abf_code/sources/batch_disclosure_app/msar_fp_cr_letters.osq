@@ -1,0 +1,945 @@
+/****************************************************************************
+
+  It is important to remember that as there is no SAS data for the current 
+  data period, this application has to generate the letters based on the 
+  previous years data. The data from SAS is still marked with the current
+  data period, but remember its generated from teh previous data period. 
+
+  Its not an ideal situation, but RAP do manually send disclosure letters
+  to contributors they identify as disclosive that are not sent letters 
+  by this application.
+
+  Tables Used:
+
+  1. :h_sas_table = Temporary table to hold the SAS file; 
+  2. :h_dsc_table = Temporary table used to hold this period's disclosive data; 
+  3. dsc_printing = Semi-permanent table that :h_dsc_table is inserted into.
+                    This will be used for subsequent reprints / reminders.
+
+  CHANGE HISTORY:-
+  DF - MAR 2013 - Rewritten to work with new automation processes.
+*****************************************************************************/
+
+PROCEDURE msar_fp_cr_letters () =
+
+DECLARE 
+  h_frpr_name       = VARCHAR(24) NOT NULL,
+  h_dsc_table       = VARCHAR(24) NOT NULL,
+  h_sas_table       = VARCHAR(24) NOT NULL,
+  h_text            = VARCHAR(70) NOT NULL,
+  h_command         = VARCHAR(200) NOT NULL,
+  h_file1           = VARCHAR(100) NOT NULL,
+  h_file2           = VARCHAR(100) NOT NULL,
+  h_reference       = CHAR(11) NOT NULL,
+  h_quest           = CHAR(9)  NOT NULL,
+  h_line1           = CHAR(65) NOT NULL,
+  h_line2           = CHAR(65) NOT NULL,
+  h_line3           = CHAR(65) NOT NULL,
+  h_line4           = CHAR(65) NOT NULL,
+  h_line5           = CHAR(65) NOT NULL,
+  h_line6           = CHAR(65) NOT NULL,
+  h_line7           = CHAR(65) NOT NULL,
+  h_line8           = CHAR(65) NOT NULL,
+  h_line9           = CHAR(65) NOT NULL,
+  h_line10          = CHAR(65) NOT NULL,
+  h_lines           = INTEGER4 NOT NULL,
+  h_question        = INTEGER4 NOT NULL,
+  h_period          = INTEGER4 NOT NULL,
+  h_tid             = INTEGER4 NOT NULL,
+  h_return          = INTEGER1 NOT NULL,
+
+  lp_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_drop_table  = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name = 'msar_fp_cr_letters';
+
+  h_sas_table = 'tt_dsc_ltrs_01';
+  h_dsc_table = 'tt_dsc_ltrs_02';
+
+  h_file1 = :g_path_name1 + '/disc_014.txt';
+  h_file2 = :g_path_name1 + '/disc_014.out';
+
+  h_period = :g_period - 100;
+
+  /*------------------------------------------------------------------
+      Log start of sub-process.
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'STARTING: Letters subprocess (1a) starting.');
+
+  /*------------------------------------------------------------------
+    Edit SAS file to remove spaces.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[I/XXI] Loading SAS file . . .';
+  SLEEP 1;
+
+  h_command = 'sed -e "s/ ,/,/g" ' +:h_file1  
+            + '>'  + :h_file2;
+
+  h_return = CALLPROC msa_cp_callsys(:h_command);
+
+  IF h_return != 0 
+  THEN
+    h_text = 'ERROR: Failed to load SAS file.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+     RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Drop then create temp SAS table 
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[II/XXI] Creating temporary SAS table. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_sas_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in local procedure */
+     RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_sas_table 
+              ( period                INTEGER4 NOT NULL,
+                question              INTEGER4 NOT NULL,
+                question_industry     INTEGER4 NOT NULL,
+                enterprise            CHAR(10) NOT NULL,
+                contributor_reference CHAR(11) NOT NULL,
+                disc_type             CHAR(1)  NOT NULL);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create blank SAS temp table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Populate temp SAS table from data file.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[III/XXI] Populating temporary SAS table. . .';
+  SLEEP 1;
+
+  COPY TABLE :h_sas_table
+           ( period                = c0comma,
+             question              = c0comma,
+             question_industry     = c0comma,
+             enterprise            = c0comma,
+             contributor_reference = c0comma,
+             disc_type             = c0nl)
+  FROM :h_file2;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0 
+  THEN
+    h_text = 'ERROR: Failed to populate SAS temp table from file.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Modify temp SAS table to btree unique.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[IV/XXI] Modifying temporary SAS table. . .';
+  SLEEP 1;
+
+  MODIFY :h_sas_table TO BTREE UNIQUE 
+      ON contributor_reference, period, enterprise, question;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0 
+  THEN
+    h_text = 'ERROR: Failed to modify SAS temp table structure.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Delete all other data periods from the temp SAS table.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[V/XXI] Deleting other data periods from SAS table. . .';
+  SLEEP 1;
+
+  DELETE FROM :h_sas_table
+  WHERE period != :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1 
+  THEN
+    h_text = 'ERROR: Failed to delete other data periods from SAS table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Delete non-selected or deselected from the temp SAS table.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[VI/XXI] Deleting non-selected from SAS table. . .';
+  SLEEP 1;
+
+  DELETE FROM :h_sas_table a
+  WHERE  a.contributor_reference NOT IN
+      (  SELECT b.contributor_reference
+         FROM   contributor_period b
+         WHERE  b.contributor_reference = a.contributor_reference
+           AND  b.period = :g_period);
+           
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1 
+  THEN
+    h_text = 'ERROR: Failed to delete non-selected from SAS table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+
+  /*---------------------------------------------------------------------
+     Drop then create temp disc table holding question text to go with
+     disclosive questions.
+  ---------------------------------------------------------------------*/
+
+  MESSAGE '[VII/XXI] Creating temporary disclosure table. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_dsc_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in local procedure */
+     RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_dsc_table
+  AS 
+  SELECT a.period,
+         14 AS inquiry,
+         a.question_industry,
+         a.enterprise,
+         a.contributor_reference,
+         a.disc_type,
+         c.contributor_industry,
+         c.region,
+         c.legal_status,
+         c.currency,
+         0 AS need_count,
+         b.question,
+         b.quest_order,
+         b.unit_1,
+         b.text_line1,
+         b.text_line2,
+         b.text_line3,
+         b.text_line4,
+         b.text_line5,
+         b.text_line6,
+         b.text_line7,
+         b.text_line8,
+         b.text_line9,
+         b.text_line10
+  FROM   :h_sas_table a,
+         question_library b,
+         contributor_period c
+  WHERE  a.question = b.question
+    AND  a.period = :g_period
+    AND  a.period = b.period
+    AND  b.period = c.period
+    AND  a.contributor_reference = c.contributor_reference;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0 
+  THEN
+    h_text = 'ERROR: Failed to create temporary disclosusre table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Modify temp disclosure table to btree unique.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[VIII/XXI] Modifying temporary disclosure table. . .';
+  SLEEP 1;
+
+  MODIFY :h_dsc_table TO BTREE UNIQUE 
+      ON contributor_reference, question;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0 
+  THEN
+    h_text = 'ERROR: Failed to modify temp disclosure table structure.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*-----------------------------------------------------------------
+     As you can be disclosive to a volume and not the value question,
+     get the text - which is only stored alongside the value question on
+     the question library.
+  -----------------------------------------------------------------*/
+
+  MESSAGE '[IX/XXI] Updating question text. . .';
+  SLEEP 1;
+
+  UPDATE :h_dsc_table a
+  FROM   question_library b
+  SET    text_line1 = b.text_line1,
+         text_line2 = b.text_line2,
+         text_line3 = b.text_line3,
+         text_line4 = b.text_line4,
+         text_line5 = b.text_line5,
+         text_line6 = b.text_line6,
+         text_line7 = b.text_line7,
+         text_line8 = b.text_line8,
+         text_line9 = b.text_line9,
+         text_line10 = b.text_line10
+  WHERE  a.question / 10 * 10 + 1 = b.question
+    AND  b.period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update question text on temp disclosure table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*-----------------------------------------------------------------
+    Amend the Total Sales question text.
+  -----------------------------------------------------------------*/
+
+  MESSAGE '[X/XXI] Updating total sales text. . .';
+  SLEEP 1;
+
+  UPDATE :h_dsc_table
+  SET    text_line1 = 'Total Turnover',
+         text_line2 = '',
+         text_line3 = '',
+         text_line4 = '',
+         text_line5 = '',
+         text_line6 = '',
+         text_line7 = '',
+         text_line8 = '',
+         text_line9 = '',
+         text_line10 = ''
+  WHERE  MOD(question,10000) = 9200;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update Q9200 text on temp disclosure table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*-----------------------------------------------------------------
+    Blank out question text except the lowest numbered question 
+    at 8 digit level.
+  -----------------------------------------------------------------*/
+
+  MESSAGE '[XI/XXI] Blanking out unnecessary text. . .';
+  SLEEP 1;
+
+  UPDATE :h_dsc_table a
+     SET text_line1 = '',
+         text_line2 = '',
+         text_line3 = '',
+         text_line4 = '',
+         text_line5 = '',
+         text_line6 = '',
+         text_line7 = '',
+         text_line8 = '',
+         text_line9 = '',
+         text_line10 = ''
+  WHERE  question != (SELECT MIN(b.question)
+                      FROM :h_dsc_table b
+                      WHERE a.question / 10 = b.question / 10
+                      AND a.contributor_reference = b.contributor_reference);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to blank unused text on temp disclosure table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*-----------------------------------------------------------------
+    Blank out the note texts 
+  -----------------------------------------------------------------*/
+
+  MESSAGE '[XII/XXI] Blanking out question notes text. . .';
+  SLEEP 1;
+
+  SELECT contributor_reference AS h_reference,
+         VARCHAR(question)     AS h_quest,
+         text_line1            AS h_line1,
+         text_line2            AS h_line2,
+         text_line3            AS h_line3,
+         text_line4            AS h_line4,
+         text_line5            AS h_line5,
+         text_line6            AS h_line6,
+         text_line7            AS h_line7,
+         text_line8            AS h_line8,
+         text_line9            AS h_line9,
+         text_line10           AS h_line10,
+         tid                   AS h_tid
+  FROM   :h_dsc_table
+  WHERE  LOWERCASE(text_line1)  LIKE '%see note%'
+     OR  LOWERCASE(text_line2)  LIKE '%see note%'
+     OR  LOWERCASE(text_line3)  LIKE '%see note%'
+     OR  LOWERCASE(text_line4)  LIKE '%see note%'
+     OR  LOWERCASE(text_line5)  LIKE '%see note%'
+     OR  LOWERCASE(text_line6)  LIKE '%see note%'
+     OR  LOWERCASE(text_line7)  LIKE '%see note%'
+     OR  LOWERCASE(text_line8)  LIKE '%see note%'
+     OR  LOWERCASE(text_line9)  LIKE '%see note%'
+     OR  LOWERCASE(text_line10) LIKE '%see note%'
+  BEGIN
+
+    IF LOCATE(LOWERCASE(h_line1),'see note') <= LENGTH(h_line1) 
+    THEN
+      h_line1 = '';
+    ENDIF;
+
+    IF LOCATE(LOWERCASE(h_line2),'see note') <= LENGTH(h_line2) 
+    THEN
+      h_line2 = '';
+    ENDIF;
+
+    IF LOCATE(LOWERCASE(h_line3),'see note') <= LENGTH(h_line3) 
+    THEN
+      h_line3 = '';
+    ENDIF;
+
+    IF LOCATE(LOWERCASE(h_line4),'see note') <= LENGTH(h_line4) 
+    THEN
+      h_line4 = '';
+    ENDIF;
+
+    IF LOCATE(LOWERCASE(h_line5),'see note') <= LENGTH(h_line5) 
+    THEN
+      h_line5 = '';
+    ENDIF;
+
+    IF LOCATE(LOWERCASE(h_line6),'see note') <= LENGTH(h_line6) 
+    THEN
+      h_line6 = '';
+    ENDIF;
+
+    IF LOCATE(LOWERCASE(h_line7),'see note') <= LENGTH(h_line7) 
+    THEN
+      h_line7 = '';
+    ENDIF;
+
+    IF LOCATE(LOWERCASE(h_line8),'see note') <= LENGTH(h_line8) 
+    THEN
+      h_line8 = '';
+    ENDIF;
+
+    IF LOCATE(LOWERCASE(h_line9),'see note') <= LENGTH(h_line9) 
+    THEN
+      h_line9 = '';
+    ENDIF;
+
+    IF LOCATE(LOWERCASE(h_line10),'see note') <= LENGTH(h_line10) 
+    THEN
+      h_line10 = '';
+    ENDIF;
+
+    UPDATE :h_dsc_table
+    SET    text_line1 = :h_line1,
+           text_line2 = :h_line2,
+           text_line3 = :h_line3,
+           text_line4 = :h_line4,
+           text_line5 = :h_line5,
+           text_line6 = :h_line6,
+           text_line7 = :h_line7,
+           text_line8 = :h_line8,
+           text_line9 = :h_line9,
+           text_line10 = :h_line10
+    WHERE  tid = :h_tid;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0 
+    THEN
+      h_text = 'ERROR: Failed to blank note text for ' + :h_reference 
+             + '-' + :h_quest +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1 
+  THEN
+    h_text = 'ERROR: Failed to select details for note dext loop.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*-----------------------------------------------------------------
+     For Euro Contributors, set the euro currency symbol ("!") for units
+  -----------------------------------------------------------------*/
+
+  MESSAGE '[XIII/XXI] Setting Euro currency symbol on units. . .';
+  SLEEP 1;
+
+  UPDATE :h_dsc_table
+  SET    unit_1 = '!000'
+  WHERE  unit_1 = '£000'
+    AND  currency = 'E';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1 
+  THEN
+    h_text = 'ERROR: Failed to update units with Euro currency marker.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*-----------------------------------------------------------------
+     Setting Euro value for standard headings text.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[XIV/XXI] Setting Euro value for standard headings text. . .';
+  SLEEP 1;
+
+  UPDATE :h_dsc_table
+  SET    text_line2 = 'value of each product line is less than !30,000'
+  WHERE  text_line2 = 'value of each product line is less than £25,000'
+    AND   currency = 'E';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1 
+  THEN
+    h_text = 'ERROR: Failed to update text_line2 with Euro equivalent.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*-----------------------------------------------------------------
+     Work out how many lines will be required for each question.
+  -----------------------------------------------------------------*/
+
+  MESSAGE '[XV/XXI] Calculating basic line counts. . .';
+  SLEEP 1;
+
+  SELECT text_line2 AS h_line2,
+         text_line3 AS h_line3,
+         text_line4 AS h_line4,
+         text_line5 AS h_line5,
+         text_line6 AS h_line6,
+         text_line7 AS h_line7,
+         text_line8 AS h_line8,
+         text_line9 AS h_line9,
+         text_line10 AS h_line10,
+         tid AS h_tid
+  FROM   :h_dsc_table
+  WHERE  text_line1 != ''
+  BEGIN
+
+    h_lines = 3; 
+
+    IF h_line2 != '' 
+    THEN
+       h_lines = h_lines + 1;
+    ENDIF;
+
+    IF h_line3 != '' 
+    THEN
+       h_lines = h_lines + 1;
+    ENDIF;
+
+    IF h_line4 != '' 
+    THEN
+       h_lines = h_lines + 1;
+    ENDIF;
+
+    IF h_line5 != '' 
+    THEN
+       h_lines = h_lines + 1;
+    ENDIF;
+
+    IF h_line6 != '' 
+    THEN
+       h_lines = h_lines + 1;
+    ENDIF;
+
+    IF h_line7 != '' 
+    THEN
+       h_lines = h_lines + 1;
+    ENDIF;
+
+    IF h_line8 != '' 
+    THEN
+       h_lines = h_lines + 1;
+    ENDIF;
+
+    IF h_line9 != '' 
+    THEN
+       h_lines = h_lines + 1;
+    ENDIF;
+
+    IF h_line10 != '' 
+    THEN
+       h_lines = h_lines + 1;
+    ENDIF;
+
+    UPDATE :h_dsc_table
+    SET    need_count = :h_lines
+    WHERE  tid = :h_tid;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0 
+    THEN
+      h_text = 'ERROR: Failed to update need count on temp disclosure table.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select for need count loop.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*--------------------------------------------------------------------------
+      Now, add 2 lines-required to the top-most question for every 
+      subsidiary question.
+  ---------------------------------------------------------------------------*/
+
+  MESSAGE '[XVI/XXI] Calculating additional line counts. . .';
+  SLEEP 1;
+
+  SELECT question AS h_question,
+         contributor_reference AS h_reference
+  FROM :h_dsc_table
+  WHERE text_line1 = ''
+  BEGIN
+
+    UPDATE :h_dsc_table
+    SET    need_count = need_count + 2
+    WHERE  question = (SELECT MIN(question)
+		       FROM :h_dsc_table
+		       WHERE  question/10 = :h_question / 10
+		       AND contributor_reference = :h_reference);
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0 
+    THEN
+      h_text = 'ERROR: Failed to update need count for sub questions.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to select for sub questions loop.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+      Delete any existing rows for this period from dsc_printing
+  -----------------------------------------------------------------------*/
+
+  MESSAGE '[XVII/XXI] Deleting pre-existing data from dsc_printing. . .';
+  SLEEP 1;
+
+  DELETE FROM dsc_printing
+  WHERE       period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to delete existing data from dsc_printing.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*--------------------------------------------------------------------------
+      Insert the contents of the temp disclosure table into 
+      dsc_printing permanent table.
+  --------------------------------------------------------------------------*/
+
+  MESSAGE '[XVIII/XXI] Inserting new data into dsc_printing. . .';
+  SLEEP 1;
+
+  INSERT INTO dsc_printing
+  SELECT *
+  FROM :h_dsc_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to insert new data into dsc_printing.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+      Delete pre-existing data for this period from the 
+      dsc_response permanent table.
+  -------------------------------------------------------------------------*/
+
+  MESSAGE '[XIX/XXI] Deleting pre-existing data from dsc_response. . .';
+  SLEEP 1;
+
+  DELETE FROM dsc_response
+  WHERE  period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to delete existing data from dsc_response.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Insert new period's disclosive data into dsc_response
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[XX/XXI] Inserting new data into dsc_response. . .';
+  SLEEP 1;
+
+  INSERT INTO dsc_response
+  SELECT contributor_reference,
+         contributor_industry AS industry,
+         question_industry AS disc_question_industry,
+         question,
+         period,
+         enterprise,
+         DATE('today'),
+         '',
+         '',
+         '',
+         ''
+  FROM   :h_dsc_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to insert new data into dsc_response.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Delete the temporary tables.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[XXI/XXI] Tidying up temp tables. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_dsc_table);
+
+  IF h_return = 9 THEN
+     RETURN h_return;
+  ENDIF;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_sas_table);
+
+  IF h_return = 9 THEN
+     RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Log completion of sub-process.
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'COMPLETE: Letters subprocess (1a) completed OK.');
+
+  RETURN 0;
+}
+
+/************************* LOCAL PROCEDURES ********************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(36) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name  = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  h_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF h_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+
+
+

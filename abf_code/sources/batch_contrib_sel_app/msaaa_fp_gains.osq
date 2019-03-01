@@ -1,0 +1,443 @@
+/*-s--------------------------------------------------------------------
+  Procedure msaaa_fp_gains
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msaaa_fp_gains (
+
+        n_ireland    = CHAR(1) NOT NULL) =
+
+DECLARE table_name_1 = CHAR(20) NOT NULL,
+        ret_val      = INTEGER4 NOT NULL,
+        report_name  = CHAR(30) NOT NULL,
+        print_name   = CHAR(30) NOT NULL,
+        h_table      = VARCHAR(24) NOT NULL,
+        h_frpr_name  = VARCHAR(24) NOT NULL
+
+{
+    h_frpr_name = 'msaaa_fp_gains' ;
+    h_table = 'temp_gains' ;
+    report_name = 'msaaa_rw_gains.rw';
+
+    MESSAGE 'Gains . . .';
+
+    IF n_ireland = 'y'
+    THEN
+        print_name = 'gains_ni.rpt';
+    ELSE
+        print_name = 'gains.rpt';
+    ENDIF;
+
+    IF :g_inquiry = 15
+    THEN
+        table_name_1 = 'qsi_new_contribs';
+    ELSE
+        table_name_1 = 'asi_new_contribs';
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table);
+
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create temp table
+    ----------------------------------------------------------------e-*/
+
+    CREATE TABLE :h_table (
+                 prev_sic         INTEGER4 NOT NULL,
+                 curr_sic         INTEGER4 NOT NULL,
+                 ref              CHAR(11) NOT NULL,
+                 prev_emp         INTEGER4 NOT NULL,
+                 curr_emp         INTEGER4 NOT NULL,
+                 rtn_emp          INTEGER4 NOT NULL,
+                 add_name1        CHAR(35) NOT NULL,
+                 prev_cutoff      INTEGER4 NOT NULL,
+                 curr_cutoff      INTEGER4 NOT NULL,
+                 cutoff_flag      CHAR(1) NOT NULL,
+                 prev_cutoff_flag CHAR(1) NOT NULL,
+                 reason_removed   VARCHAR(40) NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Unable to create ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Reclassifications
+    ----------------------------------------------------------------e-*/
+
+    IF n_ireland = 'y'
+    THEN
+        INSERT INTO :h_table
+        SELECT       a.contributor_industry ,
+                     b.contributor_industry ,
+                     a.contributor_reference ,
+                     a.register_emp,
+                     b.register_emp,
+                     0,
+                     '',
+                     0,
+                     0,
+                     '',
+                     '',
+                     ''
+        FROM         contributor_period a,
+                     contributor_period b
+        WHERE        a.period = :g_prev_period1
+        AND          b.period = :g_period
+        AND          a.contributor_reference = b.contributor_reference
+        AND          a.contributor_industry <> b.contributor_industry
+        AND          a.region = 'YY'
+        AND          a.region = b.region;
+    ELSE
+        INSERT INTO :h_table
+        SELECT       a.contributor_industry ,
+                     b.contributor_industry ,
+                     a.contributor_reference ,
+                     a.register_emp,
+                     b.register_emp,
+                     0,
+                     '',
+                     0,
+                     0,
+                     '',
+                     '',
+                     ''
+        FROM         contributor_period a,
+                     contributor_period b
+        WHERE        a.period = :g_prev_period1
+        AND          b.period = :g_period
+        AND          a.contributor_reference = b.contributor_reference
+        AND          a.contributor_industry <> b.contributor_industry
+    ENDIF;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting into ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Process the new contribs who were not selected for the previous
+     period
+    ----------------------------------------------------------------e-*/
+
+    IF n_ireland = 'y'
+    THEN
+        INSERT INTO :h_table
+        SELECT      0,
+                    contributor_industry,
+                    contributor_reference,
+                    0,
+                    reg_emp,
+                    0,
+                    '',
+                    0,
+                    0,
+                    '',
+                    '',
+                    ''
+        FROM        :table_name_1
+        WHERE       region = 'YY';
+    ELSE
+        INSERT INTO :h_table
+        SELECT      0,
+                    contributor_industry,
+                    contributor_reference,
+                    0,
+                    reg_emp,
+                    0,
+                    '',
+                    0,
+                    0,
+                    '',
+                    '',
+                    ''
+        FROM        :table_name_1;
+    ENDIF;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting new contributors into ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Add contributor name from contributor
+    ----------------------------------------------------------------e-*/
+
+    UPDATE :h_table a
+    FROM   contributor b
+    SET    add_name1 = b.add_name1
+    WHERE  a.ref = b.contributor_reference;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating contributor names',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Add prev cutoff from industry_period
+    ----------------------------------------------------------------e-*/
+
+    UPDATE :h_table a
+    FROM   industry_period b
+    SET    prev_cutoff = b.emp_cutoff
+    WHERE  a.curr_sic = b.industry
+    AND    b.period = :g_prev_period1;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating previous cutoffs',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Add curr cutoff from industry_period
+    ----------------------------------------------------------------e-*/
+
+    UPDATE :h_table a
+    FROM   industry_period b
+    SET    curr_cutoff = b.emp_cutoff
+    WHERE  a.curr_sic = b.industry
+    AND    b.period = :g_period;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating current cutoffs',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Add flag to indicate curr PPS
+    ----------------------------------------------------------------e-*/
+
+    UPDATE :h_table a
+    FROM   industry_period b,
+           contributor_period c
+    SET    cutoff_flag = 'S'
+    WHERE  a.curr_sic = b.industry
+    AND    a.curr_sic = c.contributor_industry
+    AND    b.period = :g_period
+    AND    b.period = c.period
+    AND    a.ref = c.contributor_reference
+    AND    c.register_emp > 9
+    AND    c.register_emp < b.emp_cutoff;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating current PPS',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Add flag to indicate prev PPS
+    ----------------------------------------------------------------e-*/
+
+    UPDATE :h_table a
+    FROM   industry_period b,
+           contributor_period c
+    SET    prev_cutoff_flag = 'S'
+    WHERE  a.prev_sic = b.industry
+    AND    a.prev_sic = c.contributor_industry
+    AND    b.period = :g_prev_period1
+    AND    b.period = c.period
+    AND    a.ref = c.contributor_reference
+    AND    c.register_emp > 9
+    AND    c.register_emp < b.emp_cutoff;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating previous PPS',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Add reason removed from removed_contrib_period
+    ----------------------------------------------------------------e-*/
+
+    UPDATE :h_table a
+    FROM   removed_contrib_period b
+    SET    reason_removed = b.reason_removed
+    WHERE  a.ref = b.contributor_reference
+    AND    b.period = :g_prev_period1
+    AND    b.date_removed =
+           (SELECT MAX(c.date_removed)
+            FROM   removed_contrib_period c
+            WHERE  b.contributor_reference = c.contributor_reference
+            AND    c.period = :g_prev_period1);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error adding reason removed',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Call the report writer program and drop the temporary table
+    ----------------------------------------------------------------e-*/
+
+    IF n_ireland = 'y'
+    THEN
+        ret_val = CALLPROC msa_cp_callsys(
+        'report ' +
+        :g_database +
+        ' ''(period = ' + VARCHAR(:g_period) +
+        ', title = "NORTHERN_IRELAND_"' +
+        ', table_name = "' + :h_table + '")''' +
+        ' -f$PRINTOUT/' + :print_name +
+        ' -i$REPORTS/' + :report_name + '> report.output');
+    ELSE
+        ret_val = CALLPROC msa_cp_callsys(
+        'report ' +
+        :g_database +
+        ' ''(period = ' + VARCHAR(:g_period) +
+        ', title = " "' +
+        ', table_name = "' + :h_table + '")''' +
+        ' -f$PRINTOUT/' + :print_name +
+        ' -i$REPORTS/' + :report_name + '> report.output');
+    ENDIF;
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error calling ' + :report_name,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*
+    ret_val = CALLPROC msa_cp_callsys(
+              'lp -drxp -oLANZ+NPN+SIMPLEX+?DRILLING? $PRINTOUT/' + 
+	      :print_name + ' >> report.output');
+*/
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error printing ' + :print_name,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+}

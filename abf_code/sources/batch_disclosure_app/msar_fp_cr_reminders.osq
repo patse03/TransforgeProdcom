@@ -1,0 +1,188 @@
+/*-s--------------------------------------------------------------------
+Disclosure Reminders:
+Gets data from disc_printing (where it was inserted by the initial
+batch run of disclosure letters)
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msar_fp_cr_reminders () =
+
+DECLARE ret_val              = INTEGER4 NOT NULL,
+        h_rep_table          = VARCHAR(24) NOT NULL,
+        h_frpr_name          = VARCHAR(24) NOT NULL
+
+{
+    h_frpr_name = 'msar_fp_cr_reminders';
+    h_rep_table = 'temp_disc_reminders';
+
+    /*------------------------------------------------------------------
+    GB Report Writer
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Creating GB Disclosure Reminders . . .';
+
+    ret_val = CALLPROC batch_fp_drop_table (
+              h_table = :h_rep_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_rep_table
+    AS SELECT    DISTINCT a.*
+    FROM         disc_printing a,
+                 disc_despatch b
+    WHERE        a.contributor_reference = b.contributor_reference
+    AND          a.period = :g_period
+    AND          b.period = a.period
+    AND          b.receipt_date = ''
+    AND          a.region <> 'YY'
+    AND          b.despatch_date >= :g_despatch_date;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+             h_num_row_ck = 1,
+             h_commit     = 'Y',
+             h_rollback   = 'N',
+             h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+       INSERT INTO error_log
+       VALUES(     'now',
+                   'System error creating GB ' + :h_rep_table,
+                   :h_frpr_name,
+                   9,
+                   :g_user_id);
+       COMMIT;
+       RETURN 9;
+
+    ELSEIF ret_val <> 0
+    THEN
+       INSERT INTO error_log
+       VALUES(     'now',
+                   'Error creating GB ' + :h_rep_table,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN 9;
+    ENDIF;
+
+    MESSAGE 'Preparing GB Report . . .';
+
+    ret_val = CALLPROC msa_cp_callsys (
+              'report ' +
+              :g_database +
+              ' ''(rep_table = "' + :h_rep_table + '"' +
+              ',analyst_table = "' + :g_analysts_table + '"' +
+              ',form_type = "M"' +
+              ',period = ' + VARCHAR(:g_period) +
+              ',inquiry = ' + VARCHAR(:g_inquiry) +
+              ',despatch_date = "' + VARCHAR(:g_gbdate) + '"' +
+              ')'' -i$REPORTS/msar_rw_disclosure.rw' +
+              ' -f$PRINTOUT/disc_gb_rem_' + VARCHAR(:g_period) + '.rpt'+
+              ' > report.output 2> report.output');
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error calling GB Disclosure Reminders',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    NI Report Writer
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Creating NI Disclosure Reminders . . .';
+
+    ret_val = CALLPROC batch_fp_drop_table (
+              h_table = :h_rep_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_rep_table
+    AS SELECT    DISTINCT a.*
+    FROM         disc_printing a,
+                 disc_despatch b
+    WHERE        a.contributor_reference = b.contributor_reference
+    AND          a.period = :g_period
+    AND          b.period = a.period
+    AND          b.receipt_date = ''
+    AND          a.region = 'YY'
+    AND          b.despatch_date >= :g_despatch_date;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+             h_num_row_ck = 1,
+             h_commit     = 'Y',
+             h_rollback   = 'N',
+             h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+       INSERT INTO error_log
+       VALUES(     'now',
+                   'System error creating NI ' + :h_rep_table,
+                   :h_frpr_name,
+                   9,
+                   :g_user_id);
+       COMMIT;
+       RETURN 9;
+
+    ELSEIF ret_val <> 0
+    THEN
+       INSERT INTO error_log
+       VALUES(     'now',
+                   'Error creating NI ' + :h_rep_table,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN 9;
+    ENDIF;
+
+    MESSAGE 'Preparing NI Report . . .';
+
+    ret_val = CALLPROC msa_cp_callsys (
+              'report ' +
+              :g_database +
+              ' ''(rep_table = "' + :h_rep_table + '"' +
+              ',analyst_table = "' + :g_analysts_table + '"' +
+              ',form_type = "M"' +
+              ',period = ' + VARCHAR(:g_period) +
+              ',inquiry = ' + VARCHAR(:g_inquiry) +
+              ',despatch_date = "' + VARCHAR(:g_nidate) + '"' +
+              ')'' -i$REPORTS/msar_rw_disclosure.rw' +
+              ' -f$PRINTOUT/disc_ni_rem_' + VARCHAR(:g_period) + '.rpt'+
+              ' > report.output 2> report.output');
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error calling NI Disclosure Reminders',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table (
+              h_table = :h_rep_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    RETURN 0;
+}

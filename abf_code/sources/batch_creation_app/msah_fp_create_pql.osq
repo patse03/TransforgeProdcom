@@ -1,0 +1,261 @@
+/*-s--------------------------------------------------------------------
+Parameters: Annual Period to be created for
+(1998 to set up periodic question library details for 9803, 9806, etc,
+ which should be 1 up from the current maximum annual period)
+
+Creates PQL periods for annual periods of creation for:
+
+question_library
+owner_question
+prodcom_lookup
+note
+note_text_line
+question_note_link
+prodcom_cncodes
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msah_fp_create_pql () =
+
+DECLARE h_param_list         = VARCHAR(100) NOT NULL,
+        h_varchar_variable   = VARCHAR(100) NOT NULL,
+        h_integer_variable   = INTEGER1 NOT NULL,
+        h_copy_table         = VARCHAR(24) NOT NULL,
+        h_table              = VARCHAR(24) NOT NULL,
+        h_tablelist          = VARCHAR(500) NOT NULL,
+        h_rows               = INTEGER4 NOT NULL,
+        h_position           = INTEGER1 NOT NULL,
+        h_param1             = VARCHAR(20) NOT NULL,
+        ret_val              = INTEGER1 NOT NULL,
+        h_latest_period      = INTEGER4 NOT NULL,
+        h_frpr_name          = VARCHAR(24) NOT NULL
+
+{
+    SELECT DBMSINFO('username') AS g_user_id;
+    SELECT DBMSINFO('database') AS g_database;
+
+    h_frpr_name = 'msah_fp_create_pql';
+
+    h_param_list = CALLPROC CommandLineParameters();
+
+    h_varchar_variable = SQUEEZE (h_param_list);
+    h_integer_variable = LOCATE (h_varchar_variable, ' ');
+    h_param1         =   LEFT (h_varchar_variable,h_integer_variable - 1);
+
+    g_period = INT4(:h_param1);
+
+    /*------------------------------------------------------------------
+     Get latest period for Annual
+    ------------------------------------------------------------------*/
+
+    SELECT span_end AS h_latest_period
+    FROM   inquiry
+    WHERE  inquiry = 14;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error selecting from inquiry',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Check Period - should be the latest one
+    ------------------------------------------------------------------*/
+
+    IF :g_period <> :h_latest_period
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Period = ' + VARCHAR(:g_period) +
+                    ', Should be ' + VARCHAR(:h_latest_period),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    INSERT INTO error_log
+    VALUES(     'now',
+                'PQL Creation Starts for:' +
+                ' Period = ' + VARCHAR(:g_period),
+                :h_frpr_name,
+                0,
+                :g_user_id);
+    COMMIT;
+
+    /*------------------------------------------------------------------
+    Loop for tables
+    ------------------------------------------------------------------*/
+
+    h_tablelist = 'owner_question/' +
+                  'prodcom_lookup/' +
+                  'note/' +
+                  'note_text_line/' +
+                  'question_note_link/' +
+                  'prodcom_cncodes/' +
+                  'question_library/';
+
+    WHILE :h_tablelist <> ''
+    DO
+        h_position = LOCATE(:h_tablelist,'/');
+        h_table = LEFT(:h_tablelist,h_position - 1);
+        h_tablelist = SHIFT(:h_tablelist, - h_position);
+
+        h_copy_table = 'copy_' + :h_table;
+
+        ret_val = CALLPROC batch_fp_drop_table ( h_table = :h_copy_table);
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        Create temporary table of current period's data
+        --------------------------------------------------------------*/
+
+        MESSAGE 'Creating ' + VARCHAR(:g_period) + ' copy of ' +
+                :h_table + ' . . .';
+
+        CREATE TABLE :h_copy_table
+        AS SELECT    *
+        FROM         :h_table
+        WHERE        period = :g_period;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row    = BYREF(:h_rows),
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error selecting ' + VARCHAR(:g_period) +
+                        ' from ' + :h_table,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        Update current period to next period
+        --------------------------------------------------------------*/
+
+        MESSAGE 'Updating ' + VARCHAR(:h_rows) + ' rows to ' +
+                VARCHAR(:g_period + 100) + ' on copy of ' + 
+                :h_table + ' . . .';
+
+        UPDATE  :h_copy_table
+        SET     period = period + 100;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error updating ' + :h_copy_table,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        Deleting next period's rows from original table
+        --------------------------------------------------------------*/
+
+        MESSAGE 'Deleting ' + VARCHAR(:g_period + 100) + ' data from ' +
+                :h_table + ' . . .';
+
+        DELETE FROM :h_table
+        WHERE       period = :g_period + 100;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error updating ' + :h_copy_table,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        Insert next period onto original table
+        --------------------------------------------------------------*/
+
+        MESSAGE 'Inserting ' + VARCHAR(:h_rows) + ' rows into ' +
+                :h_table + ' . . .';
+
+        INSERT INTO  :h_table
+        SELECT       *
+        FROM         :h_copy_table;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row    = BYREF(:h_rows),
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error inserting into ' + :h_table,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'PQL Creation: ' + :h_table + ' ' + VARCHAR(:h_rows) +
+                    ' rows inserted',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+
+        ret_val = CALLPROC batch_fp_drop_table ( h_table = :h_copy_table);
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+    ENDWHILE;
+
+    RETURN 0;
+}

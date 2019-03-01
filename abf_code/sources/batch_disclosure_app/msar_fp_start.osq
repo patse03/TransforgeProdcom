@@ -1,0 +1,724 @@
+/***************************************************************************
+ This procedure is the top procedure and routes according to 
+ the run type specified in the parameters.
+
+COMMAND LINE PARAMETERS:
+    $IMAGES/batch_disclosure_app -dprodlivedb -a 201200 L 
+    $DIMAGES/batch_disclosure_app -dproddevd1 -a 201200 L 
+
+WHERE
+     Period  : Current data period <yyyy00>. 
+     Run type: Letter, Reminder, Despatch list.
+
+History :-
+	    CG - FEB 11 - Amended to pass files to SPC.
+            DF - MAR 13 - Overhauled for new production system.
+***************************************************************************/
+
+PROCEDURE msar_fp_start () =
+
+DECLARE 
+  h_return             = INTEGER4     NOT NULL,
+  h_text               = VARCHAR(70)  NOT NULL,
+  h_param_list         = VARCHAR(200) NOT NULL,
+  h_varchar_variable   = VARCHAR(200) NOT NULL,
+  h_integer_variable   = INTEGER2     NOT NULL,
+  h_param1             = VARCHAR(10)  NOT NULL,
+  h_param2             = VARCHAR(10)  NOT NULL,
+  h_type               = CHAR(1)      NOT NULL,
+  h_frpr_name          = VARCHAR(25)  NOT NULL,
+  h_c_table            = VARCHAR(24)  NOT NULL,
+  h_q_table            = VARCHAR(24)  NOT NULL,
+  h_c_file             = VARCHAR(32)  NOT NULL,
+  h_q_file             = VARCHAR(32)  NOT NULL,
+
+  lp_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_drop_table  = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name = 'msar_fp_start';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  IF g_database = 'prodlivedb'
+  THEN
+    g_path_name1 = '/prodcom/live5/files/sas/';
+    g_path_name2 = '/prodcom/live5/files/forms/';
+  ELSE
+    g_path_name1 = '/prodcom/source/produser/files/sas/';
+    g_path_name2 = '/admin/scratch/';
+  ENDIF;
+
+  h_c_table = 'tt_dsc_c_data';
+  h_q_table = 'tt_dsc_q_data';
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_procs (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  /*-----------------------------------------------------------------
+      Select the parameters from the UNIX line
+  -----------------------------------------------------------------*/
+
+  h_param_list = CALLPROC COMMANDLINEPARAMETERS();
+
+  h_varchar_variable = SQUEEZE (h_param_list);
+
+  h_integer_variable = LOCATE (h_varchar_variable, ' ');
+  h_param1           = LEFT   (h_varchar_variable,h_integer_variable - 1);
+
+  h_varchar_variable = SHIFT  (h_varchar_variable, - h_integer_variable);
+  h_integer_variable = LOCATE (h_varchar_variable, ' ');
+  h_param2           = LEFT   (h_varchar_variable,h_integer_variable - 1);
+
+  g_period = INT4(:h_param1);
+  h_type = UPPER(:h_param2);
+
+  IF h_type = 'L'
+  THEN
+    g_mode = 'Letters';
+  ELSEIF h_type = 'R'
+  THEN
+    g_mode = 'Reminders';
+  ELSE
+    g_mode = 'Despatch List';
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Log start of process.
+  ------------------------------------------------------------------*/
+
+  IF h_type = 'L'
+  THEN
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = '*SIGNON*'); 
+
+  ELSE
+
+    SELECT MAX(log_no) AS g_log_no
+    FROM   dsc_process_log;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to select log number from process log table.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+  h_text = 'STARTING: MAIN DISCLOSURE PROCESS FOR '
+         + UPPER(:g_mode) + ' STARTED.';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  /*-----------------------------------------------------------------
+      Check parameters
+  -----------------------------------------------------------------*/
+
+  MESSAGE '[1/15] Checking Parameters . . .';
+  SLEEP 1;
+
+  SELECT period AS :g_period
+  FROM   inquiry_period
+  WHERE   period  = :g_period
+    AND   inquiry = 14;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return = 1
+  THEN
+
+    h_text = 'ERROR: Period parameter supplied (' 
+           + VARCHAR(:g_period) +') is not valid.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_text);
+    RETURN 9;
+
+  ELSEIF h_return > 1 
+  THEN
+
+    h_text = 'ERROR: Failed to select max period from inquiry period.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+
+  ENDIF;
+
+  IF  :h_type != 'L' 
+  AND :h_type != 'R' 
+  AND :h_type != 'D' 
+  THEN
+    h_text = 'ERROR: Run type parameter supplied (' +:h_type +') is not valid.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*-----------------------------------------------------------------
+      Setting output filenames.
+  -----------------------------------------------------------------*/
+
+  MESSAGE '[2/15] Setting filename. . .';
+  SLEEP 1;
+
+  IF :h_type = 'L' 
+  THEN
+
+    IF :g_database = 'prodlivedb'
+    THEN
+      h_c_file = 'disclosure014_'      + VARCHAR(:g_period);
+      h_q_file = 'disclosureitems014_' + VARCHAR(:g_period);
+    ELSE
+      h_c_file = 'TEST_disclosure014_'      + VARCHAR(:g_period);
+      h_q_file = 'TEST_disclosureitems014_' + VARCHAR(:g_period);
+    ENDIF;
+
+  ELSEIF :h_type = 'R' THEN
+
+    IF :g_database = 'prodlivedb'
+    THEN
+      h_c_file = 'remdisc014_' + varchar(:g_period);
+      h_q_file = 'remdiscitems014_' + varchar(:g_period);
+    ELSE
+      h_c_file = 'TEST_remdisc014_' + varchar(:g_period);
+      h_q_file = 'TEST_remdiscitems014_' + varchar(:g_period);
+    ENDIF;
+
+  ENDIF;
+
+  /*---------------------------------------------------------------------------
+      If run type is Letter, route to subprocess to create annual entries
+      into permanent table dsc_printing.
+
+      If run type is reminder, skip the subprocess as unnecessary.
+  ---------------------------------------------------------------------------*/
+
+  MESSAGE '[3/15] Selecting apropriate subprocess. . .';
+  SLEEP 1;
+
+  IF     :h_type = 'L' 
+  THEN
+    h_return =  CALLPROC msar_fp_cr_letters ();
+  ELSEIF :h_type = 'R' 
+  THEN
+    MESSAGE '[3/15] NOTE: Skipping yearly set-up as not "Letters" run. . .';
+    SLEEP 2;
+    h_return = 0;
+  ELSE
+    h_return =  CALLPROC msar_fp_cr_despatch ();
+  ENDIF;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: ' +:g_mode +' subprocess failed to complete successfully. '
+          + 'Please see dsc_process_log for details.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+    Drop temp working tables.
+  ------------------------------------------------------------------------*/
+
+  MESSAGE '[4/15] Dropping working tables. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table(p_table_name = :h_c_table);
+
+  IF h_return != 0 THEN 
+     RETURN 9;
+  ENDIF;
+
+  h_return = CALLPROC lp_drop_table(p_table_name = :h_q_table);
+
+  IF h_return != 0 THEN 
+     RETURN 9;
+  ENDIF;
+
+
+  /*------------------------------------------------------------------------- 
+      Create first working table
+  -------------------------------------------------------------------------*/
+
+  MESSAGE '[5/15] Creating first working table. . .';
+  SLEEP 1;
+
+  CREATE TABLE :h_c_table
+             ( contributor_reference CHAR(11) NOT NULL,
+               contributor_industry  CHAR(5)  NOT NULL WITH DEFAULT,
+               addressee             CHAR(30) NOT NULL WITH DEFAULT,
+               add_name1             CHAR(35) NOT NULL WITH DEFAULT,
+               add_name2             CHAR(35) NOT NULL WITH DEFAULT,
+               add_name3             CHAR(35) NOT NULL WITH DEFAULT,
+               add_tradstyle1        CHAR(35) NOT NULL WITH DEFAULT,
+               add_tradstyle2        CHAR(35) NOT NULL WITH DEFAULT,
+               add_tradstyle3        CHAR(35) NOT NULL WITH DEFAULT,
+               add_line1             CHAR(30) NOT NULL WITH DEFAULT,
+               add_line2             CHAR(30) NOT NULL WITH DEFAULT,
+               add_line3             CHAR(30) NOT NULL WITH DEFAULT,
+               add_line4             CHAR(30) NOT NULL WITH DEFAULt,
+               add_line5             CHAR(30) NOT NULL WITH DEFAULT,
+               add_postcode          CHAR(8)  NOT NULL WITH DEFAULT,
+               ons_name              CHAR(24) NOT NULL WITH DEFAULT,
+               ons_ext               CHAR(4)  NOT NULL WITH DEFAULT,
+	       region                CHAR(2)  NOT NULL WITH DEFAULT,
+	       legal_status          CHAR(1)  NOT NULL WITH DEFAULT,
+               form_type             CHAR(4)  NOT NULL WITH DEFAULT,
+	       welsh                 CHAR(1)  NOT NULL WITH DEFAULT);
+
+  h_return = CALLPROC  lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create table ' + :h_c_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------------- 
+      Insert outstanding disclosures from dsc_printing 
+      into first working table.
+  -------------------------------------------------------------------------*/
+
+  MESSAGE '[6/15] Populating first working table. . .';
+  SLEEP 1;
+
+  INSERT INTO :h_c_table
+  SELECT DISTINCT a.contributor_reference, 
+                  VARCHAR(a.contributor_industry),
+                  c.addressee,
+                  c.add_name1,
+                  c.add_name2,
+                  c.add_name3,
+                  c.add_tradstyle1,
+                  c.add_tradstyle2,
+                  c.add_tradstyle3,
+                  c.add_line1,
+                  c.add_line2,
+                  c.add_line3,
+                  c.add_line4,
+                  c.add_line5,
+                  c.add_postcode,
+                  ' ' AS ons_name,
+                  ' ' AS ons_ext,
+	          a.region,
+	          VARCHAR(a.legal_status),
+                  '0001' AS form_type,
+	          ' ' AS welsh
+  FROM            dsc_printing a,
+                  dsc_response b,
+                  contributor c
+  WHERE           a.contributor_reference = b.contributor_reference
+    AND           a.contributor_reference = c.contributor_reference
+    AND           a.period = b.period
+    AND           a.period = :g_period
+    AND           b.receipt_date = '';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to populate table ' + :h_c_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+      Update with form type 
+  -------------------------------------------------------------------------*/
+
+  MESSAGE '[7/15] Update form type. . .';
+  SLEEP 1;
+
+  UPDATE :h_c_table
+  SET    form_type = '0002'
+  WHERE  region    = 'YY';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update form_type on ' +:h_c_table +'.'; 
+    CALLPROC  write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+
+  /*-------------------------------------------------------------------------
+      Update with welsh marker
+  -------------------------------------------------------------------------*/
+
+  MESSAGE '[8/15] Update welsh marker. . .';
+  SLEEP 1;
+
+  UPDATE :h_c_table a
+  FROM   welsh_forms b
+  SET    welsh = 'W'
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  b.period = :g_period; 
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update welsh marker on ' +:h_c_table +'.'; 
+    CALLPROC  write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+      Update with Analyst details
+  -------------------------------------------------------------------------*/
+
+  MESSAGE '[9/15] Update analyst info. . .';
+  SLEEP 1;
+
+  UPDATE :h_c_table a
+  FROM   industry_analysts b
+  SET    ons_name = b.name,
+         ons_ext  = CHAR(b.ext)
+  WHERE  a.contributor_industry  = b.industry
+    AND  a.contributor_reference >= b.low_ref
+    AND  a.contributor_reference <= b.high_ref;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to assign analyst info on ' +:h_c_table +'.'; 
+    CALLPROC  write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+      Modify first working table into ref order.
+  -------------------------------------------------------------------------*/
+
+  MESSAGE '[10/15] Modifying first working table. . .';
+  SLEEP 1;
+
+  MODIFY :h_c_table TO BTREE
+  ON contributor_reference;
+  
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify the structure of' +:h_c_table +'.'; 
+    CALLPROC  write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+      Create second working table. 
+  -------------------------------------------------------------------------*/
+
+  MESSAGE '[11/15] Creating second working table. . .';
+  SLEEP 1;
+
+  CREATE TABLE :h_q_table
+       ( contributor_reference CHAR(11) NOT NULL WITH DEFAULT,
+         question              CHAR(9)  NOT NULL WITH DEFAULT,
+         unit                  CHAR(20) NOT NULL WITH DEFAULT,
+         need_count            INTEGER1 NOT NULL WITH DEFAULT,
+         text_line1            CHAR(65) NOT NULL WITH DEFAULT,
+         text_line2            CHAR(65) NOT NULL WITH DEFAULT,
+         text_line3            CHAR(65) NOT NULL WITH DEFAULT,
+         text_line4            CHAR(65) NOT NULL WITH DEFAULT,
+         text_line5            CHAR(65) NOT NULL WITH DEFAULT,
+         text_line6            CHAR(65) NOT NULL WITH DEFAULT,
+         text_line7            CHAR(65) NOT NULL WITH DEFAULT,
+         text_line8            CHAR(65) NOT NULL WITH DEFAULT,
+         text_line9            CHAR(65) NOT NULL WITH DEFAULT,
+         text_line10           CHAR(65) NOT NULL WITH DEFAULT);
+
+  h_return = CALLPROC  lp_error_check (p_num_row_ck = 0);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create table ' + :h_q_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+      Populate second working table of q data for outstanding disclosures 
+      from dsc_printing. 
+  -------------------------------------------------------------------------*/
+
+  MESSAGE '[12/15] Populating second working table. . .';
+  SLEEP 1;
+
+  INSERT INTO :h_q_table
+  SELECT DISTINCT
+         a.contributor_reference,
+         CHAR(a.question),
+         a.unit_1,
+	 a.need_count,
+	 a.text_line1,
+	 a.text_line2,
+	 a.text_line3,
+	 a.text_line4,
+	 a.text_line5,
+	 a.text_line6,
+	 a.text_line7,
+	 a.text_line8,
+	 a.text_line9,
+	 a.text_line10
+  FROM   dsc_printing a,
+         dsc_response b
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.question              = b.question             
+    AND  a.period                = b.period
+    AND  a.period                = :g_period
+    AND  b.receipt_date          = '';
+
+  h_return = CALLPROC  lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to populate table ' + :h_q_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+/*-------------------------------------------------------------------------
+    Create contributor file for SPC from first working table.
+-------------------------------------------------------------------------*/
+
+  MESSAGE '[13/15] Creating first SPC file. . .';
+  SLEEP 1;
+
+  COPY TABLE :h_c_table
+           ( contributor_reference = c(0)'^',
+	     contributor_industry  = c(0)'^',
+             addressee             = c(0)'^',
+             add_name1             = c(0)'^',
+             add_name2             = c(0)'^',
+             add_name3             = c(0)'^',
+	     add_tradstyle1        = c(0)'^',
+	     add_tradstyle2        = c(0)'^',
+	     add_tradstyle3        = c(0)'^',
+             add_line1             = c(0)'^',
+             add_line2             = c(0)'^',
+             add_line3             = c(0)'^',
+             add_line4             = c(0)'^',
+             add_line5             = c(0)'^',
+             add_postcode          = c(0)'^',
+             ons_name              = c(0)'^',
+             ons_ext               = c(0)'^',
+             region                = c(0)'^',
+	     legal_status          = c(0)'^',
+             form_type             = c(0)'^',
+	     welsh                 = c0nl)
+  INTO       :g_path_name2 + TRIM(:h_c_file);
+
+  h_return = CALLPROC  lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create output file ' + :h_c_file +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+      Create question file for SPC from second working table.
+  -------------------------------------------------------------------------*/
+
+  MESSAGE '[14/15] Creating second SPC file. . .';
+  SLEEP 1;
+
+  COPY TABLE :h_q_table
+           ( contributor_reference  = c(0)'^',
+             question               = c(0)'^',
+             unit                   = c(0)'^',
+             need_count             = c(0)'^',
+             text_line1             = c(0)'^',
+             text_line2             = c(0)'^',
+             text_line3             = c(0)'^',
+             text_line4             = c(0)'^',
+             text_line5             = c(0)'^',
+             text_line6             = c(0)'^',
+             text_line7             = c(0)'^',
+             text_line8             = c(0)'^',
+             text_line9             = c(0)'^',
+             text_line10            = c0nl)
+  INTO :g_path_name2 + TRIM(:h_q_file);
+      
+  h_return = CALLPROC  lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create output file ' + :h_q_file +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+      Tidy up temp tables.
+  -------------------------------------------------------------------------*/
+
+  MESSAGE '[15/15] Tidying up. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table(p_table_name = :h_c_table);
+
+  IF h_return != 0 THEN 
+     RETURN 9;
+  ENDIF;
+
+  h_return = CALLPROC lp_drop_table(p_table_name = :h_q_table);
+
+  IF h_return != 0 THEN 
+     RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Log end of process.
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'COMPLETE: MAIN DISCLOSURE PROCESS FOR '
+                       + UPPER(:g_mode) + ' COMPLETED OK.');
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = '*SIGNOFF*');
+}
+
+/***************************** LOCAL PROCEDURES ****************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(36) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name  = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  h_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF h_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+

@@ -1,0 +1,194 @@
+/*-s--------------------------------------------------------------------
+ Procedure msat_fp_welsh_postcodes
+
+ Transfers the latest Registers Postcode file onto the PRODCOM system.
+ (The old table is dropped prior to loading the new one).
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msat_fp_welsh_postcodes () =
+
+DECLARE ret_val              = INTEGER1 NOT NULL,
+        h_rows               = INTEGER4 NOT NULL,
+        h_command            = VARCHAR(200) NOT NULL,
+        h_from_file          = VARCHAR(200) NOT NULL,
+        h_to_file            = VARCHAR(200) NOT NULL,
+        h_idbr_path          = VARCHAR(100) NOT NULL,
+        h_frpr_name          = VARCHAR(24) NOT NULL
+
+{
+    h_frpr_name = 'msat_fp_welsh_postcodes';
+    h_from_file = 'prodcom_welsh_pcd.Z';
+    h_to_file = :g_path_name1 + '/prodcom_welsh_pcd';
+    h_idbr_path = '/idbr/live20/iss/data';
+
+    SELECT DBMSINFO('username') AS g_user_id;
+
+    /*------------------------------------------------------------------
+    Copy file from idbr area on c8 
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Copying Welsh Postcodes file from idbr . . .';
+
+    h_command = 'cp ' + :h_idbr_path + :h_from_file + ' ' + :h_to_file + '.Z';
+
+ /**********************
+    h_command = '/c18/home/prodcom/admin/prodlive/ftp_c8_get.ux ' +
+                 :h_from_file + ' ' + :h_to_file + '.Z';
+ **********************/
+
+    ret_val = CALLPROC msa_cp_callsys(:h_command);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error copying from idbr ' + :h_from_file,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    MESSAGE 'Uncompressing Welsh Postcodes file . . .';
+
+    h_command = 'uncompress -f ' + :h_to_file + '.Z';
+
+    ret_val = CALLPROC msa_cp_callsys(:h_command);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error uncompressing ' + :h_to_file,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Drop the existing PostCodes Table
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = 'welsh_pcd');
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    MESSAGE 'Creating Welsh Postcodes table . . .';
+
+    CREATE TABLE welsh_pcd (
+        postcode  VARCHAR(8) NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Unable to create welsh_pcd',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    MESSAGE 'Copying up Welsh Postcodes table . . .';
+
+    COPY TABLE welsh_pcd (
+        postcode = c0nl)
+
+    FROM :h_to_file;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row    = BYREF(:h_rows),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Unable to load welsh_pcd file',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Modify the welsh_pcd file
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Modifying Welsh Postcodes table . . .';
+
+    MODIFY    welsh_pcd TO BTREE
+    UNIQUE ON postcode;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error modifying welsh_pcd',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Add permissions
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Adding Permissions for Welsh Postcodes table . . .';
+
+    GRANT ALL ON welsh_pcd TO GROUP 'prodcom_users';
+    GRANT ALL ON welsh_pcd TO GROUP 'prodcom_devusers';
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error adding permissions to welsh_pcd',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    INSERT INTO error_log
+    VALUES(     'now',
+                'Welsh Postcodes: ' + VARCHAR(h_rows) + ' rows loaded OK',
+                :h_frpr_name,
+                0,
+                :g_user_id);
+    COMMIT;
+
+    RETURN 0;
+}

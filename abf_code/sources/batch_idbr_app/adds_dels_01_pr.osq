@@ -1,0 +1,879 @@
+/*----------------------------------------------------------------------
+ Rewritten etc...  (Blub later, in a rush.) DF2012
+----------------------------------------------------------------------*/
+
+PROCEDURE adds_dels_01_pr () =
+
+DECLARE h_span_end           = INTEGER4     NOT NULL,
+        h_param_list         = VARCHAR(100) NOT NULL,
+        h_path_name_1        = VARCHAR(100) NOT NULL,
+        h_path_name_2        = VARCHAR(100) NOT NULL,
+        h_path_name_3        = VARCHAR(100) NOT NULL,
+        h_varchar_variable   = VARCHAR(100) NOT NULL,
+        h_integer_variable   = INTEGER1     NOT NULL,
+        h_param1             = VARCHAR(20)  NOT NULL,
+        h_return             = INTEGER4     NOT NULL,
+        h_retries_allowed    = INTEGER1     NOT NULL,
+        h_retries            = INTEGER1     NOT NULL,
+        h_retry_or_not       = CHAR(5)      NOT NULL,
+        h_text               = VARCHAR(60)  NOT NULL,
+        h_dummy              = VARCHAR(60)  NOT NULL,
+        h_main_table         = VARCHAR(36)  NOT NULL,
+        h_table_1            = VARCHAR(36)  NOT NULL,
+        h_table_2            = VARCHAR(36)  NOT NULL,
+        h_table_3            = VARCHAR(36)  NOT NULL,
+        h_frpr_name          = VARCHAR(24)  NOT NULL,
+        h_command            = VARCHAR(300) NOT NULL,
+        h_idbr_file          = VARCHAR(100) NOT NULL,
+        h_adds_file          = VARCHAR(100) NOT NULL,
+        h_dels_file          = VARCHAR(100) NOT NULL,
+        h_idbr_year          = CHAR(6)      NOT NULL,
+
+        lp_error_check       = PROCEDURE RETURNING INTEGER NOT NULL,
+        lp_full_error_check  = PROCEDURE RETURNING INTEGER NOT NULL,
+        lp_drop_table        = PROCEDURE RETURNING INTEGER NOT NULL,
+
+{
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  IF g_database = 'prodlivedb'
+  THEN
+    h_path_name_1 = '/admin/scratch/idbr/iro/';
+    h_path_name_2 = '/idbr/live20/infer/isb/';
+    h_path_name_3 = '/prodcom/live5/files/sas/';
+  ELSE
+    h_path_name_1 = '/admin/scratch/idbr/iro/';
+    h_path_name_2 = '/admin/scratch/DUMMY_idbr_';
+    h_path_name_3 = '/admin/scratch/DUMMY_sas_';
+  ENDIF;
+
+  h_frpr_name  = 'adds_dels_01_pr';
+  h_main_table = 'bru_inquiry_parameters';
+  h_table_1    = 'tt_adds_dels_01_params';
+  h_table_2    = 'tt_adds_dels_01_adds';
+  h_table_3    = 'tt_adds_dels_01_dels';
+
+  h_retries_allowed = 3;
+
+  h_param_list = CALLPROC CommandLineParameters();
+
+  h_varchar_variable = squeeze (h_param_list);
+
+  h_integer_variable = LOCATE (h_varchar_variable, ' ');
+  h_param1           = LEFT (h_varchar_variable,h_integer_variable - 1);
+
+  g_period = INT4(:h_param1);
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_procs (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+  /*------------------------------------------------------------------
+     Log start of process
+  ------------------------------------------------------------------*/
+
+  SELECT IFNULL(MAX(log_no),1) AS g_log_no
+  FROM   bru_process_log;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to select max log_no from bru_process_log.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  h_text = 'STARTING: Additions and Deletions process started.';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  /*------------------------------------------------------------------
+     Validate the period called.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[1/16] Validating parameters. . .';
+  SLEEP 1;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT span_end AS h_span_end
+    FROM   inquiry
+    WHERE  inquiry = 14;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select span end from table inquiry.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  IF h_span_end != g_period
+  THEN
+    h_text = 'ERROR: Period parameter does not match the span end.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Check cycle_point : if not F, then stop
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[2/16] Checking cycle point. . .';
+  SLEEP 1;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT industry_cycle_point AS h_dummy
+    FROM   industry
+    WHERE  industry_cycle_point != 'F'
+    AND    inquiry = 14;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 0);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return = 1
+  THEN
+    h_text = 'WARNING: Industry cycle point is not "F". Aborting.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+
+  ELSEIF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to select cycle point from industry table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Setting file names
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[2/16] Setting filenames. . .';
+  SLEEP 1;
+
+  h_idbr_year = LEFT(VARCHAR(:g_period),4) +'12';
+
+  h_idbr_file = :h_path_name_1 +'selpar014_'    +VARCHAR(:g_period);
+  h_dels_file = :h_path_name_2 +'deselect014_'  +VARCHAR(:h_idbr_year);
+  h_adds_file = :h_path_name_2 +'addselhis014_' +VARCHAR(:h_idbr_year);
+
+  /*------------------------------------------------------------------
+     Create temp table to hold IDBR selection parameters.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[3/16] Creating working table. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_main_table);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop working table ' +:h_main_table + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_main_table
+             ( cell_no            INTEGER2 NOT NULL,
+               cell_desc          CHAR(18) NOT NULL,
+               seltype            CHAR(1) NOT NULL,
+               status_id          CHAR(1) NOT NULL,
+               lower_region       CHAR(2) NOT NULL,
+               upper_region       CHAR(2) NOT NULL,
+               lower_livelu       INTEGER2 NOT NULL,
+               upper_livelu       INTEGER2 NOT NULL,
+               lower_livevat      INTEGER2 NOT NULL,
+               upper_livevat      INTEGER2 NOT NULL,
+               lower_livepaye     INTEGER2 NOT NULL,
+               upper_livepaye     INTEGER2 NOT NULL,
+               lower_class        CHAR(5) NOT NULL,
+               upper_class        CHAR(5) NOT NULL,
+               lower_size         INTEGER4 NOT NULL,
+               upper_size         INTEGER4 NOT NULL,
+               lower_size2        INTEGER4 NOT NULL,
+               upper_size2        INTEGER4 NOT NULL,
+               prn_start          INTEGER4 NOT NULL,
+               no_reqd            INTEGER4 NOT NULL,
+               rotation_per       INTEGER1 NOT NULL,
+               int_remainder      FLOAT8 NOT NULL,
+               formtype           CHAR(4) NOT NULL,
+               cso_tel            CHAR(7) NOT NULL,
+               formtype2          CHAR(4) NOT NULL,
+               no_formtype2       INTEGER4 NOT NULL,
+               cso_tel2           CHAR(7) NOT NULL,
+               marker             INTEGER2 NOT NULL);
+
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_main_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  COPY TABLE   :h_main_table 
+           (   inqcode            = d0colon,
+               cell_no            = c0colon,
+               cell_desc          = c0colon,
+               seltype            = c0colon,         
+               status_id          = c0colon,         
+               lower_region       = c0colon, 
+               upper_region       = c0colon, 
+               lower_livelu       = c0colon, 
+               upper_livelu       = c0colon, 
+               lower_livevat      = c0colon, 
+               upper_livevat      = c0colon,
+               lower_livepaye     = c0colon, 
+               upper_livepaye     = c0colon,
+               lower_class        = c0colon, 
+               upper_class        = c0colon, 
+               lower_size         = c0colon, 
+               upper_size         = c0colon, 
+               lower_size2        = c0colon, 
+               upper_size2        = c0colon, 
+               prn_start          = c0colon, 
+               no_reqd            = c0colon, 
+               rotation_per       = c0colon,
+               int_remainder      = c0colon,
+               formtype           = c0colon, 
+               cso_tel            = c0colon, 
+               formtype2          = c0colon, 
+               no_formtype2       = c0colon,
+               cso_tel2           = c0colon,
+               marker             = c0nl)
+    FROM :h_idbr_file;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to populate ' +:h_main_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+       Modifying working table.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[4/16] Modifying working table. . .';
+  SLEEP 1;
+
+  MODIFY :h_main_table TO HASH;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify ' +:h_main_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+       Create Prodcom version of selection parameters.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[5/16] Creating table of ProdCom selection parameters. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop working table ' +:h_table_1 + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table_1
+  AS 
+  SELECT cell_no,
+         seltype,
+         INT4(lower_class) as lower_industry,
+         INT4(upper_class) as upper_industry,
+         lower_size,
+         upper_size,
+         prn_start
+  FROM   :h_main_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create working table ' +:h_table_1 + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Delete rows from selection parameters table where seltype = 'L'
+
+     (These are rows that IDBR team use to indicate that the reference 
+      list should be used to select for that industry.)
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[6/16] Removing "L" type selections.. . .';
+  SLEEP 1;
+
+  DELETE FROM :h_table_1
+  WHERE  seltype = 'L';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to delete "L" sel types from working table ' 
+           + :h_table_1 + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Create additions table.
+
+     ( Create a table containing the references that have been added online
+       for the latest period. Use table fpr_despatch_history and compare with
+       table csl_selection_history to ensure only those that are still live 
+       will be added to the additions file. )
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[7/16] Creating additions table. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_2);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop working table ' +:h_table_2 + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table_2
+  AS 
+  SELECT a.contributor_reference,
+         '014' AS inquiry,
+         :h_idbr_year AS period,
+	 'Y' AS selmkr,
+         a.contributor_industry,
+         c.alt_industry,	
+         a.register_emp,
+	 'B' as seltype,
+         INT2(0) as cell_no,
+         '0000' as formtype,
+         'N' as stoprem,
+         '0' as remmkr,
+         INT4(0) as recdate,
+         INT2(0) as marker
+  FROM   fpr_despatch_history a,
+         contributor_period   c
+  WHERE  a.period = :g_period
+    AND	 a.period = c.period
+    AND  a.contributor_reference = c.contributor_reference
+    AND  a.contributor_industry = c.contributor_industry
+    AND  a.contributor_reference NOT IN
+      (  SELECT contributor_reference
+         FROM   csl_selection_history b
+         WHERE  a.period = b.period)
+  WITH STRUCTURE = HASH;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create ' + :h_table_2 + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*--------------------------------------------------------------------------
+     Create deletions table.
+
+     ( Create a table containing the references that have been deleted
+       online for the latest period. Use table csl_selection_history and
+       compare with table fpr_despatch_history to ensure only those that
+       are still live will be added to the additions file. )
+  --------------------------------------------------------------------------*/
+
+  MESSAGE '[8/16] Creating deletions table. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_3);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop working table ' +:h_table_3 + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table_3
+  AS 
+  SELECT a.contributor_reference,
+         '014' AS inquiry,
+         :h_idbr_year AS period,
+	 'N' AS selmkr,
+         a.contributor_industry,
+         a.register_emp
+  FROM   csl_selection_history a
+  WHERE  a.period = :g_period
+    AND  a.contributor_reference NOT IN
+      (  SELECT b.contributor_reference
+         FROM   fpr_despatch_history b
+         WHERE  a.period = b.period)
+  WITH STRUCTURE  = BTREE;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create ' + :h_table_3 + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Using the prodcom selection parameters table as a lookup calculate
+    the cell_no for additions and deselections.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[9/16] Updating cell numbers on additions table. . .';
+  SLEEP 1;
+
+  UPDATE :h_table_2 a
+  FROM   :h_table_1 b
+  SET    cell_no = b.cell_no
+  WHERE  a.alt_industry = b.lower_industry
+    AND  a.register_emp BETWEEN lower_size AND upper_size; 
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update cell numbers on ' + :h_table_2 + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*--------------------------------------------------------------------------
+      Update the industries on the additions table from the original working
+      table loaded from IDBR as this contains the lower level classes that 
+      IDBR can recognise.
+  --------------------------------------------------------------------------*/
+
+  MESSAGE '[10/16] Updating cell numbers on additions table. . .';
+  SLEEP 1;
+
+  UPDATE :h_table_2    a
+  FROM   :h_main_table b
+  SET    contributor_industry = INT4(b.lower_class)
+  WHERE  a.cell_no = b.cell_no; 
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update industry numbers on ' + :h_table_2 + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Copy additions data to file for IDBR.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[11/16] Outputing additions file for IDBR. . .';
+  SLEEP 1;
+
+  COPY TABLE :h_table_2 
+           ( contributor_reference = char(11)colon,
+             inquiry               = char(3)colon,
+             period                = char(6)colon,  
+             selmkr                = char(1)colon,
+             contributor_industry  = char(5)colon,
+             seltype               = char(1)colon,
+             cell_no               = char(6)colon,
+             formtype              = char(4)colon,
+             stoprem               = char(1)colon,
+             remmkr                = char(1)colon,
+             recdate               = char(13)colon,
+             marker                = char(6)nl)
+  INTO :h_adds_file;      
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to export ' + :h_table_2 + ' to IDBR file.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Copy deletions data to file for IDBR.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[12/16] Outputing deletions file for IDBR. . .';
+  SLEEP 1;
+
+  COPY TABLE :h_table_3 
+           ( contributor_reference = char(11)colon,
+             inquiry               = char(3)colon,
+             period                = char(6)colon,  
+             selmkr                = char(1)nl)
+  INTO :h_dels_file;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to export ' + :h_table_3 + ' to IDBR file.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Resetting file names for SAS export.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[13/16] Setting filenames for SAS exports. . .';
+  SLEEP 1;
+
+  h_adds_file = :h_path_name_3 +'annual_additions_'  +VARCHAR(g_period);
+  h_dels_file = :h_path_name_3 +'annual_deletions_' +VARCHAR(g_period);
+
+  /*------------------------------------------------------------------
+    Copy additions data to file for SAS.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[14/16] Outputing additions file for SAS. . .';
+  SLEEP 1;
+
+  COPY TABLE :h_table_2 
+           ( contributor_reference = char(11)colon,
+             inquiry               = char(3)colon,
+             period                = char(6)colon,  
+             selmkr                = char(1)colon,
+             contributor_industry  = char(5)colon,
+             seltype               = char(1)colon,
+             cell_no               = char(6)colon,
+             formtype              = char(4)colon,
+             stoprem               = char(1)colon,
+             remmkr                = char(1)colon,
+             recdate               = char(13)colon,
+             marker                = char(6)nl)
+  INTO :h_adds_file;      
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to export ' + :h_table_2 + ' to SAS file.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Copy deletions data to file for SAS.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[15/16] Outputing deletions file for SAS. . .';
+  SLEEP 1;
+
+  COPY TABLE :h_table_3 
+           ( contributor_reference = c0colon,
+             inquiry               = c0colon,
+             period                = c0colon,  
+             selmkr                = c0colon,
+             contributor_industry  = c0colon,
+             register_emp          = c0nl)
+  INTO :h_dels_file;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to export ' + :h_table_3 + ' to SAS file.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Tidy up.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[16/16] Tidying up temp tables. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to tidy up working table ' +:h_table_1 + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_2);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to tidy up working table ' +:h_table_2 + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_3);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to tidy up working table ' +:h_table_3 + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Log end of process
+  ------------------------------------------------------------------*/
+
+  h_text = 'COMPLETE: Additions and Deletions process completed.';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  h_text = '*SIGNOFF*';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  RETURN 0;
+
+}
+
+/************************* LOCAL PROCEDURES ***************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+                  h_num_row_ck = :p_num_row_ck,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(36) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name  = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  h_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF h_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
