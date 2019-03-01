@@ -1,0 +1,272 @@
+INITIALIZE (
+
+        inquiry            = INTEGER1 NOT NULL,
+        period             = INTEGER4 NOT NULL) =
+
+DECLARE h_retries_allowed  = INTEGER1 NOT NULL,
+        h_retries          = INTEGER1 NOT NULL,
+        h_retry_or_not     = CHAR(5) NOT NULL,
+        h_frpr_name        = VARCHAR(24) NOT NULL,
+        h_table            = VARCHAR(24) NOT NULL,
+        ret_val            = INTEGER1 NOT NULL
+
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msag_fr_results_donotrun';
+    h_table = 'temp_donotrun_results';
+    msa_date = 'now';
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+    IF inquiry = 14
+    THEN
+        form_title = 'ANNUAL RESULTS';
+    ELSE
+        form_title = 'QUARTERLY RESULTS';
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Display list of all industries & whether they're to run or not
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Creating List of Industries . . .';
+    
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table
+        AS SELECT    industry,
+                     'Yes' AS run
+        FROM         industry_period
+        WHERE        inquiry = :inquiry
+        AND          period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(no_run),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing industry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows found on industry_period for this Inquiry/Period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Mark as NO all those Industries that aren't going to run
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   results_do_not_run b
+        SET    run = 'No'
+        WHERE  a.industry = b.industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(no_do_not_run),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating from results_do_not_run'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    no_run = no_run - no_do_not_run;
+
+    /*------------------------------------------------------------------
+    Display to screen
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+   
+        SELECT   industry,
+                 run
+        FROM     :h_table
+        ORDER BY industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    RESUME FIELD tf;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'DoNotRun', KEY FRSKEY4 =
+{
+    MESSAGE 'Switching Industry Status . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        IF tf.run = 'Yes'
+        THEN
+            INSERT INTO results_do_not_run (
+                        inquiry,
+                        industry)
+            VALUES (    :inquiry,
+                        :tf.industry);
+        ELSE
+            DELETE FROM results_do_not_run
+            WHERE       industry = :tf.industry;
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error deleting from/inserting into results_do_not_run'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows deleted from/inserted into results_do_not_run'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    IF tf.run = 'Yes'
+    THEN
+        tf.run = 'No';
+        no_do_not_run = no_do_not_run + 1;
+        no_run = no_run - 1;
+    ELSE
+        tf.run = 'Yes';
+        no_do_not_run = no_do_not_run - 1;
+        no_run = no_run + 1;
+    ENDIF;
+
+}
+
+'End', KEY FRSKEY6 =
+{
+    MESSAGE 'Exiting Screen . . .';
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    RETURN 0;
+}

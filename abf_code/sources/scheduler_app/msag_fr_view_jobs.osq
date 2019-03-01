@@ -1,0 +1,374 @@
+/*-----------------------------------------------------------------
+                      msag_fr_view_jobs
+
+          List batch jobs that will run / that have run
+
+------------------------------------------------------------------*/
+
+INITIALIZE (
+
+        h_jobs              = VARCHAR(8) NOT NULL) =
+
+DECLARE h_retries_allowed   = INTEGER1 NOT NULL,
+        h_retries           = INTEGER1 NOT NULL,
+        h_retry_or_not      = CHAR(5) NOT NULL,
+        h_frpr_name         = VARCHAR(24) NOT NULL,
+        h_order_by          = VARCHAR(24) NOT NULL,
+        ret_val             = INTEGER1 NOT NULL,
+        h_rows              = INTEGER4 NOT NULL,
+        h_current_row_jobno = INTEGER4 NOT NULL,
+        h_prompt            = CHAR(1) NOT NULL,
+        lp_load_table       = PROCEDURE RETURNING INTEGER
+{
+    msa_date = 'now';
+    h_retries_allowed   = 3;
+    h_frpr_name = 'msag_fr_view_jobs';
+
+    IF LOWERCASE(:h_jobs) = 'future'
+    THEN
+        title = 'JOBS THAT ARE DUE TO RUN';
+        h_order_by = 'job_type,job_no';
+    ELSE
+        title = 'JOBS THAT HAVE RUN';
+        h_order_by = 'start_time';
+    ENDIF;
+
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+    ret_val = CALLPROC lp_load_table ();
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'DeleteThisJob' =
+{
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'Nothing to delete'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_prompt = '';
+    WHILE h_prompt <> 'y' AND h_prompt <> 'n'
+    DO
+        h_prompt = PROMPT 'Really delete this job?' +
+                          ' Type Y/N and press <return>'
+                   WITH STYLE = POPUP;
+        h_prompt = LOWERCASE(h_prompt);
+    ENDWHILE;
+
+    IF h_prompt = 'n'
+    THEN
+        RESUME;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        DELETE FROM batch_jobs
+        WHERE       job_no = :tf.job_no;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in deleting from batch_jobs'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Unable to delete any jobs from batch_jobs'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_table ();
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'DeleteUptoThisJob' =
+{
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'Nothing to delete'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_prompt = '';
+    WHILE h_prompt <> 'y' AND h_prompt <> 'n'
+    DO
+        h_prompt = PROMPT 'Really delete all jobs upto and including' +
+                          ' this one? Type Y/N and press <return>'
+                   WITH STYLE = POPUP;
+        h_prompt = LOWERCASE(h_prompt);
+    ENDWHILE;
+
+    IF h_prompt = 'n'
+    THEN
+        RESUME;
+    ENDIF;
+
+    MESSAGE 'Deleting Jobs . . .';
+
+    IF h_jobs <> 'future'
+    THEN
+        /*--------------------------------------------------------------
+        For jobs that have run, delete by start-time,
+        because that's how they have been ordered on the screen.
+        --------------------------------------------------------------*/
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            DELETE FROM batch_jobs
+            WHERE       start_time <= :tf.start_time
+            AND         start_time <> '';
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in deleting from batch_jobs'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'Unable to delete any jobs from batch_jobs'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+    ELSE
+        /*--------------------------------------------------------------
+        For jobs that have not run, because we're loading them by
+        job_no WITHIN job_type, we can't use a DELETE FROM command, as
+        this does not work:
+
+            DELETE FROM batch_jobs
+            WHERE       job_type <= :tf.job_type
+            AND         job_no <= :tf.job_no
+            AND         start_time = '';
+
+        It doesn't work because you may get:
+
+            Job Type   Job No
+            final asi   1
+            final qsi   3
+            prov asi    2  <-- you want to delete up to this one, but
+            prov qsi    4      the above delete would delete where
+                               the job_type is <= 'prov asi' AND
+                               the job_no <= 2,
+                               WHICH WOULD NOT DELETE final qsi 3
+
+        Instead, unload the table deleting each row until you get to
+        the one you've highlighted.
+        --------------------------------------------------------------*/
+
+        h_current_row_jobno = :tf.job_no;
+
+        UNLOADTABLE tf
+        {
+
+            h_retry_or_not      = 'RETRY';
+            h_retries           = 0;
+
+            WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+            DO
+
+                h_retries = :h_retries + 1;
+
+                DELETE FROM batch_jobs
+                WHERE       job_no = :tf.job_no;
+
+                ret_val = CALLPROC check_inq_ing (
+                          h_num_row_ck      = 1,
+                          h_commit          = 'Y',
+                          h_rollback        = 'N',
+                          h_retries         = :h_retries,
+                          h_retries_allowed = :h_retries_allowed,
+                          h_frpr_name       = :h_frpr_name);
+
+                IF ret_val <> 7
+                THEN
+                    h_retry_or_not = '';
+                ENDIF;
+
+            ENDWHILE;
+
+            IF ret_val = 7
+            THEN
+                RETURN 7;
+
+            ELSEIF ret_val = 9
+            THEN
+                MESSAGE 'System error deleting from batch_jobs'
+                WITH STYLE = POPUP;
+                RETURN 9;
+
+            ELSEIF ret_val = 1
+            THEN
+                MESSAGE 'No rows deleted from batch_jobs'
+                WITH STYLE = POPUP;
+                RETURN 9;
+            ENDIF;
+
+            /*----------------------------------------------------------
+             If the job that's just been deleted was the one that's
+             highlighted, then stop.
+            ----------------------------------------------------------*/
+
+            IF tf.job_no = h_current_row_jobno
+            THEN
+                ENDLOOP;
+            ENDIF;
+        };
+
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_table ();
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'End', KEY FRSKEY6 =
+{
+	RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                  L O C A L   P R O C E D U R E S
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_table () =
+{
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        IF LOWERCASE(:h_jobs) = 'future'
+        THEN
+            tf =
+
+            SELECT   job_no,
+                     job_type,
+                     input_date,
+                     start_time,
+                     end_time,
+                     result
+            FROM     batch_jobs
+            WHERE    start_time = ''
+            ORDER BY :h_order_by;
+        ELSE
+            tf =
+
+            SELECT   job_no,
+                     job_type,
+                     input_date,
+                     start_time,
+                     end_time,
+                     result
+            FROM     batch_jobs
+            WHERE    start_time <> ''
+            ORDER BY :h_order_by;
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:h_rows),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing batch_jobs'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    RETURN 0;
+}
