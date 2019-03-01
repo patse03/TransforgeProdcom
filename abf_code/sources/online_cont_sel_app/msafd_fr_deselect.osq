@@ -1,0 +1,1465 @@
+/*----------------------------------------------------------------------
+  Deselect a contributor
+----------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE
+  h_retries_allowed       = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries               = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not          = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_retries_2             = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not_2        = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name             = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_table_name            = VARCHAR(36) NOT NULL WITH DEFAULT,
+  h_text                  = VARCHAR(36) NOT NULL WITH DEFAULT,
+  h_return                = INTEGER1    NOT NULL WITH DEFAULT,
+  h_return_2              = INTEGER1    NOT NULL WITH DEFAULT,
+  h_inquiry               = INTEGER1    NOT NULL WITH DEFAULT,
+  h_display               = INTEGER1    NOT NULL WITH DEFAULT,
+  h_avalue                = INTEGER4    NOT NULL WITH DEFAULT,
+  h_min_period            = INTEGER4    NOT NULL WITH DEFAULT,
+  h_reason                = VARCHAR(40) NOT NULL WITH DEFAULT,
+  h_reason1               = VARCHAR(30) NOT NULL WITH DEFAULT,
+  h_reason2               = VARCHAR(30) NOT NULL WITH DEFAULT,
+  h_reason3               = VARCHAR(30) NOT NULL WITH DEFAULT,
+  h_reason4               = VARCHAR(30) NOT NULL WITH DEFAULT,
+  h_reason5               = VARCHAR(30) NOT NULL WITH DEFAULT,
+  h_reason6               = VARCHAR(30) NOT NULL WITH DEFAULT,
+  h_reason7               = VARCHAR(30) NOT NULL WITH DEFAULT,
+  h_reason8               = VARCHAR(30) NOT NULL WITH DEFAULT,
+  h_reason9               = VARCHAR(30) NOT NULL WITH DEFAULT,
+  h_reason10              = VARCHAR(30) NOT NULL WITH DEFAULT,
+  h_duplication           = VARCHAR(30) NOT NULL WITH DEFAULT,
+  h_output_category       = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_prompt                = VARCHAR(30) NOT NULL WITH DEFAULT,
+  h_register_emp          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_industry              = INTEGER4    NOT NULL WITH DEFAULT,
+  h_receipt_date          = DATE        NOT NULL WITH DEFAULT,
+  h_closed_date           = DATE        NOT NULL WITH DEFAULT,
+  h_keyresp               = INTEGER1    NOT NULL WITH DEFAULT,
+  h_form_received         = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_mandatory             = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_periodic              = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_cycle_point           = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_dummy                 = CHAR(11)    NOT NULL WITH DEFAULT,
+  h_contributor_reference = CHAR(11)    NOT NULL WITH DEFAULT, 
+
+  lp_full_error_check     = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_write_to_audit_trail = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+{
+  msa_date        = 'now';
+  s_received_date = 'today';
+  s_key           = 'KEY';
+
+  h_retries_allowed   = 3;
+  h_frpr_name         = 'msafd_fr_deselect';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+
+  SET_FORMS FIELD '' ( INVISIBLE(s_country) = 1,
+                       INVISIBLE(s_key)     = 1,
+
+                       DISPLAYONLY(s_period) = 0,
+                       UNDERLINE  (s_period) = 1,
+                       REVERSE    (s_period) = 0,
+
+                       DISPLAYONLY(s_contributor_reference) = 0,
+                       UNDERLINE  (s_contributor_reference) = 1,
+                       REVERSE    (s_contributor_reference) = 0);
+
+  /*----------------------------------------------------------------------
+       Get minimum acceptable period from cqpv.  
+  ----------------------------------------------------------------------*/
+
+  MESSAGE 'Please wait. . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT MIN(period) AS :h_min_period
+    FROM   cqpv; 
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select minimum period from CQPV table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+}
+
+/*************************** FIELD ACTIVATIONS *******************************/
+
+FIELD s_period =
+{
+  MESSAGE 'Checking Period . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT period AS :s_period
+    FROM   inquiry_period
+    WHERE  period = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This period does not exist in the ProdCom system.'
+    WITH STYLE = POPUP;
+    CLEAR FIELD s_period;
+    RESUME FIELD s_period;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to validate inquiry period. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN :h_return;
+  ENDIF;
+
+  IF :s_period < :h_min_period
+  THEN
+    MESSAGE 'WARNING: The earliest data period on the ProdCom system is '
+          + VARCHAR(:h_min_period) + '. The period entered is earlier than '
+          + 'that and so cannot be accepted.'
+    WITH STYLE = POPUP;
+    CLEAR FIELD  s_period;
+    RESUME FIELD s_period;
+  ENDIF;
+
+  SET_FORMS FIELD '' (DISPLAYONLY(s_period) = 1,
+                      UNDERLINE  (s_period) = 0,
+                      REVERSE    (s_period) = 1);
+
+  RESUME FIELD s_contributor_reference;
+
+}
+
+FIELD s_contributor_reference =
+{
+  /*------------------------------------------------------------------------
+      Basic validation for contributor reference.
+  -------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT add_name1    AS s_add_name1,
+           add_name2    AS s_add_name2,
+           add_name3    AS s_add_name3
+    FROM   contributor
+    WHERE  contributor_reference = :s_contributor_reference;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This contributor does not exist on the ProdCom system. '
+    wITH STYLE = POPUP;
+    RESUME FIELD s_contributor_reference;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select contributor details. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN:h_return;
+  ENDIF;
+
+  REDISPLAY;
+
+  /*-------------------------------------------------------------------------
+      Check for enforcement marker.
+  -------------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_latest_details 
+           ( p_contributor_reference = :s_contributor_reference,
+             p_output_category       = BYREF(:h_output_category));
+
+  IF h_return > 1
+  THEN
+    /* Error messages handled in external procedure */
+    RETURN h_return;
+  ENDIF;
+
+  IF :h_output_category = 'Y'
+  THEN
+    MESSAGE 'WARNING: This Contributor is in Enforcement. ' +
+            'It cannot be deselected.'
+    WITH STYLE = POPUP;
+
+    CLEAR FIELD s_contributor_reference,
+                s_add_name1, 
+                s_add_name2, 
+                s_add_name3; 
+
+    msa_date = 'now';
+    s_received_date = 'today';
+
+    RESUME FIELD s_contributor_reference;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Validate contributor in period.
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT a.receipt_date         AS h_receipt_date,
+           a.keyresp              AS h_keyresp,
+           a.register_emp         AS h_register_emp,
+           a.contributor_industry AS h_industry,
+           b.country              AS s_country  
+    FROM   contributor_period a,
+           region b
+    WHERE  a.contributor_reference = :s_contributor_reference
+      AND  a.period                = :s_period
+      AND  a.region                = b.region;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This contributor was not selected for '
+          + VARCHAR(:s_period) + '.' 
+    WITH STYLE = POPUP;
+
+    CLEAR FIELD s_contributor_reference,
+                s_add_name1, 
+                s_add_name2, 
+                s_add_name3; 
+
+    msa_date = 'now';
+    s_received_date = 'today';
+
+    RESUME FIELD s_contributor_reference;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select contributor details. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Check Industry Cycle Point
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT industry_cycle_point AS h_cycle_point
+    FROM   industry
+    WHERE  industry = :h_industry;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select cycle point from industry table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    If the industry_cycle_point = 'S' this means that forms are
+    currently being run and that deselects must not take place
+  ------------------------------------------------------------------*/
+
+  IF h_cycle_point = 'S'
+  THEN
+    MESSAGE 'WARNING: Deselections are temporarily suspended due to '
+          + 'ongoing form production tasks.'
+    WITH STYLE = POPUP;
+    RETURN 1;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Ensure the user has the authority to deselect the form.
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_industry_responsibility
+           ( p_industry  = :h_industry,
+             p_reference = :s_contributor_reference);
+
+  IF h_return = 9
+  THEN
+    /* Error message handled by external procedure. */
+    RETURN 9;
+  ENDIF;
+
+  IF h_return = 1
+  THEN
+
+    /* Warning message handled by external procedure. */
+
+    CLEAR FIELD s_contributor_reference,
+                s_add_name1, 
+                s_add_name2, 
+                s_add_name3; 
+
+    msa_date = 'now';
+    s_received_date = 'today';
+
+    RESUME FIELD s_contributor_reference;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+       Set screamer fields to be visible as apropriate.
+  ------------------------------------------------------------------------*/
+
+  /*..................................................................
+      Country.
+  ..................................................................*/
+
+  IF s_country != ''
+  THEN
+    SET_FORMS FIELD '' (INVISIBLE(s_country) = 0);
+  ELSE
+    SET_FORMS FIELD '' (INVISIBLE(s_country) = 1);
+  ENDIF;
+
+  /*..................................................................
+      Key.
+  ..................................................................*/
+
+  IF :h_keyresp = 1
+  THEN
+    SET_FORMS FIELD '' (INVISIBLE(s_key) = 0);
+  ELSE
+    SET_FORMS FIELD '' (INVISIBLE(s_key) = 1);
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Checks whether a contributor has any genuine returned values, 
+    ie those that have: 
+       a) NOT been imputed 
+       b) NOT been constructed for a non-responder.
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT IFNULL(SUM(avalue),0) AS h_avalue
+    FROM   cqpv
+    WHERE  contributor_reference = :s_contributor_reference
+      AND  period                = :s_period
+      AND  MOD(question,10) = 1
+      AND  acell != 'I'
+      AND  NOT (acell = 'P' AND aconstruction_type = 6);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select question values from cqpv table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN :h_return;
+  ENDIF;
+
+  IF h_avalue > 0
+  THEN
+    MESSAGE 'WARNING: This Contributor cannot be deselected for this' +
+            ' Period as it has returned values for questions.' +
+            ' Please use the "Remove Contributor Values" option.'
+    WITH STYLE = POPUP;
+
+    CLEAR FIELD s_contributor_reference,
+                s_add_name1, 
+                s_add_name2, 
+                s_add_name3,
+                s_country,
+                s_key,
+                s_received_date; 
+
+    msa_date = 'now';
+    s_received_date = 'today';
+
+    RESUME FIELD s_contributor_reference;
+
+  ENDIF;
+
+  SET_FORMS FIELD '' ( DISPLAYONLY(s_contributor_reference) = 1,
+                       UNDERLINE  (s_contributor_reference) = 0,
+                       REVERSE    (s_contributor_reference) = 1);
+
+  RESUME FIELD s_source;
+
+}
+
+FIELD s_source =
+{
+
+  IF s_source = ''
+  THEN
+    MESSAGE 'WARNING: Please enter the source of your information.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_source;
+  ENDIF;
+
+  RESUME FIELD s_received_date;
+
+}
+
+FIELD s_received_date =
+{
+
+  IF s_received_date > DATE('today')
+  THEN
+    MESSAGE 'WARNING: The date that information regarding deselection is '
+          + 'obtained cannot be in the future. '
+          + 'Ownership of a crystal ball is not a valid exemption.' 
+    WITH STYLE = POPUP;
+    RESUME FIELD s_received_date;
+  ENDIF;
+
+  IF s_received_date = ''
+  THEN
+    s_received_date = DATE('today');
+  ENDIF;
+
+  RESUME FIELD s_amendment;
+
+}
+
+FIELD s_amendment =
+{
+
+  IF s_amendment = ''
+  THEN
+    MESSAGE 'WARNING: Please enter the type of deselection you are making.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_amendment;
+  ENDIF;
+
+  RESUME FIELD s_source;
+
+}
+
+/**************************** KEY ACTIVATIONS ********************************/
+
+
+'Go', KEY FRSKEY4 =
+{
+  /*------------------------------------------------------------------------
+      Check field validations.
+  ------------------------------------------------------------------------*/
+
+  INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(s_period));
+
+  IF :h_display = 0
+  THEN
+    MESSAGE 'WARNING: Please enter a valid period.' 
+    WITH STYLE = POPUP;
+    RESUME FIELD s_period;
+  ENDIF;
+
+  INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(s_contributor_reference));
+
+  IF :h_display = 0
+  THEN
+    MESSAGE 'WARNING: Please enter a valid contributor reference.' 
+    WITH STYLE = POPUP;
+    RESUME FIELD s_contributor_reference;
+  ENDIF;
+
+  IF s_source = ''
+  THEN
+    MESSAGE 'WARNING: Please enter the source of your information.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_source;
+  ENDIF;
+
+  IF s_received_date > DATE('today')
+  THEN
+    MESSAGE 'WARNING: The date that information regarding deselection is '
+          + 'obtained cannot be in the future. '
+          + 'Ownership of a crystal ball is not a valid exemption.' 
+    WITH STYLE = POPUP;
+    RESUME FIELD s_received_date;
+  ENDIF;
+
+  IF s_received_date = ''
+  THEN
+    s_received_date = DATE('today');
+  ENDIF;
+
+  IF s_amendment = ''
+  THEN
+    MESSAGE 'WARNING: Please enter the type of deselection you are making.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_amendment;
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+      Call reason look up frame.
+  ------------------------------------------------------------------------*/
+
+  h_return = CALLFRAME msafd_fr_rem_reason
+           ( p_reason = BYREF(:h_reason));
+
+  IF h_return = 1
+  THEN
+    RESUME FIELD s_source;
+  ELSEIF h_return > 1
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+  IF h_reason LIKE 'OUT OF SCOPE%'
+  THEN
+    h_return = CALLFRAME msafd_fr_out_scope 
+             ( s_scope_reason1 = BYREF(:h_reason1),
+               s_scope_reason2 = BYREF(:h_reason2),
+               s_scope_reason3 = BYREF(:h_reason3),
+               s_scope_reason4 = BYREF(:h_reason4),
+               s_scope_reason5 = BYREF(:h_reason5),
+               s_scope_reason6 = BYREF(:h_reason6),
+               s_scope_reason7 = BYREF(:h_reason7),
+               s_scope_reason8 = BYREF(:h_reason8),
+               s_scope_reason9 = BYREF(:h_reason9),
+               s_scope_reason10 = BYREF(:h_reason10));
+
+  ELSEIF h_reason = 'DUPLICATION'
+  THEN
+
+    h_duplication = '';
+
+    WHILE h_duplication = ''
+    DO
+      h_duplication = PROMPT 'Please specify the reason for duplication: '
+      WITH STYLE = POPUP;
+    ENDWHILE;
+
+    h_duplication = UPPERCASE(:h_duplication);
+
+  ELSEIF h_reason LIKE 'UNIT CLOSED%'
+  THEN
+
+    h_closed_date = '';
+
+    WHILE h_closed_date = ''
+    DO
+      h_prompt = PROMPT 'Please enter the date the unit closed down: '
+                 WITH STYLE = POPUP;
+      h_closed_date = DATE(:h_prompt);
+
+      IF h_closed_date > DATE('today')
+      THEN
+        MESSAGE 'WARNING: The closure date must not be in the future.'
+        WITH STYLE = POPUP;
+        h_closed_date = ''
+      ENDIF;
+
+    ENDWHILE;
+
+  ENDIF;
+
+  MESSAGE 'Deselecting contributor ' +:s_contributor_reference + ' '
+        + 'in period ' +VARCHAR(:s_period) +'. . .';
+
+  /*------------------------------------------------------------------
+    Insert record of deselection into removed_contrib_period
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO removed_contrib_period (
+                contributor_reference,
+                period,
+                contributor_name,
+                contributor_industry,
+                register_emp,
+                date_removed,
+                reason_removed,
+                scope_reason1,
+                scope_reason2,
+                scope_reason3,
+                scope_reason4,
+                scope_reason5,
+                scope_reason6,
+                scope_reason7,
+                scope_reason8,
+                scope_reason9,
+                scope_reason10,
+                source,
+                date_received,
+                amendment_type,
+                form_received,
+                receipt_date,
+                user_id)
+    VALUES    ( :s_contributor_reference,
+                :s_period,
+                :s_add_name1,
+                :h_industry,
+                :h_register_emp,
+                'now',
+                :h_reason,
+                :h_reason1,
+                :h_reason2,
+                :h_reason3,
+                :h_reason4,
+                :h_reason5,
+                :h_reason6,
+                :h_reason7,
+                :h_reason8,
+                :h_reason9,
+                :h_reason10,
+                :s_source,
+                :s_received_date,
+                :s_amendment,
+                :h_form_received,
+                :h_receipt_date,
+                :g_user_id);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to insert into removed contributor period table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Insert record of deselection into removed_cqpv
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+  DO
+    h_retries = :h_retries + 1;
+
+    INSERT INTO removed_cqpv 
+              ( contributor_reference,
+                period,
+                question)
+    SELECT      contributor_reference,
+                period,
+                question
+    FROM        cqpv
+    WHERE       contributor_reference = :s_contributor_reference
+      AND       period                = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  /* Note - There may not be data in cqpv to remove at time of deselection */
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to insert data into removed cqpv table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+    Delete then Insert record of deselection into dsl_actioning_users.
+  ----------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+  DO
+    h_retries = :h_retries + 1;
+
+    DELETE FROM dsl_actioning_users 
+    WHERE contributor_reference = :s_contributor_reference
+      AND period                = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to delete data from deselection user names table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+  DO
+    h_retries = :h_retries + 1;
+
+    INSERT INTO dsl_actioning_users 
+              ( contributor_reference,
+                period,
+                user_id,
+                user_name)
+    VALUES    ( :s_contributor_reference,
+                :s_period,
+                :g_user_id,
+                :g_user_name);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to insert data into deselection user names table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Insert record of deselected local units into removed_lu
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO removed_lu 
+              ( contributor_reference,
+                period,
+                lu_reference,
+                add_name1,
+                contributor_industry,
+                register_emp,
+                lu_region,
+                date_removed,
+                reason_delete,
+                lu_name1,
+                lu_name2,
+                lu_name3,
+                lu_addr1,
+                lu_addr2,
+                lu_addr3,
+                lu_addr4,
+                lu_addr5,
+                lu_postcode,
+                source,
+                date_received,
+                amendment_type)
+    SELECT      contributor_reference,
+                period,
+                lu_reference,
+                :s_add_name1,
+                :h_industry,
+                register_emp,
+                lu_region,
+                'today',
+                'REPORTING UNIT DELETED',
+                lu_name1,
+                lu_name2,
+                lu_name3,
+                lu_addr1,
+                lu_addr2,
+                lu_addr3,
+                lu_addr4,
+                lu_addr5,
+                lu_postcode,
+                :s_source,
+                :s_received_date,
+                :s_amendment
+    FROM        contributor_luaddress
+    WHERE       contributor_reference = :s_contributor_reference
+      AND       period                = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to insert data into removed local unit table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Copy any matching record from bto_unscored to bto_unscored_cleared
+    prior to deletion.
+  ------------------------------------------------------------------*/
+  
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO bto_unscored_cleared
+    SELECT * 
+    FROM   bto_unscored
+    WHERE  contributor_reference = :s_contributor_reference
+      AND  period                = :s_period
+      AND  contributor_industry  = :h_industry;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to insert data into cleared unscorables table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Select from dsl_table_data those tables to have data removed.
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT table_name   AS h_table_name,
+           mandatory    AS h_mandatory,
+           periodic     AS h_periodic,
+           message_text AS h_text    
+    FROM   dsl_table_data
+    BEGIN
+
+      MESSAGE 'Processing ' +:h_table_name + ' table. . .';
+
+      /*................................................................
+         Set up some variables ready for processing.
+      ................................................................*/
+
+      h_mandatory = UPPER(:h_mandatory);
+      h_periodic  = UPPER(:h_periodic);
+
+      IF h_mandatory = 'Y' 
+      THEN
+         h_mandatory = '0';
+      ELSE
+         h_mandatory = '1';
+      ENDIF;  
+
+      IF h_periodic != 'Y'
+      AND h_periodic != 'N'
+      THEN
+          h_periodic = 'Y'; 
+      ENDIF;
+
+      /*................................................................
+           Process selected table.
+      ................................................................*/
+
+      h_retry_or_not_2    = 'RETRY';
+      h_retries_2         = 0;
+
+      WHILE :h_retries_2 < h_retries_allowed AND :h_retry_or_not_2 = 'RETRY'
+      DO
+
+        h_retries_2 = :h_retries_2 + 1;
+
+        IF h_periodic = 'Y'
+        THEN
+          /*................................................................
+             Delete from specified periodic table.
+          ................................................................*/
+
+          DELETE FROM :h_table_name
+          WHERE       contributor_reference = :s_contributor_reference
+            AND       period                = :s_period;
+
+        ELSE
+          /*................................................................
+             Delete from specified non-periodic table.
+          ................................................................*/
+
+          DELETE FROM :h_table_name
+          WHERE       contributor_reference = :s_contributor_reference;
+        
+        ENDIF;
+
+        h_return_2 = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+        IF h_return_2 != 7
+        THEN
+          h_retry_or_not_2 = '';
+        ENDIF;
+
+      ENDWHILE;
+
+      IF h_return_2 > :h_mandatory
+      THEN
+        MESSAGE 'ERROR: Failed to delete data from ' +:h_text + ' table. '
+              + 'Error code ' +VARCHAR(:h_return_2) +'. '
+              + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+        RETURN 9;
+      ENDIF;
+
+    END;  /* End of selection loop */
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select table data for deselect loop. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+
+  /*------------------------------------------------------------------
+    If the form has been sent but hasn't been receipted,
+    a permanent stop reminder is created.
+  ------------------------------------------------------------------*/
+
+  IF h_cycle_point = 'F'
+  THEN
+
+    IF h_form_received = ''
+    THEN
+
+      /*...............................................................
+          Insert Stop Reminder 1 (if not already there)
+      ...............................................................*/
+
+      h_retry_or_not      = 'RETRY';
+      h_retries           = 0;
+
+      WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+      DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT contributor_reference AS h_dummy
+        FROM   stop_reminder
+        WHERE  contributor_reference = :s_contributor_reference
+          AND  period                = :s_period
+          AND  industry              = :h_industry
+          AND  reminder              = 1
+          AND  rem_type              = 'P';
+
+        h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+        IF h_return != 7
+        THEN
+          h_retry_or_not = '';
+        ENDIF;
+
+      ENDWHILE;
+
+      IF h_return > 1
+      THEN
+        MESSAGE 'ERROR: Failed on first select from stop reminder table. '
+              + 'Error code ' +VARCHAR(:h_return) +'. '
+              + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+      ELSEIF h_return = 1
+      THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+          h_retries = :h_retries + 1;
+
+          INSERT INTO stop_reminder
+          VALUES (    :h_inquiry,
+                      :s_period,
+                      1,
+                      :h_industry,
+                      :s_contributor_reference,
+                      'P',
+                      'today');
+
+          h_return_2 = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+          IF h_return_2 != 7
+          THEN
+            h_retry_or_not = '';
+          ENDIF;
+
+        ENDWHILE;
+
+        IF h_return_2 != 0
+        THEN
+          MESSAGE 'ERROR: Failed to insert stop reminder one. '
+                + 'Error code ' +VARCHAR(:h_return_2) +'. '
+                + 'Please contact IM immediately.'
+          WITH STYLE = POPUP;
+          RETURN 9;
+        ENDIF;
+
+      ENDIF; 
+
+      /*...............................................................
+          Insert Stop Reminder 2 (if not already there)
+      ...............................................................*/
+
+      h_retry_or_not      = 'RETRY';
+      h_retries           = 0;
+
+      WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+      DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT contributor_reference AS h_dummy
+        FROM   stop_reminder
+        WHERE  contributor_reference = :s_contributor_reference
+          AND  period                = :s_period
+          AND  industry              = :h_industry
+          AND  reminder              = 2
+          AND  rem_type              = 'P';
+
+        h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+        IF h_return != 7
+        THEN
+          h_retry_or_not = '';
+        ENDIF;
+
+      ENDWHILE;
+
+      IF h_return > 1
+      THEN
+        MESSAGE 'ERROR: Failed on second select from stop reminder table. '
+              + 'Error code ' +VARCHAR(:h_return) +'. '
+              + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+      ELSEIF h_return = 1
+      THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+          h_retries = :h_retries + 1;
+
+          INSERT INTO stop_reminder
+          VALUES (    :h_inquiry,
+                      :s_period,
+                      2,
+                      :h_industry,
+                      :s_contributor_reference,
+                      'P',
+                      'today');
+
+          h_return_2 = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+          IF h_return_2 != 7
+          THEN
+            h_retry_or_not = '';
+          ENDIF;
+
+        ENDWHILE;
+
+        IF h_return_2 != 0
+        THEN
+          MESSAGE 'ERROR: Failed to insert stop reminder two. '
+                + 'Error code ' +VARCHAR(:h_return_2) +'. '
+                + 'Please contact IM immediately.'
+          WITH STYLE = POPUP;
+          RETURN 9;
+        ENDIF;
+
+      ENDIF; 
+
+      /*...............................................................
+          Insert Stop Reminder 3 (if not already there)
+      ...............................................................*/
+
+      h_retry_or_not      = 'RETRY';
+      h_retries           = 0;
+
+      WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+      DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT contributor_reference AS h_dummy
+        FROM   stop_reminder
+        WHERE  contributor_reference = :s_contributor_reference
+          AND  period                = :s_period
+          AND  industry              = :h_industry
+          AND  reminder              = 3
+          AND  rem_type              = 'P';
+
+        h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+        IF h_return != 7
+        THEN
+          h_retry_or_not = '';
+        ENDIF;
+
+      ENDWHILE;
+
+      IF h_return > 1
+      THEN
+        MESSAGE 'ERROR: Failed on third select from stop reminder table. '
+              + 'Error code ' +VARCHAR(:h_return) +'. '
+              + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+      ELSEIF h_return = 1
+      THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+          h_retries = :h_retries + 1;
+
+          INSERT INTO stop_reminder
+          VALUES (    :h_inquiry,
+                      :s_period,
+                      3,
+                      :h_industry,
+                      :s_contributor_reference,
+                      'P',
+                      'today');
+
+          h_return_2 = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+          IF h_return_2 != 7
+          THEN
+            h_retry_or_not = '';
+          ENDIF;
+
+        ENDWHILE;
+
+        IF h_return_2 != 0
+        THEN
+          MESSAGE 'ERROR: Failed to insert stop reminder three. '
+                + 'Error code ' +VARCHAR(:h_return_2) +'. '
+                + 'Please contact IM immediately.'
+          WITH STYLE = POPUP;
+          RETURN 9;
+        ENDIF;
+
+      ENDIF; 
+
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Note deselection in audit trail. 
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC lp_write_to_audit_trail
+            ( p_contributor_reference = :s_contributor_reference,
+              p_period                = :s_period,
+              p_code                  = 15);
+
+  IF h_return != 0
+  THEN
+    /* Error reported by external procedure */
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Confirm success and clear fields.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'NOTE: Data backed up and contributor successfully deselected.'
+  WITH STYLE = POPUP;
+
+  SET_FORMS FIELD '' ( INVISIBLE(s_country) = 1,
+                       INVISIBLE(s_key)     = 1,
+
+                       DISPLAYONLY(s_period) = 0,
+                       UNDERLINE  (s_period) = 1,
+                       REVERSE    (s_period) = 0,
+
+                       DISPLAYONLY(s_contributor_reference) = 0,
+                       UNDERLINE  (s_contributor_reference) = 1,
+                       REVERSE    (s_contributor_reference) = 0);
+
+  CLEAR FIELD ALL;
+
+  msa_date        = 'now';
+  s_received_date = 'today';
+  s_key           = 'KEY';
+
+  RESUME FIELD s_period;
+
+}
+
+
+'Contact', KEY FRSKEY8 =
+{
+    CALL APPLICATION (exec = '$IMAGES/communicate',
+		      param =  VARCHAR(s_contributor_reference));
+}
+
+'Clear', KEY FRSKEY12 =
+{
+
+  SET_FORMS FIELD '' ( INVISIBLE(s_country) = 1,
+                       INVISIBLE(s_key)     = 1,
+
+                       DISPLAYONLY(s_period) = 0,
+                       UNDERLINE  (s_period) = 1,
+                       REVERSE    (s_period) = 0,
+
+                       DISPLAYONLY(s_contributor_reference) = 0,
+                       UNDERLINE  (s_contributor_reference) = 1,
+                       REVERSE    (s_contributor_reference) = 0);
+
+  CLEAR FIELD ALL;
+
+  msa_date        = 'now';
+  s_received_date = 'today';
+  s_key           = 'KEY';
+
+  RESUME FIELD s_period;
+
+}
+
+'End', KEY FRSKEY14 =
+{
+    RETURN 0;
+}
+
+/**************************** LOCAL PROCEDURES *****************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+
+/*=======================================================================
+    Local procedure to write to audit trail.
+=======================================================================*/
+
+PROCEDURE lp_write_to_audit_trail
+        ( p_contributor_reference = CHAR(11)    NOT NULL WITH DEFAULT,
+          p_question              = INTEGER4    NOT NULL WITH DEFAULT,
+          p_period                = INTEGER4    NOT NULL WITH DEFAULT,
+          p_code                  = INTEGER1    NOT NULL WITH DEFAULT,
+          p_val_1                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_val_2                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_val_3                 = VARCHAR(20) NOT NULL WITH DEFAULT,
+          p_frpr_name             = VARCHAR(36) NOT NULL WITH DEFAULT )=
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC write_to_audit_trail 
+            ( p_contributor_reference = :p_contributor_reference, 
+              p_question              = :p_question,
+              p_period                = :p_period,
+              p_code                  = :p_code, 
+              p_val_1                 = :p_val_1,
+              p_val_2                 = :p_val_2,
+              p_val_3                 = :p_val_3,
+              p_frpr_name             = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+

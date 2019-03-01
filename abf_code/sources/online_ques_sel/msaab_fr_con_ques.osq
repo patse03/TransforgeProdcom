@@ -1,0 +1,429 @@
+INITIAlIZE () =
+
+DECLARE
+  h_industry_cycle_point = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_output_category      = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_receipt_date         = DATE        NOT NULL WITH DEFAULT,
+  h_span_end             = INTEGER4    NOT NULL WITH DEFAULT,
+  h_keyresp              = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries_allowed      = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries              = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not         = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name            = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_return               = INTEGER4    NOT NULL WITH DEFAULT,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+{
+  h_frpr_name = 'msaab_fr_con_ques';
+  h_retries_allowed = 3;
+  g_help = CALLPROC msa_cp_getvar ('PROD_HELP');
+  msa_date = 'now';
+
+  SELECT DBMSINFO('database') AS g_database;
+  SELECT DBMSINFO('username') AS g_user_id;
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+  SET_FORMS FIELD '' ( DISPLAYONLY(s_period) = 0,
+                       UNDERLINE  (s_period) = 1,
+                       REVERSE    (s_period) = 0,
+
+                       DISPLAYONLY(s_industry) = 0,
+                       UNDERLINE  (s_industry) = 1,
+                       REVERSE    (s_industry) = 0,
+
+                       INVISIBLE(s_key)      = 1,
+                       INVISIBLE(s_country)  = 1);
+
+  h_return = CALLPROC msa_fp_get_user_details 
+           ( h_user_id         = BYREF(:g_user_id),
+             h_access_level    = BYREF(:g_access_level),
+             h_user_name       = BYREF(:g_user_name),
+             h_default_printer = BYREF(:g_printer));
+
+  IF h_return != 0
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  RESUME FIELD s_period;
+  
+}
+
+/************************** FIELD ACTIVATIONS ************************/
+
+
+FIELD s_period =
+{
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT period AS s_period
+    FROM   inquiry_period
+    WHERE  inquiry = 14
+      AND  period  = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: That is not a valid ProdCom period. Please try again.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_period;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to validate period on inquiry_period table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  SET_FORMS FIELD '' (DISPLAYONLY(s_period) = 1,
+                      UNDERLINE  (s_period) = 0,
+                      REVERSE    (s_period) = 1);
+
+  RESUME FIELD s_industry;
+}
+
+FIELD s_industry =
+{
+  MESSAGE 'Validating Industry . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT industry AS s_industry
+    FROM   industry_period
+    WHERE  industry = :s_industry
+      AND  period   = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: That industry is not valid '
+          + 'for period ' +VARCHAR(:s_period) +'. '
+          + 'Please try again...'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_industry;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to validate industry on industry_period table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Get Industry cycle point
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT industry_cycle_point AS h_industry_cycle_point
+    FROM   industry
+    WHERE  industry = :s_industry;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select industry cycle point. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      If the period is the latest live period for the inquiry,
+      then the industry_cycle_point must be set to 'Q' or 'F'.
+      ie. question selection must already have run for that
+      industry.
+  ------------------------------------------------------------------*/
+
+  IF :s_period = :h_span_end
+  AND (:h_industry_cycle_point = 'A' OR 
+       :h_industry_cycle_point = 'C')
+  THEN
+    MESSAGE 'NOTE: Main Question Selection has not yet been run ' 
+          + 'for this industry in this period. ' 
+          + 'Any question changes can be entered as CADS, ' 
+          + 'and they will then be picked up automatically ' 
+          + 'during the Question Selection run.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_period;
+  ENDIF;
+
+  SET_FORMS FIELD '' (DISPLAYONLY(s_industry) = 1,
+                      UNDERLINE(s_industry)   = 0,
+                      REVERSE(s_industry)     = 1);
+
+  RESUME FIELD s_reference;
+}
+
+
+FIELD s_reference =
+{
+  MESSAGE 'Validating Contributor . . .';
+
+  s_add_name1 = '';
+  msa_date = 'now';
+
+  REDISPLAY;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT add_name1 AS s_add_name1
+    FROM   contributor
+    WHERE  contributor_reference = :s_reference;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: That contributor does not exist in the ProdCom system. '
+          + 'Please try again...'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_reference;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to validate contributor reference number. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  REDISPLAY;
+
+  /*------------------------------------------------------------------------
+     Checks the contributor has been selected for the specified period, 
+     that the form is not an enforcement form, and that the contributor 
+     was selected in the specified industry for the specified period.
+
+     Obtains form_received setting for the contributor for the period.
+  ------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT a.output_category         AS h_output_category,
+           a.keyresp                 AS h_keyresp,
+           b.country                 AS s_country,
+           a.receipt_date            AS h_receipt_date
+    FROM   contributor_period a,
+           region b
+    WHERE  a.contributor_reference = :s_reference
+      AND  a.contributor_industry  = :s_industry
+      AND  a.period                = :s_period
+      AND  a.region                = b.region;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This Contributor was not selected for this ' 
+          + 'industry in the given period. Please try again...'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_reference;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to validate contributor industry period. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  IF :h_output_category = 'Y'
+  THEN
+    MESSAGE 'WARNING: This Contributor is in enforcement. ' 
+          + 'No questions may be added or deleted.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_reference;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+     Set screamer fields
+  ----------------------------------------------------------------------*/
+
+  IF s_country != ''
+  THEN
+    SET_FORMS FIELD '' (INVISIBLE(s_country) = 0);
+  ENDIF;
+
+  IF :h_keyresp = 1
+  THEN
+    s_key = 'KEY';
+    SET_FORMS FIELD '' (INVISIBLE(s_key) = 0);
+  ENDIF;
+
+  REDISPLAY;
+
+  /*--------------------------------------------------------------
+     User can add or delete questions from the form.
+  --------------------------------------------------------------*/
+
+  h_return = CALLFRAME msaab_fr_cre_del_ques 
+           (  p_add_name1             = :s_add_name1,
+              p_contributor_reference = :s_reference,
+              p_receipt_date          = :h_receipt_date,
+              p_period                = :s_period,
+              p_contributor_industry  = :s_industry);
+
+  /*--------------------------------------------------------------
+     Resets upon return.
+  --------------------------------------------------------------*/
+
+  CLEAR FIELD ALL;
+
+  msa_date = 'now';
+
+  SET_FORMS FIELD '' ( DISPLAYONLY(s_period) = 0,
+                       UNDERLINE  (s_period) = 1,
+                       REVERSE    (s_period) = 0,
+
+                       DISPLAYONLY(s_industry) = 0,
+                       UNDERLINE  (s_industry) = 1,
+                       REVERSE    (s_industry) = 0,
+
+                       INVISIBLE(s_key)      = 1,
+                       INVISIBLE(s_country)  = 1);
+
+  RESUME FIELD s_period;
+    
+}
+
+/************************** KEY ACTIVATIONS ************************/
+
+'Clear', KEY FRSKEY12 =
+{
+  CLEAR FIELD ALL;
+
+  msa_date = 'now';
+
+  SET_FORMS FIELD '' ( DISPLAYONLY(s_period) = 0,
+                       UNDERLINE  (s_period) = 1,
+                       REVERSE    (s_period) = 0,
+
+                       DISPLAYONLY(s_industry) = 0,
+                       UNDERLINE  (s_industry) = 1,
+                       REVERSE    (s_industry) = 0,
+
+                       INVISIBLE(s_key)      = 1,
+                       INVISIBLE(s_country)  = 1);
+
+  RESUME FIELD s_period;
+    
+}
+
+'End', KEY FRSKEY14 =
+{
+  RETURN 0;
+}
+
+/*************************** LOCAL PROCEDURES **************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

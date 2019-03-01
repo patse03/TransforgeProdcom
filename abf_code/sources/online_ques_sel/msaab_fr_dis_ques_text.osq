@@ -1,0 +1,137 @@
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+        h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+        h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+        h_frpr_name       = VARCHAR(24) NOT NULL WITH DEFAULT,
+        h_question        = INTEGER4    NOT NULL WITH DEFAULT,
+        h_return          = INTEGER1    NOT NULL WITH DEFAULT,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+{
+  h_retries_allowed = 3;
+  msa_date = 'now';
+  h_frpr_name = 'msaab_fr_dis_ques_text';
+
+  IF MOD(:s_question,10) > 1
+  THEN
+    h_question = (:s_question / 10 * 10) + 1;
+  ELSE
+    h_question = :s_question;
+  ENDIF;
+
+  h_retry_or_not = 'RETRY';
+  h_retries = 0;
+
+  WHILE :h_retries < :h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+    h_retries = :h_retries + 1;
+
+    SELECT unit_1      AS s_units,
+           text_line1  AS s_line1,
+           text_line2  AS s_line2,
+           text_line3  AS s_line3,
+           text_line4  AS s_line4,
+           text_line5  AS s_line5,
+           text_line6  AS s_line6,
+           text_line7  AS s_line7,
+           text_line8  AS s_line8,
+           text_line9  AS s_line9,
+           text_line10 AS s_line10
+    FROM   question_library
+    WHERE  question = :h_question
+      AND  period   = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to load question data from question library. '
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Load question units
+  ------------------------------------------------------------------*/
+
+  IF s_question != h_question
+  THEN
+        
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      SELECT unit_1 AS s_units
+      FROM   question_library
+      WHERE  question = :s_question
+        AND    period = :s_period;
+    
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+    
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+    
+    ENDWHILE;
+    
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to load volume units from question library. '
+            + 'Error code ' +VARCHAR(:h_return) + '. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+}
+
+/*************************** KEY ACTIVATIONS *******************************/
+
+'End', KEY FRSKEY14 =
+{
+  RETURN 0;
+}
+
+/*************************** LOCAL PROCEDURES *******************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

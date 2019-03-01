@@ -1,0 +1,280 @@
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_max_rows        = INTEGER4 NOT NULL,
+        h_counter         = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        lp_load_eq        = PROCEDURE RETURNING INTEGER
+{
+
+    h_retries_allowed = 3;
+    h_frpr_name = 'msafd_fr_eq_contrib';
+    msa_date = 'now';
+
+    MESSAGE 'Loading EQ Data . . .';
+
+    /*------------------------------------------------------------------
+    Load up array with potential EQ periods
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        g_year_array = 
+
+        SELECT   inquiry,
+                 period,
+                 period AS year
+        FROM     eq_contributor
+        WHERE    contributor_reference = :contributor_reference
+        ORDER BY period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:h_max_rows),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing eq_contributor'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This Contributor has not had any EQ Contributor' +
+                ' Data returned'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+    h_counter = :h_max_rows;
+
+    /*------------------------------------------------------------------
+    From Contributor
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Loading Contributor Details . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT addressee,
+               add_name1,
+               add_name2,
+               add_name3,
+               add_tradstyle1,
+               add_tradstyle2,
+               add_tradstyle3,
+               add_line1,
+               add_line2,
+               add_line3,
+               add_line4,
+               add_line5,
+               add_postcode,
+               phone_contact,
+               phone_area_code,
+               phone,
+               phone_extension,
+               fax_area_code,
+               fax,
+               email
+        FROM   contributor
+        WHERE  contributor_reference = :contributor_reference;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing contributor'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Contributor Details were not found on contributor'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_eq ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'PreviousPeriod' =
+{
+    IF h_counter = 1
+    THEN
+        MESSAGE 'No more Periods'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_counter = h_counter - 1;
+
+    ret_val = CALLPROC lp_load_eq ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+}
+
+'NextPeriod' =
+{
+    IF h_counter = h_max_rows
+    THEN
+        MESSAGE 'No more Periods'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_counter = h_counter + 1;
+
+    ret_val = CALLPROC lp_load_eq ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                      L O C A L   P R O C E D U R E
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_eq () =
+{
+
+    period = :g_year_array[:h_counter].period;
+    eq_message = VARCHAR(:h_counter) + ' of ' + VARCHAR(:h_max_rows);
+
+    MESSAGE 'Loading EQ Data for ' + VARCHAR(:period) + ' . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT addressee AS eq_addressee,
+               add_name1 AS eq_name1,
+               add_name2 AS eq_name2,
+               add_name3 AS eq_name3,
+               add_tradstyle1 AS eq_tradstyle1,
+               add_tradstyle2 AS eq_tradstyle2,
+               add_tradstyle3 AS eq_tradstyle3,
+               add_line1 AS eq_line1,
+               add_line2 AS eq_line2,
+               add_line3 AS eq_line3,
+               add_line4 AS eq_line4,
+               add_line5 AS eq_line5,
+               add_postcode AS eq_postcode,
+               phone_contact AS eq_phone_contact,
+               phone_area_code AS eq_phone_area_code,
+               phone AS eq_phone,
+               phone_extension AS eq_phone_extension,
+               fax_area_code AS eq_fax_area_code,
+               fax AS eq_fax,
+               email AS eq_email
+        FROM   eq_contributor
+        WHERE  contributor_reference = :contributor_reference
+        AND    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing eq_contributor'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Contributor Details were not found on eq_contributor'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+}

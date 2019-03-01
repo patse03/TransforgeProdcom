@@ -1,0 +1,159 @@
+/*-s--------------------------------------------------------------------
+Updates employment of local units to match reporting unit
+--------------------------------------------------------------------e-*/
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_total_emp       = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+
+{
+    msa_date = 'now';
+    h_frpr_name = 'msafd_fr_up_lu_emp';
+    h_retries_allowed = 3;
+    SET_FORMS FIELD '' (MODE(tf)= 'UPDATE');
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT lu_reference,
+               register_emp
+        FROM   contributor_luaddress
+        WHERE  contributor_reference = :contributor_reference
+        AND    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing contributor_luaddress'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No local units were found'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'LUAddress' =
+{
+    ret_val = CALLFRAME msafd_fr_in_cont_lu (
+              period                = :period,
+              contributor_reference = :contributor_reference,
+              lu_reference          = :tf.lu_reference);
+}
+
+'Update', KEY FRSKEY4 =
+{
+    h_total_emp = 0;
+
+    UNLOADTABLE tf
+    {
+        h_total_emp = :h_total_emp + :tf.register_emp;
+    };
+
+    IF register_emp <> :h_total_emp
+    THEN
+        MESSAGE 'The Employment of the Local Units adds up to ' +
+                VARCHAR(:h_total_emp) + ' but the Employment of the' +
+                ' Reporting Unit is ' + VARCHAR(:register_emp)
+        WITH STYLE = POPUP;
+        RESUME FIELD tf;
+    ENDIF;
+
+    MESSAGE 'Updating Employment . . .';
+
+    UNLOADTABLE tf
+    {
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            UPDATE contributor_luaddress
+            SET    register_emp = :tf.register_emp
+            WHERE  contributor_reference = :contributor_reference
+            AND    lu_reference = :tf.lu_reference
+            AND    period = :period;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in updating contributor_luaddress'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No rows updated on contributor_luaddress'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+    };
+
+    MESSAGE 'Local Unit Employment figures updated OK'
+    WITH STYLE = POPUP;
+
+    RETURN 0;
+}

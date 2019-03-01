@@ -1,0 +1,162 @@
+/****************************************************************************
+    Procedure to copy the standard headings for a contributor, 
+    based on industry and period, from the question library into CQPV. 
+
+    JUNE 2013 - DF - Reworked in line with new procedures and standards.
+
+****************************************************************************/
+
+PROCEDURE msafd_fp_st_heads (
+  p_contributor_reference = CHAR(11)    NOT NULL WITH DEFAULT,
+  p_period                = INTEGER4    NOT NULL WITH DEFAULT,
+  p_contributor_industry  = INTEGER4    NOT NULL WITH DEFAULT)=
+
+DECLARE 
+  h_retries_allowed       = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries               = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not          = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name             = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_return                = INTEGER1    NOT NULL WITH DEFAULT,
+
+  lp_full_error_check     = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_retries_allowed = 3;
+  h_frpr_name = 'msafd_fp_st_heads';
+
+  /*------------------------------------------------------------------
+     Delete any existing standard headings
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    DELETE FROM cqpv
+    WHERE       contributor_reference = :p_contributor_reference
+      AND       period                = :p_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to delete any existing questions from CQPV table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Insert new standard heading questions for contributor.
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO cqpv 
+              ( contributor_reference,
+                quest_order,
+                question,
+                period,
+                contributor_inquiry,
+                contributor_industry,
+                question_industry,
+                acell,
+                avalue,
+                acell_type,
+                aconstruction_type,
+                fcell,
+                fvalue,
+                fcell_type,
+                fconstruction_type,
+                confirmation_code,
+                confirmation_date,
+                atypical)
+    SELECT      :p_contributor_reference,
+                quest_order,
+                question,
+                :p_period,
+                14,
+                :p_contributor_industry,
+                question_industry,
+                'N',
+                0,
+                '',
+                0,
+                'N',
+                0,
+                '',
+                0,
+                '',
+                '',
+                'N'
+    FROM        question_library
+    WHERE       period            = :p_period
+      AND       question_industry = :p_contributor_industry
+      AND       quest_order       IN (8,9,10);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to insert new standard questions into CQPV table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/***************************** LOCAL PROCEDURES ****************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

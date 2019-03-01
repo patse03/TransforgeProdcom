@@ -1,0 +1,164 @@
+
+/*----------------------------------------------------------------------
+                  msafd_fr_non_prod_sic
+----------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE   industry              = INTEGER4 NOT NULL,
+          sic                   = INTEGER4 NOT NULL,
+	  h_frpr_name           = VARCHAR(25) NOT NULL,
+	  h_prompt              = CHAR(1) NOT NULL,
+          h_retries_allowed     = INTEGER1 NOT NULL,
+          h_retries             = INTEGER1 NOT NULL,
+          h_retry_or_not        = CHAR(5) NOT NULL,
+          ret_val               = INTEGER1 NOT NULL
+
+{
+    CLEAR FIELD non_prod_sic;
+    h_frpr_name = 'msafd_fr_non_prod_sic';
+    h_retries_allowed = 3;
+
+}
+
+
+FIELD non_prod_sic =
+{
+    IF :non_prod_sic NOT LIKE
+       '$[1234567890$]$[1234567890$]$[1234567890$]$[1234567890$]$[1234567890$]'
+       escape '$'
+    THEN
+	MESSAGE 'SIC must contain 5 characters'
+	WITH STYLE = POPUP;
+        RESUME FIELD non_prod_sic;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Check whether industry is really Non Production
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT industry 
+        FROM   industry
+        WHERE  industry = INT4(:non_prod_sic); 
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 0,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing industry'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'You have entered a production SIC - Please re-enter'
+        WITH STYLE = POPUP;
+        RESUME FIELD non_prod_sic;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Check whether industry is a valid SIC as held on the IDBR
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT sic 
+        FROM   valid_sics
+        WHERE  sic = INT4(:non_prod_sic); 
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing valid_sics'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'You have entered a non valid SIC - Please check SIC exists on IDBR and re-enter'
+        WITH STYLE = POPUP;
+        RESUME FIELD non_prod_sic;
+    ENDIF;
+
+    h_prompt = '';
+
+    WHILE h_prompt <> 'y' AND h_prompt <> 'n'
+    DO
+        h_prompt = PROMPT 'The new SIC you have entered is ' 
+			  + :non_prod_sic
+                          + '. Do you want to enter this into the reclass table?' 
+			  + ' Type Y/N and press <return>'
+                   WITH STYLE = POPUP;
+
+        h_prompt = LOWERCASE(h_prompt);
+
+    ENDWHILE;
+
+    IF h_prompt = 'n'
+    THEN
+        RESUME FIELD non_prod_sic;
+    ENDIF;
+
+    RETURN 0;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'Help',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+}
+
+'End', KEY FRSKEY6 =
+{
+ RETURN 1;
+} 
+

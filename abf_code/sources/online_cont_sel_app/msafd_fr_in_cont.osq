@@ -1,0 +1,287 @@
+INITIALIZE () =
+
+DECLARE 
+  h_frpr_name       = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_return          = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_display         = INTEGER1    NOT NULL WITH DEFAULT,
+  h_idbr            = CHAR(11)    NOT NULL WITH DEFAULT,
+  h_dummy           = CHAR(11)    NOT NULL WITH DEFAULT,
+  h_currency        = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_output_category = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_keyresp         = INTEGER1    NOT NULL WITH DEFAULT,
+  h_region          = CHAR(2)     NOT NULL WITH DEFAULT,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name = 'msafd_fr_in_cont';
+  h_retries_allowed = 3;
+  msa_date = 'now';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+   
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+  s_enforcement = 'UNDER ENFORCEMENT';
+  s_key         = 'KEY';
+  s_euro        = 'EURO CONTRIBUTOR';
+  s_live        = 'NOT LIVE';
+
+  SET_FORMS FIELD '' (INVISIBLE(s_enforcement)=1,
+                      INVISIBLE(s_country)=1,
+                      INVISIBLE(s_key) = 1,
+                      INVISIBLE(s_euro) = 1,
+                      INVISIBLE(s_live) = 1,
+                      DISPLAYONLY(s_contributor_reference)=0,
+                      REVERSE(s_contributor_reference)=0,
+                      UNDERLINE(s_contributor_reference)=1);
+
+}
+
+FIELD s_contributor_reference =
+{
+
+/*-------------------------------------------------------------------------
+     Populate screen fields.
+-------------------------------------------------------------------------*/
+
+  MESSAGE 'Selecting Data . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+  DO
+    h_retries = :h_retries + 1;
+
+    SELECT addressee       AS s_addressee,
+           add_name1       AS s_add_name1,
+           add_name2       AS s_add_name2,
+           add_name3       AS s_add_name3,
+           add_line1       AS s_add_line1,
+           add_line2       AS s_add_line2,
+           add_line3       AS s_add_line3, 
+           add_line4       AS s_add_line4,
+           add_line5       AS s_add_line5,
+           add_postcode    AS s_add_postcode,
+           add_tradstyle1  AS s_add_tradstyle1,
+           add_tradstyle2  AS s_add_tradstyle2,
+           add_tradstyle3  AS s_add_tradstyle3,
+           phone_contact   AS s_phone_contact,
+           phone_area_code AS s_phone_area_code,
+           phone           AS s_phone,
+           phone_extension AS s_phone_extension,
+           fax_area_code   AS s_fax_area_code,
+           fax             AS s_fax,
+           email           AS s_email
+    FROM   contributor
+    WHERE  contributor_reference = :s_contributor_reference;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This contributor reference number does not exist '
+          + 'on the system. Please try again.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_contributor_reference;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select contributor details from table. '
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.' 
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+       Get additional details for latest selected period as set on-screen 
+       markers.
+  -------------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_latest_details 
+           ( p_contributor_reference = :s_contributor_reference,
+	     p_contributor_industry  = BYREF(:s_industry),
+             p_output_category       = BYREF(:h_output_category),
+             p_keyresp               = BYREF(:h_keyresp),
+             p_legal_status          = BYREF(:s_legal_status),
+             p_currency              = BYREF(:h_currency),
+             p_region                = BYREF(:h_region));
+
+  IF h_return = 1
+  THEN
+    SET_FORMS FIELD '' (INVISIBLE(s_live) = 0);
+  ELSEIF h_return > 1
+  THEN
+     RETURN h_return;
+  ELSE
+    SET_FORMS FIELD '' (INVISIBLE(s_live) = 1);
+  ENDIF;
+
+  IF :h_output_category = 'Y'
+  THEN
+    SET_FORMS FIELD '' (INVISIBLE(s_enforcement) = 0);
+  ELSE
+    SET_FORMS FIELD '' (INVISIBLE(s_enforcement) = 1);
+  ENDIF;
+
+  IF :h_currency = 'E'
+  THEN
+    SET_FORMS FIELD '' (INVISIBLE(s_euro) = 0);
+  ELSE
+    SET_FORMS FIELD '' (INVISIBLE(s_euro) = 1);
+  ENDIF;
+
+  IF :h_keyresp = 1
+  THEN
+    SET_FORMS FIELD '' (INVISIBLE(s_key) = 0);
+  ELSE
+    SET_FORMS FIELD '' (INVISIBLE(s_key) = 1);
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Use region code to get country code.
+   ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT country AS s_country
+    FROM   region
+    WHERE  region = :h_region;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'Error: Failed to select country from region table. '
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.' 
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  IF s_country != ''
+  THEN
+    SET_FORMS FIELD '' (INVISIBLE(s_country) = 0);
+  ELSE
+    SET_FORMS FIELD '' (INVISIBLE(s_country) = 1);
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Lock reference number.
+   ------------------------------------------------------------------*/
+
+  SET_FORMS FIELD '' (DISPLAYONLY(s_contributor_reference)=1,
+                      REVERSE(s_contributor_reference)=1,
+                      UNDERLINE(s_contributor_reference)=0);
+
+}
+
+/**************************** KEY ACTIVATIONS ******************************/
+
+'Order Reprint', KEY FRSKEY4 =
+{
+  IF  :g_user_class != 'I'
+  AND :g_user_class != 'D' 
+  THEN
+    MESSAGE 'WARNING: This option is only available to inquiry staff.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  CALL APPLICATION 
+     ( exec = '$IMAGES/form_reprint_app -numeric_overflow=ignore ',
+       param = VARCHAR(:s_contributor_reference));
+
+}
+
+'Clear', KEY FRSKEY12 =
+{
+  CLEAR FIELD ALL;
+  msa_date = 'now';
+  s_enforcement = 'UNDER ENFORCEMENT';
+  s_key         = 'KEY';
+  s_euro        = 'EURO CONTRIBUTOR';
+  s_live        = 'NOT LIVE';
+  SET_FORMS FIELD '' (INVISIBLE(s_enforcement)=1,
+                      INVISIBLE(s_country)=1,
+                      INVISIBLE(s_key) = 1,
+                      INVISIBLE(s_euro) = 1,
+                      INVISIBLE(s_live) = 1,
+                      DISPLAYONLY(s_contributor_reference)=0,
+                      REVERSE(s_contributor_reference)=0,
+                      UNDERLINE(s_contributor_reference)=1);
+
+  RESUME FIELD s_contributor_reference;
+
+}
+
+'End', KEY FRSKEY14 =
+{
+    RETURN 0;
+}
+
+/***************************** LOCAL PROCEDURES *****************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

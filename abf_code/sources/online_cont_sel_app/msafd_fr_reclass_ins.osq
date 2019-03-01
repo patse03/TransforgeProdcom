@@ -1,0 +1,314 @@
+INITIALIZE (
+
+        insert_or_amend    = CHAR(1) NOT NULL) =
+
+DECLARE h_retries_allowed  = INTEGER1 NOT NULL,
+        h_retries          = INTEGER1 NOT NULL,
+        h_retry_or_not     = CHAR(5) NOT NULL,
+        h_frpr_name        = VARCHAR(24) NOT NULL,
+        h_already_on_table = CHAR(1) NOT NULL,
+        h_yesno            = CHAR(1) NOT NULL,
+        ret_val            = INTEGER1 NOT NULL,
+        h_reason           = VARCHAR(200) NOT NULL,
+        h_display          = INTEGER1 NOT NULL,
+        lp_load_details    = PROCEDURE RETURNING INTEGER
+{
+
+    h_retries_allowed = 3;
+    h_frpr_name = 'msafd_fr_reclass_ins';
+
+    SET_FORMS FIELD '' (DISPLAYONLY(contributor_reference) = 0,
+                        REVERSE(contributor_reference) = 0,
+                        UNDERLINE(contributor_reference) = 1,
+                        DISPLAYONLY(reason) = 1,
+                        REVERSE(reason) = 1,
+                        UNDERLINE(reason) = 0);
+
+    IF contributor_reference <> ''
+    THEN
+        ret_val = CALLPROC lp_load_details ();
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+    ENDIF;
+}
+
+FIELD contributor_reference =
+{
+    ret_val = CALLPROC lp_load_details ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Save', KEY FRSKEY4 =
+{
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(contributor_reference));
+
+    IF  h_display = 0
+    THEN
+        MESSAGE 'Please enter a valid Contributor Reference'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    IF reason = ''
+    THEN
+        MESSAGE 'You must supply a reason'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    MESSAGE 'Saving Details . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        IF h_already_on_table = 'y'
+        THEN
+            UPDATE reclass_exclusions
+            SET    reason = :reason,
+                   user_id = :g_user_id,
+                   time = 'now'
+            WHERE  contributor_reference = :contributor_reference;
+        ELSE
+            INSERT INTO reclass_exclusions (
+                        contributor_reference,
+                        contributor_industry,
+                        time,
+                        reason,
+                        user_id)
+            VALUES (    :contributor_reference,
+                        :contributor_industry,
+                        'now',
+                        :reason,
+                        :g_user_id);
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error updating/inserting reclass_exclusions'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows inserted/updated on reclass_exclusions'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    IF insert_or_amend = 'i'
+    THEN
+        MESSAGE 'Please make a note of this insertion in ''Contact Details'''
+        WITH STYLE = POPUP;
+    ENDIF;
+
+    RETURN 0;
+}
+
+'EndWithoutSaving', KEY FRSKEY6 =
+{
+    IF reason <> h_reason
+    THEN
+        h_yesno = '';
+        WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+        DO
+            h_yesno = PROMPT 'Do you really wish to end without saving' +
+                             ' any details? Type Y/N and press <return>'
+                      WITH STYLE = POPUP;
+            h_yesno = LOWERCASE(:h_yesno);
+        ENDWHILE;
+
+        IF h_yesno = 'n'
+        THEN
+            RESUME;
+        ENDIF;
+    ENDIF;
+
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                        L O C A L   P R O C E D U R E
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_details () =
+{
+    MESSAGE 'Checking Contributor . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT add_name1
+        FROM   contributor
+        WHERE  contributor_reference = :contributor_reference;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing contributor'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This Contributor does not exist'
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+    REDISPLAY;
+
+    /*------------------------------------------------------------------
+    Get industry of latest period on contributor_period
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msa_fp_latest_details (
+              contributor_reference = :contributor_reference,
+              contributor_industry  = BYREF(:contributor_industry));
+
+    IF ret_val = 1
+    THEN
+        MESSAGE 'This Contributor has not been selected before'
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    See if already exists
+    ------------------------------------------------------------------*/
+
+    h_already_on_table = 'n';
+    h_reason = '';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT reason
+        FROM   reclass_exclusions
+        WHERE  contributor_reference = :contributor_reference;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing reclass_exclusions'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 0
+    THEN
+        h_already_on_table = 'y';
+        h_reason = :reason;
+
+        IF insert_or_amend = 'i'
+        THEN
+            MESSAGE 'This Contributor already has a Stop IDBR marker'
+            WITH STYLE = POPUP;
+            RETURN 1;
+        ENDIF;
+    ENDIF;
+
+    REDISPLAY;
+
+    ret_val = CALLPROC msa_fp_industry_responsibility
+            ( p_industry  = :contributor_industry,
+              p_reference = :contributor_reference);
+
+    IF ret_val = 9
+    THEN
+      RETURN 9;
+    ENDIF;
+
+    IF ret_val <> 0
+    THEN
+        RETURN 1;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(contributor_reference) = 1,
+                        REVERSE(contributor_reference) = 1,
+                        UNDERLINE(contributor_reference) = 0,
+                        DISPLAYONLY(reason) = 0,
+                        REVERSE(reason) = 0,
+                        UNDERLINE(reason) = 1);
+    RETURN 0;
+}

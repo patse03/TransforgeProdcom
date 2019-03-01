@@ -1,0 +1,509 @@
+INITIALIZE ( p_insert_or_amend  = CHAR(1) NOT NULL) =
+
+DECLARE 
+  h_return            = INTEGER4     NOT NULL WITH DEFAULT,
+  h_retries_allowed   = INTEGER1     NOT NULL WITH DEFAULT,
+  h_retries           = INTEGER1     NOT NULL WITH DEFAULT,
+  h_retry_or_not      = CHAR(5)      NOT NULL WITH DEFAULT,
+  h_frpr_name         = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_dummy             = VARCHAR(11)  NOT NULL WITH DEFAULT,
+  h_exists            = CHAR(1)      NOT NULL WITH DEFAULT,
+  h_yesno             = CHAR(1)      NOT NULL WITH DEFAULT,
+  h_period            = INTEGER4     NOT NULL WITH DEFAULT,
+  h_reason            = VARCHAR(200) NOT NULL WITH DEFAULT,
+  h_display           = INTEGER1     NOT NULL WITH DEFAULT,
+
+  lp_load_details     = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+
+  h_retries_allowed = 3;
+  h_frpr_name = 'msafd_fr_reref_ins';
+  p_insert_or_amend  = UPPER(:p_insert_or_amend);
+
+  SET_FORMS FIELD '' (DISPLAYONLY(s_contributor_reference) = 0,
+                      UNDERLINE  (s_contributor_reference) = 1,
+                      REVERSE    (s_contributor_reference) = 0,
+
+                      DISPLAYONLY(s_period) = 0,
+                      UNDERLINE  (s_period) = 1,
+                      REVERSE    (s_period) = 0,
+
+                      DISPLAYONLY(s_reason) = 1,
+                      UNDERLINE  (s_reason) = 0,
+                      REVERSE    (s_reason) = 1);
+      
+  IF s_contributor_reference != ''
+  THEN
+
+    h_return = CALLPROC lp_load_details ();
+
+    IF h_return != 0
+    THEN
+      /* Error message handled in local procedure */
+      RETURN h_return;
+    ENDIF;
+
+  ENDIF;
+
+}
+
+/************************ FIELD ACTIVATIONS ********************************/
+
+FIELD s_contributor_reference =
+{
+
+  h_return = CALLPROC lp_load_details ();
+
+  IF h_return != 0
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+}
+
+/************************** KEY ACTIVATIONS ********************************/
+
+'Save', KEY FRSKEY4 =
+{
+  /*-------------------------------------------------------------------------
+      Ensure contributor_reference and reason are present.
+  -------------------------------------------------------------------------*/
+
+  INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(s_contributor_reference));
+
+  IF  h_display = 0
+  THEN
+    MESSAGE 'WARNING: Please enter a valid Contributor Reference.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_contributor_reference;
+  ENDIF;
+
+  IF s_reason = ''
+  THEN
+    MESSAGE 'WARNING: Please enter a valid comment.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_reason;
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+     Saving the data. 
+  -------------------------------------------------------------------------*/
+
+  MESSAGE 'Saving Details . . .';
+
+  IF h_exists = 'Y'
+  THEN
+
+    /*.......................................................................
+          If amending existing data then bulk update.
+    .......................................................................*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      UPDATE reref_contributors
+      SET    reason   = :s_reason,
+             actioned = 'N',
+             user_id  = :g_user_id,
+             time     = 'now'
+      WHERE  contributor_reference = :s_contributor_reference;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to update reref contributors table. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+  ELSE  /*  exists = 'N' */
+
+    /*.......................................................................
+          If inserting loop through three periods to perform inserts.
+    .......................................................................*/
+
+     MESSAGE 'NOTE: Inserting rerefs for periods ' + VARCHAR(:s_period) 
+           + ', '   + VARCHAR(:s_period + 100) 
+           + 'and ' + VARCHAR(:s_period + 200) 
+     WITH STYLE = POPUP;
+
+    h_period = :s_period;
+
+    WHILE h_period <= (:s_period + 200)
+    DO
+
+      h_retry_or_not      = 'RETRY';
+      h_retries           = 0;
+    
+      WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+      DO
+    
+        h_retries = :h_retries + 1;
+    
+        INSERT INTO reref_contributors 
+                  ( contributor_reference,
+                    contributor_industry,
+                    period,
+                    time,
+                    actioned,
+                    reason,
+                    user_id)
+        VALUES (    :s_contributor_reference,
+                    :s_industry,
+                    :h_period,
+                    'now',
+                    'N',
+                    :s_reason,
+                    :g_user_id);
+    
+        h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+        IF h_return != 7
+        THEN
+          h_retry_or_not = '';
+        ENDIF;
+    
+      ENDWHILE;
+
+      IF h_return != 0
+      THEN
+        MESSAGE 'ERROR: Failed to update reref contributors table. '
+              + 'Error code ' +VARCHAR(:h_return) +'. '
+              + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+        RETURN 9;
+      ENDIF;
+
+      h_period = :h_period +100;
+    
+    ENDWHILE;     
+
+  /*.........................................................................
+     If inserts complete, prompt user to make written note elsewhere.
+  .........................................................................*/
+
+    MESSAGE 'NOTE: Please make a note of this insertion in '
+          + 'the contributor comments database.'
+    WITH STYLE = POPUP;
+
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+'Abort', KEY FRSKEY14 =
+{
+  IF s_reason != h_reason
+  THEN
+
+    h_yesno = '';
+
+    WHILE h_yesno != 'Y' AND h_yesno != 'N'
+    DO
+      h_yesno = PROMPT 'NOTE: Do you really wish to end without saving ' 
+                     + 'your changes? [Y/N]: '
+                WITH STYLE = POPUP;
+      h_yesno = UPPER(:h_yesno);
+    ENDWHILE;
+
+    IF h_yesno = 'N'
+    THEN
+      RESUME;
+    ENDIF;
+
+  ENDIF;
+
+  RETURN 0;
+}
+
+/************************* LOCAL PROCEDURES ********************************/
+/*==========================================================================
+    Local procedure to load data to screen and lock contributor ref field.
+==========================================================================*/
+
+PROCEDURE lp_load_details () =
+
+DECLARE   lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+
+{
+
+  /*-----------------------------------------------------------------------
+      Validate contributor reference.
+  -----------------------------------------------------------------------*/
+
+  MESSAGE 'Checking Contributor . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT add_name1 AS s_add_name1
+    FROM   contributor
+    WHERE  contributor_reference = :s_contributor_reference;
+
+    lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF lp_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF lp_return = 1
+  THEN
+    MESSAGE 'WARNING: This contributor has never been selected for ProdCom. '
+          + 'Please enter another contributor reference or exit the screen.'
+    WITH STYLE = POPUP;
+    RETURN 1;
+  ELSEIF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select contributor reporting unit details. '
+          + 'Error code ' +VARCHAR(:lp_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN :lp_return;
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+      Get industry for latest selected period for contributor
+  -------------------------------------------------------------------------*/
+
+  lp_return = CALLPROC msa_fp_latest_details 
+           ( p_contributor_reference = :s_contributor_reference,
+             p_contributor_industry  = BYREF(:s_industry));
+
+  IF lp_return = 1
+  THEN
+    MESSAGE 'ERROR: Although this contributor has been initially selected ' 
+          + 'for ProdCom before, it has not remained in selection for '
+          + 'any ProdCom period.'        
+    WITH STYLE = POPUP;
+    RETURN 1;
+
+  ELSEIF lp_return > 1
+  THEN
+    /* Error message handled by external procedure. */
+    RETURN 9;
+
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+      Get Current data period.
+  -------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT MAX(period) AS s_period
+    FROM   inquiry_period;
+
+    lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF lp_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF lp_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select current data period. '
+          + 'Error code ' +VARCHAR(:lp_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    See if entry already exists on table for contributor for this
+    or later periods, pulling data for earliest selected entry.
+  ------------------------------------------------------------------*/
+
+  h_exists = 'N';
+  h_reason = '';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT period AS s_period,
+           reason AS s_reason
+    FROM   reref_contributors
+    WHERE  contributor_reference  =  :s_contributor_reference
+      AND  period                >= :s_period
+    ORDER BY period ASC;
+
+    lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 0);
+
+    IF lp_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF lp_return > 1
+  THEN 
+    MESSAGE 'ERROR: Failed to select contributor data from reref table. '
+          + 'Error code ' +VARCHAR(:lp_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ELSEIF lp_return = 1
+  THEN
+
+    /*-----------------------------------------------------------------------
+      Already exists on table: Delete any earlier entries, then block
+      if attempting to insert rereference.
+    -----------------------------------------------------------------------*/
+
+    h_exists = 'Y';
+
+    /*.......................................................................
+        Delete anything earlier than current period to aid housekeeping.
+    .......................................................................*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+  
+      DELETE FROM   reref_contributors
+      WHERE  contributor_reference = :s_contributor_reference
+        AND  period                < :s_period;
+
+      lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 0);
+
+      IF lp_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF lp_return > 1
+    THEN 
+      MESSAGE 'ERROR: Failed to delete obsolete rows from reref table. '
+            + 'Error code ' +VARCHAR(:lp_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+    /*.......................................................................
+        If action marker indicates insert, gracefully abort.
+    .......................................................................*/
+
+    IF p_insert_or_amend = 'I'
+    THEN
+      MESSAGE 'WARNING: Contributor is already on reref table for this period.'
+      WITH STYLE = POPUP;
+      RETURN 1;
+    ENDIF;
+
+    REDISPLAY;
+
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+      Save current reason for later change detecting.
+  -----------------------------------------------------------------------*/
+
+  h_reason = :s_reason;
+
+  /*-----------------------------------------------------------------------
+     Now we are displaying existing data for ammendment, or a blank 
+     set of fields for insertion, check authority of user to take that
+     action.  
+  -----------------------------------------------------------------------*/
+
+  lp_return = CALLPROC msa_fp_industry_responsibility
+            ( p_industry  = :s_industry,
+              p_reference = :s_contributor_reference);
+
+  IF lp_return > 0
+  THEN
+    /* Error message handled in external procedure */
+    RETURN :lp_return;
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+      Lock contributor_reference and period, unlock reason.
+  -----------------------------------------------------------------------*/
+
+  SET_FORMS FIELD '' (DISPLAYONLY(s_contributor_reference) = 1,
+                      UNDERLINE  (s_contributor_reference) = 0,
+                      REVERSE    (s_contributor_reference) = 1,
+
+                      DISPLAYONLY(s_period) = 1,
+                      UNDERLINE  (s_period) = 0,
+                      REVERSE    (s_period) = 1,
+
+                      DISPLAYONLY(s_reason) = 0,
+                      UNDERLINE  (s_reason) = 1,
+                      REVERSE    (s_reason) = 0);
+      
+  RETURN 0;
+
+}
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

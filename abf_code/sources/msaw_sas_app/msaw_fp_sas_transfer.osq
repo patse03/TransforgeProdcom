@@ -1,0 +1,1390 @@
+/*-------------------------------------------------------------------------
+     This program is called by the TOP UTILITIES menu screen in
+     first_appplication.
+--------------------------------------------------------------------------*/
+
+procedure msaw_fp_sas_transfer () =
+
+DECLARE h_frpr_name           = VARCHAR(24) NOT NULL,
+        h_now                 = VARCHAR(24) NOT NULL,
+        contributor_reference = CHAR(11) NOT NULL,
+        question              = INTEGER4 NOT NULL,
+        user_id               = CHAR(8) NOT NULL,
+        week_no               = INTEGER1 NOT NULL,
+	h_sdate               = DATE NOT NULL,
+        h_copy_table1         = VARCHAR(24) NOT NULL,
+        h_table2              = VARCHAR(24) NOT NULL,
+        h_table6              = VARCHAR(24) NOT NULL,
+        h_table7              = VARCHAR(24) NOT NULL,
+        h_table8              = VARCHAR(24) NOT NULL,
+        h_save_file           = VARCHAR(100) NOT NULL,
+        h_reference           = VARCHAR(11) NOT NULL,
+        h_quest               = INTEGER4 NOT NULL,
+        h_week_no             = INTEGER1 NOT NULL,
+        h_last_week             = INTEGER1 NOT NULL,
+        h_day_run             = INTEGER1 NOT NULL,
+        h_week_num            = INTEGER1 NOT NULL,
+        ret_val               = INTEGER1 NOT NULL,
+        h_inquiry             = INTEGER1 NOT NULL,
+        h_row                 = INTEGER4 NOT NULL,
+        h_count               = INTEGER4 NOT NULL,
+        h_run_period          = INTEGER4 NOT NULL,
+        h_data_period         = INTEGER4 NOT NULL,
+        h_state               = INTEGER4 NOT NULL,
+        print_name            = CHAR(30) NOT NULL,
+        report_name           = CHAR(30) NOT NULL
+
+{
+    h_frpr_name = 'msaw_fp_sas_transfer';
+
+    h_copy_table1 = 'tt_sas_ext_conts';
+    h_table2      = 'tt_sas_assoc_vols';
+    h_table6      = 'tt_sas_ext6';
+    h_table7      = 'tt_sas_ext7';
+    h_table8      = 'tt_sas_ext8';
+
+    print_name = 'contrib_relift.rpt';
+    report_name = 'msaw_rw_relift.rw';
+
+    SELECT DBMSINFO('username') AS g_user_id;
+    SELECT DBMSINFO('database') AS g_database;
+
+    IF g_database = 'prodlivedb'
+    THEN
+	g_path_name1 = '/prodcom/live5/files/sas/';
+        g_printer = 'n1325_9mf ';
+    ELSE
+	g_path_name1 = '/prodcom/source/produser/files/sas/';
+        g_printer = 'nd115_9mf ';
+    ENDIF;
+
+/*** temp message for testing  ***
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Entering sas_transfer',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+*/
+    MESSAGE 'Selecting data . . .';
+
+    ret_val = CALLPROC batch_fp_drop_table (h_table = :h_table2);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table (h_table = :h_copy_table1);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table (h_table = :h_table6);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table (h_table = :h_table7);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+           Select current week number 
+    ----------------------------------------------------------------e-*/
+     
+   SELECT week AS h_week_no
+   FROM   weekno_dates
+   WHERE  date('today') between start_date and end_date
+   AND    inquiry = 14
+   AND    end_date <> '31/12/2050';
+
+   ret_val = CALLPROC batch_check_inq_ing (
+             h_num_row_ck      = 1,
+             h_commit          = 'Y',
+             h_rollback        = 'N',
+             h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error selecting week_no from weekno_dates',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+ h_last_week = :h_week_no - 1;
+
+   MESSAGE 'Deleting duplicates contributor_sas table ';
+
+   DELETE FROM contributor_sas a
+   WHERE contributor_reference IN (
+   SELECT contributor_reference 
+   FROM contributor_sas b
+   WHERE a.contributor_reference = b.contributor_reference
+   AND (week_no = :h_week_no 
+     or week_no = :h_last_week)
+   AND extracted = 'n' 
+   AND a.question = b.question
+   AND a.data_for_period = b.data_for_period
+   AND a.tid < b.tid);
+
+   ret_val = CALLPROC batch_check_inq_ing (
+             h_num_row_ck      = 1,
+             h_commit          = 'Y',
+             h_rollback        = 'N',
+             h_frpr_name       = :h_frpr_name);
+
+   IF ret_val = 9
+   THEN
+       INSERT INTO error_log
+       VALUES(     'now',
+                   'Error deleting duplicates - contributor_sas' ,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN 9;
+   ENDIF;
+
+
+        MESSAGE 'Creating table . . .' + :h_copy_table1;
+
+    CREATE TABLE :h_copy_table1 (
+    contributor_reference char(11) not null,
+    run_period            integer4 not null,
+    data_for_period       integer4 not null,
+    question              integer4 not null,
+    quest_order           integer1 not null,
+    question_industry     integer4 not null,
+    lag                   char(1) not null,
+    contributor_inquiry   integer2 not null,
+    contributor_industry  integer4 not null,
+    proposed_industry     integer4 not null,
+    enterprise            char(10) not null,
+    register_emp          integer4 not null,
+    acell                 char(2) not null,
+    avalue                integer4 not null)
+    WITH LOCATION = (prod2);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating table ' + :h_copy_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Create table of all associated volume questions
+    ------------------------------------------------------------------*/
+
+        MESSAGE 'Creating table . . .' + :h_table2;
+
+    CREATE TABLE :h_table2 AS
+    SELECT       contributor_reference,
+                 question + 2 AS question,
+		 inquiry,
+		 run_period,
+		 data_for_period,
+	         week_no,
+		 user_id,
+		 'n' as extracted,
+		 requested
+    FROM         contributor_sas a
+    WHERE        MOD(question,10) = 2
+    AND       (   week_no = :h_week_no 
+	 or week_no = :h_last_week)
+    AND          extracted = 'n' 
+    AND          question + 2 IN (
+	  SELECT question 
+	  FROM   question_library b
+	  WHERE  b.period = (a.data_for_period/100)*100)
+    UNION SELECT contributor_reference,
+                 question + 3,
+		 inquiry,
+		 run_period,
+		 data_for_period,
+	         week_no,
+		 user_id,
+		 'n' as extracted,
+		 requested
+    FROM         contributor_sas a
+    WHERE        MOD(question,10) = 2
+    AND      (    week_no = :h_week_no 
+       or week_no = :h_last_week)
+    AND          extracted = 'n' 
+    AND          question + 3 IN (
+	  SELECT question 
+	  FROM   question_library b
+	  WHERE  b.period = (a.data_for_period/100)*100)
+    UNION SELECT contributor_reference,
+                 question + 4,
+		 inquiry,
+		 run_period,
+		 data_for_period,
+	         week_no,
+		 user_id,
+		 'n' as extracted,
+		 requested
+    FROM         contributor_sas a
+    WHERE        MOD(question,10) = 2
+    AND     (     week_no = :h_week_no 
+	or week_no = :h_last_week)
+    AND          extracted = 'n' 
+    AND          question + 4 IN (
+	  SELECT question 
+	  FROM   question_library b
+	  WHERE  b.period = (a.data_for_period/100)*100)
+    UNION SELECT contributor_reference,
+                 question + 5,
+		 inquiry,
+		 run_period,
+		 data_for_period,
+	         week_no,
+		 user_id,
+		 'n' as extracted,
+		 requested
+    FROM         contributor_sas a
+    WHERE        MOD(question,10) = 2
+    AND (         week_no = :h_week_no 
+	or week_no = :h_last_week)
+    AND          extracted = 'n' 
+    AND          question + 5 IN (
+	  SELECT question 
+	  FROM   question_library b
+	  WHERE  b.period = (a.data_for_period/100)*100)
+    UNION SELECT contributor_reference,
+                 question + 6,
+		 inquiry,
+		 run_period,
+		 data_for_period,
+	         week_no,
+		 user_id,
+		 'n' as extracted,
+		 requested
+    FROM         contributor_sas a
+    WHERE        MOD(question,10) = 2
+    AND (         week_no = :h_week_no 
+	or week_no = :h_last_week)
+    AND          extracted = 'n' 
+    AND          question + 6 IN (
+	  SELECT question 
+	  FROM   question_library b
+	  WHERE  b.period = (a.data_for_period/100)*100);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+   MESSAGE 'Deleting duplicates h_table2 table ';
+
+   DELETE FROM :h_table2 a
+   WHERE contributor_reference IN (
+   SELECT contributor_reference 
+   FROM :h_table2 b
+   WHERE a.contributor_reference = b.contributor_reference
+   AND (week_no = :h_week_no 
+     or week_no = :h_last_week)
+   AND extracted = 'n' 
+   AND a.question = b.question
+   AND a.data_for_period = b.data_for_period
+   AND a.tid < b.tid);
+
+   ret_val = CALLPROC batch_check_inq_ing (
+             h_num_row_ck      = 1,
+             h_commit          = 'Y',
+             h_rollback        = 'N',
+             h_frpr_name       = :h_frpr_name);
+
+   IF ret_val = 9
+   THEN
+       INSERT INTO error_log
+       VALUES(     'now',
+                   'Error deleting duplicates - h_table2' ,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN 9;
+   ENDIF;
+
+ /*-----------------------------------------------------------------
+    Insert associated volume questions into contributor_sas 
+ ------------------------------------------------------------------*/
+
+        MESSAGE 'Inserting into table contributor_sas';
+
+    INSERT INTO contributor_sas (
+	        contributor_reference,
+	        question,
+	        inquiry,
+	        run_period,
+	        data_for_period,
+	        week_no,
+	        user_id,
+		extracted,
+		requested)
+    SELECT      contributor_reference,
+	        question,
+	        inquiry,
+	        run_period,
+	        data_for_period,
+	        week_no,
+	        user_id,
+		extracted,
+		requested
+    FROM        :h_table2 a
+    WHERE       question NOT IN (
+	            SELECT b.question 
+	            FROM   contributor_sas b
+	            WHERE  b.run_period = a.run_period
+	            AND    b.data_for_period = a.data_for_period
+	            AND    b.week_no = :h_week_no);
+
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error inserting into contributor_sas',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+
+    /*------------------------------------------------------------------
+     Copy the relevant records over one at a time
+    ------------------------------------------------------------------*/
+
+    SELECT   contributor_reference AS h_reference,
+             question as h_quest,
+             data_for_period AS h_data_period,
+	     week_no AS h_week_num
+    FROM     contributor_sas
+    WHERE    (week_no = :h_week_no 
+        OR  week_no = :h_last_week)
+    AND      extracted = 'n' 
+    ORDER BY h_reference,h_quest,h_data_period
+    {
+        MESSAGE 'Inserting contributor - ' + :h_reference + ' ' + 
+	   VARCHAR(:h_quest) + ' into ' +:h_copy_table1;
+
+        INSERT INTO :h_copy_table1
+	SELECT a.contributor_reference,
+	       int4(0) as run_period,
+	       a.period as data_for_period,
+	       a.question,
+	       a.quest_order,
+	       a.question_industry,
+	       '0' as lag,
+	       a.contributor_inquiry as inquiry,
+	       a.contributor_industry,
+	       a.contributor_industry as proposed_industry,
+	       '          ' as enterprise,
+	       int4(0) as register_emp,
+	       acell,
+	       avalue
+        FROM cqpv a
+	WHERE contributor_reference = :h_reference
+	AND question = :h_quest
+	AND period =:h_data_period;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                    'Error inserting from cqpv into ' +
+		    :h_copy_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ELSEIF ret_val = 0
+        THEN
+
+            UPDATE :h_copy_table1 a
+	    FROM   contributor_period b
+	    SET    enterprise = b.enterprise,
+                   register_emp = b.register_emp
+	    WHERE  a.contributor_reference = b.contributor_reference
+	    AND    a.data_for_period = b.period;
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val = 9
+            THEN
+                INSERT INTO error_log
+                VALUES(     'now',
+                        'Error updating with enterprise and emp on '
+		        + :h_copy_table1,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+                COMMIT;
+                RETURN 9;
+            ENDIF;
+
+        ELSEIF ret_val = 1
+        THEN
+
+            IF mod(h_data_period,100) = 00
+            THEN
+	
+                 INSERT INTO :h_copy_table1
+	         SELECT a.contributor_reference,
+	                int4(0) as run_period,
+	                a.period as data_for_period,
+	                a.question,
+	                a.quest_order,
+	                a.question_industry,
+	                '0' as lag,
+	                a.contributor_inquiry as inquiry,
+	                a.contributor_industry,
+	                a.contributor_industry as proposed_industry,
+	                '          ' as enterprise,
+	                int4(0) as register_emp,
+	                acell,
+	                avalue
+                 FROM   mid_carryout a
+	         WHERE  contributor_reference = :h_reference
+	         AND    question = :h_quest
+	         AND    period =:h_data_period;
+
+                 ret_val = CALLPROC batch_check_inq_ing (
+                           h_num_row_ck      = 1,
+                           h_commit          = 'Y',
+                           h_rollback        = 'N',
+                           h_frpr_name       = :h_frpr_name);
+
+                 IF ret_val = 9
+                 THEN
+                     INSERT INTO error_log
+                     VALUES(     'now',
+                            'Error inserting from mid_carryout into ' +
+		            :h_copy_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                     COMMIT;
+                     RETURN 9;
+                 ENDIF;
+
+                 UPDATE :h_copy_table1 a
+	         FROM contributor_period b
+	         SET enterprise = b.enterprise
+	         WHERE a.contributor_reference = b.contributor_reference
+	         AND a.data_for_period+12 = b.period
+	         AND a.enterprise in ('','0')
+	         AND b.inquiry = 15;
+
+                 ret_val = CALLPROC batch_check_inq_ing (
+                           h_num_row_ck      = 1,
+                           h_commit          = 'Y',
+                           h_rollback        = 'N',
+                           h_frpr_name       = :h_frpr_name);
+
+               IF ret_val = 9
+               THEN
+                 INSERT INTO error_log
+                 VALUES(     'now',
+                             'Error updating with enterprise on '
+		             + :h_copy_table1,
+                             :h_frpr_name,
+                             :ret_val,
+                             :g_user_id);
+                 COMMIT;
+                 RETURN 9;
+               ENDIF;
+
+                 UPDATE :h_copy_table1 a
+	         FROM contributor_period b
+	         SET enterprise = b.enterprise
+	         WHERE a.contributor_reference = b.contributor_reference
+	         AND a.data_for_period+9 = b.period
+	         AND a.enterprise in ('','0')
+	         AND b.inquiry = 15;
+
+                 ret_val = CALLPROC batch_check_inq_ing (
+                           h_num_row_ck      = 1,
+                           h_commit          = 'Y',
+                           h_rollback        = 'N',
+                           h_frpr_name       = :h_frpr_name);
+
+               IF ret_val = 9
+               THEN
+                 INSERT INTO error_log
+                 VALUES(     'now',
+                             'Error updating with enterprise on '
+		             + :h_copy_table1,
+                             :h_frpr_name,
+                             :ret_val,
+                             :g_user_id);
+                 COMMIT;
+                 RETURN 9;
+               ENDIF;
+
+                 UPDATE :h_copy_table1 a
+	         FROM contributor_period b
+	         SET enterprise = b.enterprise
+	         WHERE a.contributor_reference = b.contributor_reference
+	         AND a.data_for_period+6 = b.period
+	         AND a.enterprise in ('','0')
+	         AND b.inquiry = 15;
+
+                 ret_val = CALLPROC batch_check_inq_ing (
+                           h_num_row_ck      = 1,
+                           h_commit          = 'Y',
+                           h_rollback        = 'N',
+                           h_frpr_name       = :h_frpr_name);
+
+               IF ret_val = 9
+               THEN
+                 INSERT INTO error_log
+                 VALUES(     'now',
+                             'Error updating with enterprise on '
+		             + :h_copy_table1,
+                             :h_frpr_name,
+                             :ret_val,
+                             :g_user_id);
+                 COMMIT;
+                 RETURN 9;
+               ENDIF;
+
+                 UPDATE :h_copy_table1 a
+	         FROM contributor_period b
+	         SET enterprise = b.enterprise
+	         WHERE a.contributor_reference = b.contributor_reference
+	         AND a.data_for_period+3 = b.period
+	         AND a.enterprise in ('','0')
+	         AND b.inquiry = 15;
+
+                 ret_val = CALLPROC batch_check_inq_ing (
+                           h_num_row_ck      = 1,
+                           h_commit          = 'Y',
+                           h_rollback        = 'N',
+                           h_frpr_name       = :h_frpr_name);
+
+               IF ret_val = 9
+               THEN
+                 INSERT INTO error_log
+                 VALUES(     'now',
+                             'Error updating with enterprise on '
+		             + :h_copy_table1,
+                             :h_frpr_name,
+                             :ret_val,
+                             :g_user_id);
+                 COMMIT;
+                 RETURN 9;
+               ENDIF;
+
+               CREATE TABLE :h_table6
+               AS SELECT b.contributor_reference ,
+                         b.period as qsi_period,
+                         b.period/100*100 as asi_period,
+                         b.register_emp
+               FROM :h_copy_table1 a,
+                    contributor_period b
+               WHERE a.contributor_reference = b.contributor_reference
+               AND b.period/100*100 = a.data_for_period ;
+
+               ret_val = CALLPROC batch_check_inq_ing (
+                         h_num_row_ck      = 1,
+                         h_commit          = 'Y',
+                         h_rollback        = 'N',
+                         h_frpr_name       = :h_frpr_name);
+
+               IF ret_val = 9
+               THEN
+                   INSERT INTO error_log
+                   VALUES(     'now',
+                               'Error creating table ' + :h_table6,
+                               :h_frpr_name,
+                               :ret_val,
+                               :g_user_id);
+                   COMMIT;
+                   RETURN 9;
+               ENDIF;
+
+               CREATE TABLE :h_table7
+               AS SELECT contributor_reference ,
+                         asi_period as period,
+                         avg(register_emp) as register_emp
+               FROM      :h_table6
+               GROUP BY  contributor_reference,asi_period;
+
+               ret_val = CALLPROC batch_check_inq_ing (
+                         h_num_row_ck      = 1,
+                         h_commit          = 'Y',
+                         h_rollback        = 'N',
+                         h_frpr_name       = :h_frpr_name);
+
+               IF ret_val = 9
+               THEN
+                   INSERT INTO error_log
+                   VALUES(     'now',
+                               'Error creating table ' + :h_table7,
+                               :h_frpr_name,
+                               :ret_val,
+                               :g_user_id);
+                   COMMIT;
+                   RETURN 9;
+               ENDIF;
+
+               UPDATE :h_copy_table1 a
+               FROM :h_table7 b
+               SET register_emp = b.register_emp
+               WHERE a.contributor_reference = b.contributor_reference
+               AND a.data_for_period = b.period;
+
+               ret_val = CALLPROC batch_check_inq_ing (
+                         h_num_row_ck      = 1,
+                         h_commit          = 'Y',
+                         h_rollback        = 'N',
+                         h_frpr_name       = :h_frpr_name);
+
+               IF ret_val = 9
+               THEN
+                   INSERT INTO error_log
+                   VALUES(     'now',
+                               'Error updating ' + :h_copy_table1 + ' with ' +
+		               :h_table7,
+                               :h_frpr_name,
+                               :ret_val,
+                               :g_user_id);
+                   COMMIT;
+                   RETURN 9;
+                ENDIF;
+
+            ELSE
+
+            MESSAGE 'Inserting contributor - '+:h_reference;
+
+                INSERT INTO :h_copy_table1
+	        SELECT a.contributor_reference,
+	               int4(0) as run_period,
+	               a.qsi_period as data_for_period,
+	               a.question,
+	               a.quest_order,
+	               a.question_industry,
+	               '0' as lag,
+	               int2(15) as inquiry,
+	               a.contributor_industry,
+	               a.contributor_industry as proposed_industry,
+	               enterprise,
+	               int4(0) as register_emp,
+	               acell,
+	               avalue
+                FROM asi_to_qsi_link a
+	        WHERE contributor_reference = :h_reference
+	        AND question = :h_quest
+	        AND qsi_period =:h_data_period;
+
+                ret_val = CALLPROC batch_check_inq_ing (
+                          h_num_row_ck      = 1,
+                          h_commit          = 'Y',
+                          h_rollback        = 'N',
+                          h_frpr_name       = :h_frpr_name);
+
+                IF ret_val = 9
+                THEN
+                    INSERT INTO error_log
+                    VALUES(     'now',
+                                'Error inserting into ' + :h_copy_table1,
+                                :h_frpr_name,
+                                :ret_val,
+                                :g_user_id);
+                    COMMIT;
+                    RETURN 9;
+                ENDIF;
+
+                UPDATE :h_copy_table1 a
+                FROM contributor_period b
+                SET register_emp = b.register_emp
+                WHERE a.contributor_reference = b.contributor_reference
+                AND a.data_for_period/100*100 = b.period
+                AND b.inquiry = 14;
+
+                ret_val = CALLPROC batch_check_inq_ing (
+                          h_num_row_ck      = 1,
+                          h_commit          = 'Y',
+                          h_rollback        = 'N',
+                          h_frpr_name       = :h_frpr_name);
+
+                IF ret_val = 9
+                THEN
+                    INSERT INTO error_log
+                    VALUES(     'now',
+                                'Error updating with emp and ent 1 - ' + 
+		                :h_copy_table1,
+                                :h_frpr_name,
+                                :ret_val,
+                                :g_user_id);
+                    COMMIT;
+                    RETURN 9;
+                ELSEIF ret_val = 1
+                THEN
+                    UPDATE :h_copy_table1 a
+                    FROM contributor_period b
+                    SET register_emp = b.register_emp
+                        WHERE a.contributor_reference = b.contributor_reference
+                        AND (a.data_for_period/100*100) - 100 = b.period
+                        AND b.inquiry = 14;
+
+                    ret_val = CALLPROC batch_check_inq_ing (
+                              h_num_row_ck      = 1,
+                              h_commit          = 'Y',
+                              h_rollback        = 'N',
+                              h_frpr_name       = :h_frpr_name);
+
+                    IF ret_val = 9
+                    THEN
+                        INSERT INTO error_log
+                        VALUES(     'now',
+                                    'Error updating with emp and ent 2 - ' + 
+		                    :h_copy_table1,
+                                    :h_frpr_name,
+                                    :ret_val,
+                                    :g_user_id);
+                        COMMIT;
+                        RETURN 9;
+                    ENDIF;
+
+                ENDIF;
+
+                    UPDATE :h_copy_table1 a
+                    FROM contributor_period b
+                    SET register_emp = b.register_emp
+                        WHERE a.contributor_reference = b.contributor_reference
+                        AND (a.data_for_period/100*100) - 100 = b.period
+                        AND b.inquiry = 14
+			AND a.register_emp = 0;
+
+                    ret_val = CALLPROC batch_check_inq_ing (
+                              h_num_row_ck      = 1,
+                              h_commit          = 'Y',
+                              h_rollback        = 'N',
+                              h_frpr_name       = :h_frpr_name);
+
+                    IF ret_val = 9
+                    THEN
+                        INSERT INTO error_log
+                        VALUES(     'now',
+                                    'Error updating with emp and ent 2 - ' + 
+		                    :h_copy_table1,
+                                    :h_frpr_name,
+                                    :ret_val,
+                                    :g_user_id);
+                        COMMIT;
+                        RETURN 9;
+                    ENDIF;
+
+            ENDIF;
+
+            ret_val = CALLPROC batch_fp_drop_table (h_table = :h_table6);
+
+            IF ret_val = 9
+            THEN
+                RETURN 9;
+            ENDIF;
+
+            ret_val = CALLPROC batch_fp_drop_table (h_table = :h_table7);
+
+            IF ret_val = 9
+            THEN
+                RETURN 9;
+            ENDIF;
+        ENDIF;
+    };
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'SAS relift - Error in select loop for contributors', 
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'SAS relift - No contributors selected test', 
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+
+   MESSAGE 'Deleting duplicates SAS table ';
+
+   DELETE FROM :h_copy_table1 a
+   WHERE contributor_reference IN (
+   SELECT contributor_reference 
+   FROM :h_copy_table1 b
+   WHERE a.contributor_reference = b.contributor_reference
+   AND a.question = b.question
+   AND a.data_for_period = b.data_for_period
+   AND a.tid > b.tid);
+
+   DELETE FROM contributor_sas a
+   WHERE contributor_reference IN (
+   SELECT contributor_reference 
+   FROM contributor_sas b
+   WHERE a.contributor_reference = b.contributor_reference
+   AND a.question = b.question
+   AND a.data_for_period = b.data_for_period
+   AND a.tid > b.tid);
+   ret_val = CALLPROC batch_check_inq_ing (
+             h_num_row_ck      = 1,
+             h_commit          = 'Y',
+             h_rollback        = 'N',
+             h_frpr_name       = :h_frpr_name);
+
+   IF ret_val = 9
+   THEN
+       INSERT INTO error_log
+       VALUES(     'now',
+                   'Error deleting duplicates - ' + :h_copy_table1,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN 9;
+   ENDIF;
+
+   MESSAGE 'Modifying SAS table ';
+
+   MODIFY :h_copy_table1 TO BTREE UNIQUE ON  contributor_reference,
+                                             quest_order,
+				             question,
+					     run_period,
+					     data_for_period;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+             h_num_row_ck      = 1,
+             h_commit          = 'Y',
+             h_rollback        = 'N',
+             h_frpr_name       = :h_frpr_name);
+
+   IF ret_val = 9
+   THEN
+       INSERT INTO error_log
+       VALUES(     'now',
+                   'Error modifying table ' + :h_copy_table1,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN 9;
+   ENDIF;
+
+        UPDATE :h_copy_table1 a
+	FROM   contributor_sas b
+	SET    run_period = b.run_period
+	WHERE  a.contributor_reference = b.contributor_reference
+	AND    a.data_for_period = b.data_for_period
+	AND    a.question = b.question
+	AND    b.week_no = :h_week_no;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_frpr_name       = :h_frpr_name);
+
+      IF ret_val = 9
+      THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating with run_period on '
+		    + :h_copy_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+      ENDIF;
+
+        UPDATE :h_copy_table1 a
+	FROM   contributor_sas b
+	SET    run_period = b.run_period
+	WHERE  a.contributor_reference = b.contributor_reference
+	AND    a.data_for_period = b.data_for_period
+	AND    a.question = b.question
+	AND    b.week_no = :h_last_week;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_frpr_name       = :h_frpr_name);
+
+      IF ret_val = 9
+      THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating with run_period on '
+		    + :h_copy_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+      ENDIF;
+
+    MESSAGE 'Updating SAS table for lag';
+
+    UPDATE :h_copy_table1 a
+    FROM question_library b
+    SET lag = varchar(b.lag)
+    WHERE a.question = b.question
+    AND a.data_for_period/100*100 = b.period;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating lag on table ' + :h_copy_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    MESSAGE 'Updating SAS table for reclassification 1';
+
+    UPDATE :h_copy_table1 a
+    FROM reclass_contrib_archive b
+    SET proposed_industry = b.proposed_ind
+    WHERE a.contributor_reference = b.contributor_reference
+    AND a.data_for_period = b.period;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating from reclass contrib archive - ' + 
+		    :h_copy_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    MESSAGE 'Updating SAS table for reclassification 2';
+
+    UPDATE :h_copy_table1 a
+    FROM reclass_contrib b
+    SET proposed_industry = b.proposed_ind
+    WHERE a.contributor_reference = b.contributor_reference
+    AND a.data_for_period = b.period;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating from reclass contrib - ' + 
+		    :h_copy_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+  /*------------------------------------------------------------------
+    Run loop to split up h_copy_table1 into files of single run_period.
+    ------------------------------------------------------------------*/
+
+    SELECT DISTINCT run_period as h_run_period
+    FROM            contributor_sas
+    WHERE      (     week_no = :h_week_no
+	    or week_no = :h_last_week)
+    AND             extracted = 'n'
+    {
+
+    ret_val = CALLPROC batch_fp_drop_table (h_table = :h_table8);
+
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+        CREATE TABLE :h_table8 AS
+        SELECT contributor_reference,
+    	       data_for_period,
+	       question,        
+	       quest_order,      
+	       question_industry, 
+ 	       lag,                
+ 	       contributor_inquiry, 
+               contributor_industry, 
+               proposed_industry,
+               enterprise,        
+               register_emp,       
+               acell,               
+	       avalue               
+        FROM   :h_copy_table1
+        WHERE  run_period = :h_run_period;
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val = 9
+            THEN
+                INSERT INTO error_log
+                VALUES(     'now',
+                            'Error creating table of single run_period into ' + 
+		            :h_table8,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN 9;
+            ENDIF;
+
+  /*------------------------------------------------------------------
+    Create a table name made up of the current week no and the 
+    appropriate run_period, the file will be called the same.
+    These files will be loaded onto SAS one at a time.
+    ------------------------------------------------------------------*/
+        select date_part('day',date('today')) as h_day_run;
+
+        IF mod(h_run_period,100) = 00
+        THEN
+            h_save_file = VARCHAR(:g_path_name1) +
+	                  'exta' + 
+	    	          VARCHAR(:h_week_no) +
+	    	          VARCHAR(:h_day_run) +
+                          VARCHAR(:h_run_period);
+        ELSE
+            h_save_file = VARCHAR(:g_path_name1) +
+                          'extq' + 
+		          VARCHAR(:h_week_no) +
+		          VARCHAR(:h_day_run) +
+                          VARCHAR(:h_run_period);
+        ENDIF;
+
+        COPY table :h_table8
+        ( 
+	      contributor_reference = c(0)'^',
+	      data_for_period       = c(0)'^',
+	      question              = c(0)'^',
+	      quest_order           = c(0)'^',
+	      question_industry     = c(0)'^',
+	      lag                   = c(0)'^',
+	      contributor_inquiry   = c(0)'^',
+              contributor_industry  = c(0)'^',
+              proposed_industry     = c(0)'^',
+              enterprise            = c(0)'^',
+              register_emp          = c(0)'^',
+              acell                 = c(0)'^',
+	      avalue                = c0nl )
+        INTO :h_save_file;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 0 
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error copying out data into ' + :h_save_file,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+
+        
+	UPDATE contributor_sas
+	SET    extracted = 'y'
+	WHERE  (week_no = :h_week_no 
+	OR      week_no = :h_last_week) 
+	AND    extracted = 'n' ;
+
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_frpr_name       = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error updating contributor_sas ' , 
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+    };
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error in select loop for run_periods', 
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error in select loop No run_periods selected', 
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+       Select start date for print program, for latest annual period
+    ----------------------------------------------------------------e-*/
+
+    SELECT   start_date as h_sdate
+    FROM     weekno_dates
+    WHERE    week = :h_week_no
+    AND      date('today') between start_date and end_date
+    AND      mod(period,100) = 00;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error selecting from weekno_dates',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+    /*-s----------------------------------------------------------------
+    Call the report writer program for print
+    ----------------------------------------------------------------e-*/
+
+   Message 'Calling Report Writer Program ' + :report_name;
+
+    ret_val = CALLPROC msa_cp_callsys(
+    'report ' +
+    :g_database +
+    ' ''(table_name = "' + :h_copy_table1 + '"' +
+    ',sdate = "' + VARCHAR(:h_sdate) + '"' + 
+    ')'' -f$SAS/' + :print_name +
+    ' -i$REPORTS/' + :report_name + '> report.output');
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error calling ' + :report_name,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ELSE
+
+    Message 'calling print procedures';
+
+     /*  RAP printer   */
+        ret_val = CALLPROC msa_cp_callsys (
+        'lp -d' +:g_printer +' -o12p $SAS/' + :print_name + 
+        ' >> report.output 2>> report.output');
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error sending report to RAP printer',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+
+     /*  DVB printer - Not required checked with Chris Mcstay 26/2/2003  */
+	/***************
+        ret_val = CALLPROC msa_cp_callsys (
+        'lp -dh4ng1 -o12p $PRINTOUT/' + :print_name +
+        ' >> report.output 2>> report.output');
+        *****************/
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error sending report to DVB printer',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+
+	/***********
+        ret_val = CALLPROC msa_cp_callsys (
+        'lp -dnd115_9mf -o12p $SAS/' + :print_name + 
+        ' >> report.output 2>> report.output');
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error sending report to IM printer',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+	***********/
+
+    ENDIF;
+
+    /*-------------------------------------------------------
+        Tidy up
+    -------------------------------------------------------*/
+
+    ret_val = CALLPROC batch_fp_drop_table (h_table = h_copy_table1);
+
+    IF ret_val <> 0
+    THEN
+      RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table (h_table = :h_table2);
+
+    IF ret_val <> 0
+    THEN
+      RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table (h_table = :h_table8);
+
+    IF ret_val <> 0
+    THEN
+      RETURN ret_val;
+    ENDIF;
+
+
+    RETURN 0;
+
+}

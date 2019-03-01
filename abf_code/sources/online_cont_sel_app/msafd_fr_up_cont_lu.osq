@@ -1,0 +1,671 @@
+/*****************************************************************************
+
+   Frame to facilitate the updating of a contributors local unit details.
+
+   MAY 2013 - DF - Reworked to new procedures and standards.
+
+*****************************************************************************/
+
+INITIALIZE (p_enf = INTEGER1 NOT NULL WITH DEFAULT,
+            p_key = INTEGER1 NOT NULL WITH DEFAULT,
+            p_cnt = INTEGER1 NOT NULL WITH DEFAULT) =
+ 
+DECLARE  
+  h_retries_allowed  = INTEGER1     NOT NULL WITH DEFAULT,
+  h_retries          = INTEGER1     NOT NULL WITH DEFAULT,
+  h_retry_or_not     = CHAR(5)      NOT NULL WITH DEFAULT,
+  h_frpr_name        = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_dummy            = CHAR(11)     NOT NULL WITH DEFAULT,
+  h_idbr             = CHAR(11)     NOT NULL WITH DEFAULT,
+  h_region           = CHAR(2)      NOT NULL WITH DEFAULT,
+  h_keyresp          = INTEGER1     NOT NULL WITH DEFAULT,
+  h_output_category  = CHAR(1)      NOT NULL WITH DEFAULT,
+  h_structure        = CHAR(1)      NOT NULL WITH DEFAULT,
+  h_yesno            = CHAR(1)      NOT NULL WITH DEFAULT,
+  h_return           = INTEGER1     NOT NULL WITH DEFAULT,
+  h_inquiry          = INTEGER1     NOT NULL WITH DEFAULT,
+  h_orig_lu_name1    = CHAR(35)     NOT NULL WITH DEFAULT,
+  h_orig_lu_name2    = CHAR(35)     NOT NULL WITH DEFAULT,
+  h_orig_lu_name3    = CHAR(35)     NOT NULL WITH DEFAULT,
+  h_orig_lu_addr1    = CHAR(30)     NOT NULL WITH DEFAULT,
+  h_orig_lu_addr2    = CHAR(30)     NOT NULL WITH DEFAULT,
+  h_orig_lu_addr3    = CHAR(30)     NOT NULL WITH DEFAULT,
+  h_orig_lu_addr4    = CHAR(30)     NOT NULL WITH DEFAULT,
+  h_orig_lu_addr5    = CHAR(30)     NOT NULL WITH DEFAULT,
+  h_orig_lu_postcode = CHAR(8)      NOT NULL WITH DEFAULT,
+  h_orig_lu_reg_emp  = INTEGER4     NOT NULL WITH DEFAULT,
+  h_orig_lu_region   = CHAR(30)     NOT NULL WITH DEFAULT,
+  h_counter          = INTEGER4     NOT NULL WITH DEFAULT,
+  h_num_rows         = INTEGER4     NOT NULL WITH DEFAULT,
+  h_max_rows         = INTEGER4     NOT NULL WITH DEFAULT,
+  h_param_list       = VARCHAR(100) NOT NULL WITH DEFAULT,
+  h_varchar_variable = VARCHAR(100) NOT NULL WITH DEFAULT,
+  h_integer_variable = INTEGER2     NOT NULL WITH DEFAULT,
+  h_param1           = CHAR(11)     NOT NULL WITH DEFAULT,
+  h_param2           = CHAR(10)     NOT NULL WITH DEFAULT,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_load_array       = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_load_lu          = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  msa_date = 'now';
+  h_retries_allowed = 3;
+  h_frpr_name = 'msafd_fr_up_cont_lu';
+
+  s_enforcement = 'UNDER ENFORCEMENT';
+  s_key = 'KEY';
+
+  SET_FORMS FIELD '' (INVISIBLE(s_enforcement) = :p_enf,
+                      INVISIBLE(s_key)         = :p_key,
+                      INVISIBLE(s_country)     = :p_cnt);
+
+  h_return = CALLPROC lp_load_array ();
+
+  IF h_return != 0
+  THEN
+    /* Error message handled by local procedure. */
+    RETURN h_return;
+  ENDIF;
+
+  h_counter = 1;
+
+  h_return = CALLPROC lp_load_lu ();
+
+  IF h_return != 0
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+  RESUME FIELD s_lu_reg_emp;
+
+}
+
+/************************** FIELD ACTIVATIONS *******************************/
+
+FIELD s_lu_reg_emp =
+{
+  IF s_lu_reg_emp < 1
+  THEN
+
+    h_yesno = '';
+
+    WHILE h_yesno != 'Y' AND h_yesno != 'N'
+    DO
+      h_yesno = PROMPT 'WARNING: With the exception of "holding" units, '
+                     + 'no local units can have zero employment. '
+                     + 'Have you confirmed this is a holding unit? [Y/N]: '
+                WITH STYLE = POPUP;
+
+      h_yesno = UPPER(h_yesno);
+
+    ENDWHILE;
+
+    IF h_yesno = 'N'
+    THEN
+      s_lu_reg_emp = :h_orig_lu_reg_emp;
+      RESUME FIELD s_lu_reg_emp;
+    ENDIF;
+
+    s_lu_reg_emp = 0;
+
+  ENDIF;
+
+  RESUME FIELD s_lu_region;
+
+}
+
+FIELD s_lu_region =
+{
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT region AS s_lu_region
+    FROM   region
+    WHERE  region = :s_lu_region;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: That is not a valid Region Code.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_lu_region;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to validate region code. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  RESUME FIELD s_lu_name1;
+
+}
+
+/*************************** KEY ACTIVATIONS ******************************/
+
+'Update', KEY FRSKEY4 =
+{
+
+ /*-------------------------------------------------------------------
+    Revalidate local unit register employment.
+ -------------------------------------------------------------------*/
+
+  IF s_lu_reg_emp < 1
+  THEN
+
+    h_yesno = '';
+
+    WHILE h_yesno != 'Y' AND h_yesno != 'N'
+    DO
+      h_yesno = PROMPT 'WARNING: With the exception of "holding" units, '
+                     + 'no local units can have zero employment. '
+                     + 'Have you confirmed this is a holding unit? [Y/N]: '
+                WITH STYLE = POPUP;
+
+      h_yesno = UPPER(h_yesno);
+
+    ENDWHILE;
+
+    IF h_yesno = 'N'
+    THEN
+      s_lu_reg_emp = :h_orig_lu_reg_emp;
+      RESUME FIELD s_lu_reg_emp;
+    ENDIF;
+
+  ENDIF;
+
+ /*-------------------------------------------------------------------
+    Revalidate local unit region code.
+ -------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT region AS s_lu_region
+    FROM   region
+    WHERE  region = :s_lu_region;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: That is not a valid Region Code.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_lu_region;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to validate region code. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*-------------------------------------------------------------------
+     Update contributor details
+  -------------------------------------------------------------------*/
+
+  MESSAGE 'Updating Local Unit Details . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE contributor_luaddress
+    SET    lu_name1     = :s_lu_name1,
+           lu_name2     = :s_lu_name2,
+           lu_name3     = :s_lu_name3,
+           lu_addr1     = :s_lu_addr1,
+           lu_addr2     = :s_lu_addr2,
+           lu_addr3     = :s_lu_addr3,
+           lu_addr4     = :s_lu_addr4,
+           lu_addr5     = :s_lu_addr5,
+           lu_postcode  = :s_lu_postcode,
+           register_emp = :s_lu_reg_emp,
+           lu_region    = :s_lu_region
+    WHERE  contributor_reference = :s_contributor_reference
+      AND  period                = :s_period
+      AND  lu_reference          = :s_lu_reference;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to update local unit details. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*-------------------------------------------------------------------
+    Update changed reg_emp totals on contributor_period.
+  -------------------------------------------------------------------*/
+
+  IF :s_lu_reg_emp != :h_orig_lu_reg_emp
+  THEN
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      UPDATE contributor_period
+      SET    register_emp = register_emp - :h_orig_lu_reg_emp + :s_lu_reg_emp
+      WHERE  contributor_reference = :s_contributor_reference
+        AND  period                = :s_period;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to update with new register employment total. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+  MESSAGE 'NOTE: Local Unit details updated successfully.'
+  WITH STYLE = POPUP;
+
+  /* Current values rerecorded as orig values in following local procedure */
+
+  h_return = CALLPROC lp_load_lu ();
+
+}
+
+'Prev', KEY FRSKEY5 =
+{
+
+  IF :h_counter = 1
+  THEN
+    MESSAGE 'WARNING: This is the first local unit for this contributor.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  IF h_orig_lu_name1    != s_lu_name1
+  OR h_orig_lu_name2    != s_lu_name2
+  OR h_orig_lu_name3    != s_lu_name3
+  OR h_orig_lu_addr1    != s_lu_addr1
+  OR h_orig_lu_addr2    != s_lu_addr2
+  OR h_orig_lu_addr3    != s_lu_addr3
+  OR h_orig_lu_addr4    != s_lu_addr4
+  OR h_orig_lu_addr5    != s_lu_addr5
+  OR h_orig_lu_postcode != s_lu_postcode
+  OR h_orig_lu_reg_emp  != s_lu_reg_emp
+  OR h_orig_lu_region   != s_lu_region
+  THEN
+
+    h_yesno = '';
+
+    WHILE h_yesno != 'Y' AND h_yesno != 'N'
+    DO
+      h_yesno = PROMPT 'WARNING: Changes have not been saved. '
+                     + 'Do you wish to change the LU without updating '
+                     + 'this LUs details? [Y/N] : '
+                WITH STYLE = POPUP;
+      h_yesno = UPPER(:h_yesno);
+    ENDWHILE;
+
+    IF h_yesno = 'N'
+    THEN
+      RESUME;
+    ENDIF;
+
+  ENDIF;
+
+  h_counter = :h_counter - 1;
+
+  h_return = CALLPROC lp_load_lu ();
+
+}
+
+'Next', KEY FRSKEY6 =
+{
+
+  IF :h_counter = :h_max_rows
+  THEN
+    MESSAGE 'WARNING: This is the final local unit for this contributor.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  IF h_orig_lu_name1    != s_lu_name1
+  OR h_orig_lu_name2    != s_lu_name2
+  OR h_orig_lu_name3    != s_lu_name3
+  OR h_orig_lu_addr1    != s_lu_addr1
+  OR h_orig_lu_addr2    != s_lu_addr2
+  OR h_orig_lu_addr3    != s_lu_addr3
+  OR h_orig_lu_addr4    != s_lu_addr4
+  OR h_orig_lu_addr5    != s_lu_addr5
+  OR h_orig_lu_postcode != s_lu_postcode
+  OR h_orig_lu_reg_emp  != s_lu_reg_emp
+  OR h_orig_lu_region   != s_lu_region
+  THEN
+
+    h_yesno = '';
+
+    WHILE h_yesno != 'Y' AND h_yesno != 'N'
+    DO
+      h_yesno = PROMPT 'WARNING: Changes have not been saved. '
+                     + 'Do you wish to change the LU without updating '
+                     + 'this LUs details? [Y/N] : '
+                WITH STYLE = POPUP;
+      h_yesno = UPPER(:h_yesno);
+    ENDWHILE;
+
+    IF h_yesno = 'N'
+    THEN
+      RESUME;
+    ENDIF;
+
+  ENDIF;
+
+  h_counter = :h_counter + 1;
+
+  h_return = CALLPROC lp_load_lu ();
+
+}
+
+'Delete', KEY FRSKEY9 =
+{
+
+  IF h_max_rows = 1 AND s_contributor_reference LIKE '500%'
+  THEN
+    MESSAGE 'WARNING: This is the last Local Unit for this contributor. '
+          + 'The contributor must be deselected to remove the Local Unit.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  h_return = CALLFRAME msafd_fr_delete_lu 
+           (  s_contributor_reference = :s_contributor_reference,
+              s_period                = :s_period,
+              s_country               = :s_country,
+              s_add_name1             = :s_add_name1,
+              s_add_name2             = :s_add_name2,
+              s_add_name3             = :s_add_name3,
+              s_lu_reference          = :s_lu_reference,
+              s_lu_name1              = :s_lu_name1,
+              s_lu_name2              = :s_lu_name2,
+              s_lu_name3              = :s_lu_name3,
+              s_lu_addr1              = :s_lu_addr1,
+              s_lu_addr2              = :s_lu_addr2,
+              s_lu_addr3              = :s_lu_addr3,
+              s_lu_addr4              = :s_lu_addr4,
+              s_lu_addr5              = :s_lu_addr5,
+              s_lu_postcode           = :s_lu_postcode,
+              p_industry              = :s_contributor_industry,
+              p_lu_reg_emp            = :s_lu_reg_emp,
+              p_lu_region             = :s_lu_region,
+              p_enf                   = :p_enf,
+              p_key                   = :p_key,
+              p_cnt                   = :p_cnt);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in called procedure */
+    RETURN h_return;
+  ENDIF;
+
+  h_return = CALLPROC lp_load_array ();
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in local procedure */
+    RETURN h_return;
+  ENDIF;
+
+  IF h_counter != 1
+  THEN
+    h_counter = h_counter - 1;
+  ENDIF;
+
+  h_return = CALLPROC lp_load_lu ();
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in local procedure */
+    RETURN h_return;
+  ENDIF;
+
+}
+
+'End', KEY FRSKEY14 =
+{
+
+  IF h_orig_lu_name1    != s_lu_name1
+  OR h_orig_lu_name2    != s_lu_name2
+  OR h_orig_lu_name3    != s_lu_name3
+  OR h_orig_lu_addr1    != s_lu_addr1
+  OR h_orig_lu_addr2    != s_lu_addr2
+  OR h_orig_lu_addr3    != s_lu_addr3
+  OR h_orig_lu_addr4    != s_lu_addr4
+  OR h_orig_lu_addr5    != s_lu_addr5
+  OR h_orig_lu_postcode != s_lu_postcode
+  OR h_orig_lu_reg_emp  != s_lu_reg_emp
+  OR h_orig_lu_region   != s_lu_region
+  THEN
+
+    h_yesno = '';
+
+    WHILE h_yesno != 'Y' AND h_yesno != 'N'
+    DO
+      h_yesno = PROMPT 'WARNING: Changes have not been saved. '
+                     + 'Do you wish to exit the screen without updating '
+                     + 'this LUs details? [Y/N] : '
+                WITH STYLE = POPUP;
+      h_yesno = UPPER(:h_yesno);
+    ENDWHILE;
+
+    IF h_yesno = 'N'
+    THEN
+      RESUME;
+    ENDIF;
+
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/*************************** LCOAL PROCEDURES ******************************/
+
+
+/*==========================================================================
+    Local procedure to load contributors local units for the 
+    period into array.
+==========================================================================*/
+
+PROCEDURE lp_load_array () =
+{
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    g_lu_array =
+
+    SELECT lu_reference
+    FROM   contributor_luaddress
+    WHERE  contributor_reference = :s_contributor_reference
+      AND  period = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    h_max_rows = :h_num_rows;
+   
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to create local unit array. ' 
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+
+/*==========================================================================
+    Local procedure to load local unit details to screen. 
+==========================================================================*/
+
+PROCEDURE lp_load_lu () =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  s_lu_reference = :g_lu_array[:h_counter].lu_reference;
+  s_message      = 'Local Unit ' + VARCHAR(:h_counter) 
+                 + ' of ' + VARCHAR(:h_max_rows);
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT lu_name1     AS s_lu_name1,
+           lu_name2     AS s_lu_name2,
+           lu_name3     AS s_lu_name3,
+           lu_addr1     AS s_lu_addr1,
+           lu_addr2     AS s_lu_addr2,
+           lu_addr3     AS s_lu_addr3,
+           lu_addr4     AS s_lu_addr4,
+           lu_addr5     AS s_lu_addr5,
+           lu_postcode  AS s_lu_postcode,
+           register_emp AS s_lu_reg_emp,
+           lu_region    AS s_lu_region
+    FROM   contributor_luaddress
+    WHERE  contributor_reference = :s_contributor_reference
+      AND  period                = :s_period
+      AND  lu_reference          = :s_lu_reference;
+
+    lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF lp_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF lp_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to load local unit data. '
+          + 'Error code ' +VARCHAR(:lp_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  h_orig_lu_name1    = s_lu_name1;
+  h_orig_lu_name2    = s_lu_name2;
+  h_orig_lu_name3    = s_lu_name3;
+  h_orig_lu_addr1    = s_lu_addr1;
+  h_orig_lu_addr2    = s_lu_addr2;
+  h_orig_lu_addr3    = s_lu_addr3;
+  h_orig_lu_addr4    = s_lu_addr4;
+  h_orig_lu_addr5    = s_lu_addr5;
+  h_orig_lu_postcode = s_lu_postcode;
+  h_orig_lu_reg_emp  = s_lu_reg_emp;
+  h_orig_lu_region   = s_lu_region;
+
+  RETURN 0;
+
+}
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_num_row         = BYREF(:h_num_rows),
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

@@ -1,0 +1,321 @@
+/*****************************************************************************
+
+  Frame to facilitate deletion of a local unit
+
+  MAY 2013 - DF - Reworked to new procedures and standards, removing
+                  obsolete code related to quarterly inquiry, electronic
+                  questionaire etc.
+
+*****************************************************************************/
+
+INITIALIZE (p_enf        = INTEGER1 NOT NULL WITH DEFAULT,
+            p_key        = INTEGER1 NOT NULL WITH DEFAULT,
+            p_cnt        = INTEGER1 NOT NULL WITH DEFAULT,
+            p_industry   = INTEGER4 NOT NULL WITH DEFAULT,
+            p_lu_reg_emp = INTEGER4 NOT NULL WITH DEFAULT,
+            p_lu_region  = CHAR(2)  NOT NULL WITH DEFAULT) =
+
+DECLARE 
+  h_retries_allowed     = INTEGER1    NOT NULL,
+  h_retries             = INTEGER1    NOT NULL,
+  h_retry_or_not        = CHAR(5)     NOT NULL,
+  h_yesno               = CHAR(1)     NOT NULL,
+  h_frpr_name           = VARCHAR(24) NOT NULL,
+  h_return              = INTEGER1    NOT NULL,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name = 'msafd_fr_delete_lu';
+  h_retries_allowed = 3;
+  msa_date = 'now';
+
+  s_date_received = 'today'; 
+  s_enforcement = 'UNDER ENFORCEMENT';
+  s_key = 'KEY';
+
+  SET_FORMS FIELD '' (INVISIBLE(s_enforcement) = :p_enf,
+                      INVISIBLE(s_key)         = :p_key,
+                      INVISIBLE(s_country)     = :p_cnt);
+
+  RESUME FIELD s_date_received;
+
+}
+
+/************************** FIELD ACTIVATIONS ******************************/
+
+FIELD s_date_received =
+{
+
+  IF s_date_received > DATE('today')
+  THEN
+    MESSAGE 'WARNING: Date Received must not be in the future.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_date_received;
+  ENDIF;
+
+  RESUME FIELD s_reason;
+
+}
+
+/*************************** KEY ACTIVATIONS *******************************/
+
+'Delete', KEY FRSKEY4 =
+{
+    
+  IF s_date_received > DATE('today')
+  THEN
+    MESSAGE 'WARNING: Date Received must not be in the future.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_date_received;
+  ENDIF;
+
+  IF VARCHAR(s_date_received) = ''
+  THEN
+    MESSAGE 'WARNING: Please enter a valid date.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_date_received;
+  ENDIF;
+
+  IF s_reason = ''
+  THEN
+    MESSAGE 'WARNING: Reason for Deletion is a mandatory field.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_reason;
+  ENDIF;
+
+  IF s_source = ''
+  THEN
+    MESSAGE 'WARNING: Source of Information is a mandatory field.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_source;
+  ENDIF;
+
+  IF s_amendment_type = ''
+  THEN
+    MESSAGE 'WARNING: Type of Amendment is a mandatory field.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_amendment_type;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Remove any existing deletion record in removed lu for this
+     contributor, period and local unit.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Deleting Local Unit . . . ';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    DELETE FROM removed_lu
+    WHERE       contributor_reference = :s_contributor_reference
+      AND       lu_reference = :s_lu_reference
+      AND       period = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'WARNING: Failed to delete existing delete record for local unit. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Recording deletion of local unit in removed_lu table.
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO removed_lu (
+                contributor_reference,
+                period,
+                lu_reference,
+                add_name1,
+                contributor_industry,
+                register_emp,
+                lu_region,
+                date_removed,
+                reason_delete,
+                lu_name1,
+                lu_name2,
+                lu_name3,
+                lu_addr1,
+                lu_addr2,
+                lu_addr3,
+                lu_addr4,
+                lu_addr5,
+                lu_postcode,
+                source,
+                date_received,
+                amendment_type)
+    VALUES (    :s_contributor_reference,
+                :s_period,
+                :s_lu_reference,
+                :s_add_name1,
+                :p_industry,
+                :p_lu_reg_emp,
+                :p_lu_region,
+                'now',
+                :s_reason,
+                :s_lu_name1,
+                :s_lu_name2,
+                :s_lu_name3,
+                :s_lu_addr1,
+                :s_lu_addr2,
+                :s_lu_addr3,
+                :s_lu_addr4,
+                :s_lu_addr5,
+                :s_lu_postcode,
+                :s_source,
+                :s_date_received,
+                :s_amendment_type);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'WARNING: Failed to create deletion record for local unit. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Action actual deletion.
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    DELETE FROM contributor_luaddress
+    WHERE       contributor_reference = :s_contributor_reference
+      AND       period = :s_period
+      AND       lu_reference = :s_lu_reference;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'WARNING: Failed to delete local unit. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Update contributor period.
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE contributor_period
+    SET    register_emp = register_emp - :p_lu_reg_emp,
+           lu_count     = lu_count - 1
+    WHERE  contributor_reference = :s_contributor_reference
+      AND  period = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'WARNING: Failed to update contributor period table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  MESSAGE 'NOTE: Local Unit deleted successfully. ' +X'0D'
+        + 'Please make sure that you have updated contributor comments.'
+  WITH STYLE = POPUP;
+
+  RETURN 0;
+
+}
+
+'End', KEY FRSKEY14 =
+{
+  RETURN 0;
+}
+
+/************************** LOCAL PROCEDURES ********************************/
+
+/*============================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+============================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

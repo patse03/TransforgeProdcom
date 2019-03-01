@@ -1,0 +1,937 @@
+INITIALIZE 
+(
+  p_contributor_reference = CHAR(11) NOT NULL WITH DEFAULT,
+  p_receipt_date          = DATE     NOT NULL WITH DEFAULT,
+  p_period                = INTEGER4 NOT NULL WITH DEFAULT,
+  p_add_name1             = CHAR(35) NOT NULL WITH DEFAULT,
+  p_contributor_industry  = INTEGER4 NOT NULL WITH DEFAULT 
+)=
+
+DECLARE 
+
+  tf.quest_order          = INTEGER1    NOT NULL WITH DEFAULT,
+
+  h_return                = INTEGER4    NOT NULL WITH DEFAULT,
+  h_return2               = INTEGER4    NOT NULL WITH DEFAULT,
+  h_retries               = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries_allowed       = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not          = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_question              = INTEGER4    NOT NULL WITH DEFAULT,
+  h_yesno                 = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_count                 = INTEGER1    NOT NULL WITH DEFAULT,
+  h_unit                  = VARCHAR(20) NOT NULL WITH DEFAULT,
+  h_frpr_name             = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_table                 = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_reptable              = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_text                  = VARCHAR(40) NOT NULL WITH DEFAULT,
+  h_currency              = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_cads_start_period     = INTEGER4    NOT NULL WITH DEFAULT,
+  h_cads_end_period       = INTEGER4    NOT NULL WITH DEFAULT,
+
+  lp_load_table           = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_error_check          = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_full_error_check     = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_write_to_audit_trail = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name       = 'msaab_fr_cre_del_ques';
+  h_retries_allowed = 3;
+
+  h_table    = 'temp_online_ques_sel';
+  h_reptable = 'temp_online_ques_sel_rep';
+
+  SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+  /*------------------------------------------------------------------
+    Create table
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_drop_table (h_table = :h_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure */
+    RETURN h_return;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    CREATE TABLE :h_table 
+               ( question    INTEGER4 NOT NULL,
+                 quest_order INTEGER1 NOT NULL,
+                 brief_text  VARCHAR(40) NOT NULL,
+                 unit        VARCHAR(20) NOT NULL);
+
+    h_return =  CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to create ' +:h_table +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  h_return = CALLPROC lp_load_table ();
+
+  IF h_return != 0
+  THEN
+    /* Error error message handled by local procedure */
+    RETURN h_return;
+  ENDIF;
+
+}
+
+/************************ KEY ACTIVATIONS ******************************/
+
+'Add', KEY FRSKEY4 =
+{
+  /*------------------------------------------------------------------
+     If the form has been received, then questions cannot be
+     added through this system - take-on should be used.
+  ------------------------------------------------------------------*/
+
+  IF :p_receipt_date != ''
+  THEN
+    MESSAGE 'WARNING: This form has already been received. '
+          + 'Questions cannot be added.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Calls frame msaab_fr_cre_ques which displays a screen on
+     which any questions to be added can be typed in.
+     Provided validation of the question entered is
+     satisfactory, the question will be added to cqpv for
+     the Contributor for the Period.
+  ------------------------------------------------------------------*/
+
+  h_return = CALLFRAME msaab_fr_cre_ques 
+           ( p_contributor_reference = :p_contributor_reference,
+             p_period                = :p_period,
+             p_contributor_industry  = :p_contributor_industry);
+
+  IF h_return != 0
+  THEN
+    /* Error messages handled by external procedure */
+    RETURN h_return;
+  ENDIF;
+
+  h_return = CALLPROC lp_load_table ();
+
+  IF h_return != 0
+  THEN
+    /* Error messages handled by local procedure */
+    RETURN h_return;
+  ENDIF;
+
+}
+
+'Delete', KEY FRSKEY5 =
+{
+  /*------------------------------------------------------------------
+     Standard Headings cannot be deleted
+  ------------------------------------------------------------------*/
+
+  IF :tf.quest_order != 1 
+  AND (RIGHT(VARCHAR(:tf.question),4) < '9700' OR
+       RIGHT(VARCHAR(:tf.question),4) > '9800')
+  THEN
+    MESSAGE 'WARNING: Standard Headings cannot be deleted.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     If the question to be deleted is not the Value question, then
+     a message is displayed telling the User to highlight the
+     Value question.
+  ------------------------------------------------------------------*/
+
+  IF VARCHAR(tf.question) NOT LIKE '%1'
+  THEN
+    MESSAGE 'NOTE: To delete a volume question, please delete its ' 
+          + 'value question (which will delete all associated ' 
+          + 'Volumes)'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     If the form has been received, no confirmation is necessary,
+     but the value in avalue on cqpv must be 0 for
+     the question to be deleted.
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_count = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT COUNT(*) AS h_count
+    FROM   cqpv
+    WHERE  period = :p_period
+      AND  avalue > 0
+      AND  contributor_reference = :p_contributor_reference
+      AND  question IN (:tf.question, 
+                        :tf.question + 1,
+                        :tf.question + 4);
+
+    h_return =  CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to count non-zero questions '
+          + 'for contributor in period. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  IF :h_count > 0 AND :p_receipt_date != ''
+  THEN
+    MESSAGE 'WARNING: This question or one of its associated volumes ' 
+          + 'has a value greater than zero. Therefore, it cannot be deleted.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Confirm then note in audit trail.
+  ------------------------------------------------------------------*/
+
+  h_yesno = '';
+  WHILE h_yesno != 'N' AND h_yesno != 'Y'
+  DO
+
+    h_yesno = PROMPT 'Do you really wish to delete value' 
+                   + 'question ' + VARCHAR(:tf.question) +' ' 
+                   + 'and its volumes from this form? [Y/N] : ' 
+    WITH STYLE = POPUP;
+    h_yesno = UPPER (h_yesno);
+  ENDWHILE;
+
+  IF h_yesno = 'N'
+  THEN
+    RESUME;
+  ENDIF;
+
+  MESSAGE 'Note deletion in audit trail . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT question AS h_question 
+    FROM   cqpv
+    WHERE  period = :p_period
+      AND  contributor_reference = :p_contributor_reference
+      AND  question IN (:tf.question, 
+                        :tf.question + 1,
+                        :tf.question + 4)
+    BEGIN
+
+      h_return2 = CALLPROC lp_write_to_audit_trail
+               ( p_contributor_reference = :p_contributor_reference,
+                 p_period                = :p_period,
+                 p_question              = :h_question,
+                 p_code                  = 13);
+
+      IF h_return2 != 0
+      THEN
+        /* Error reported by external procedure */
+        RETURN 9;
+      ENDIF;
+
+    END;
+
+    h_return =  CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to delete value and volume questions from CQPV. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Delete from cqpv
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Deleting Questions . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    DELETE FROM cqpv
+    WHERE       period = :p_period
+      AND       contributor_reference = :p_contributor_reference
+      AND       question IN (:tf.question, 
+                             :tf.question + 1,
+                             :tf.question + 4);
+
+    h_return =  CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to delete value and volume questions from CQPV. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Put an automatic stop CAD for future periods to stop the question
+    from being asked next time (if a CAD link does not already exist):
+  ------------------------------------------------------------------*/
+
+  h_cads_start_period = :p_period + 100;
+  h_cads_end_period = :p_period + 100;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT contributor_reference AS p_contributor_reference
+    FROM   cads
+    WHERE  contributor_reference = :p_contributor_reference
+      AND  question = :tf.question;
+
+    h_return =  CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select from CADS table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      INSERT INTO cads 
+                ( contributor_reference,
+                  question,
+                  start_period,
+                  end_period,
+                  action,
+                  user_id,
+                  time)
+      VALUES    ( :p_contributor_reference,
+                  :tf.question,
+                  :h_cads_start_period,
+                  :h_cads_end_period,
+                  'S',
+                  :g_user_id,
+                  'now');
+
+      h_return2 =  CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return2 != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return2 != 0
+    THEN
+      MESSAGE 'ERROR: Failed to insert into CADS table. '
+            + 'Error code ' +VARCHAR(:h_return2) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+
+    MESSAGE 'NOTE: Question ' + VARCHAR(:tf.question) + ' and all associated ' 
+          + 'volumes have been deleted successfully.' + X'0D0D' 
+          + 'A Stop CADS entry has also been set up for this ' 
+          + 'contributor and question for periods ' 
+          + VARCHAR(:h_cads_start_period) + ' to ' 
+          + VARCHAR(:h_cads_end_period) + '.'
+    WITH STYLE = POPUP;
+
+  ELSE  /* h_return = 0 */
+
+    MESSAGE 'NOTE: Question ' + VARCHAR(:tf.question) + ' and all associated ' 
+          + 'volumes have been deleted successfully.' + X'0D0D' 
+          + 'No Stop CADS entry could be created for periods ' 
+          + VARCHAR(:h_cads_start_period) + ' to ' 
+          + VARCHAR(:h_cads_end_period) + ' as a CADS entry ' 
+          + 'already exists for this contributor and question. ' 
+          + 'You will have to check this and make any corrections manually.'
+    WITH STYLE = POPUP;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Reload table
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC lp_load_table ();
+
+  IF h_return != 0
+  THEN
+    /* Error message handled by local procedure */
+    RETURN h_return;
+  ENDIF;
+
+}
+
+'Text', KEY FRSKEY8 =
+{
+  h_return = CALLFRAME msaab_fr_dis_ques_text 
+                     ( s_question = :tf.question,
+                       s_period   = :p_period);
+}
+
+'Print', KEY FRSKEY9 =
+{
+  IF s_no_questions = 0
+  THEN
+    MESSAGE 'WARNING: There is nothing to print!'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  MESSAGE 'Preparing Report . . .';
+
+  /*------------------------------------------------------------------
+    Instead of having a separate ReportWriter, we're using the one
+    from TakeOn's msab_rw_form_values. So we need a new table with
+    extra fields from cqpv.
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_drop_table (h_table = :h_reptable);
+
+  IF h_return != 0
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    CREATE TABLE :h_reptable
+    AS 
+    SELECT a.quest_order,
+           a.question,
+           c.text_line1 AS question_text,
+           b.avalue,
+           b.evalue,
+           b.acell,
+           b.confirmation_code
+    FROM   :h_table a,
+           cqpv b,
+           question_library c
+    WHERE  a.question = b.question
+      AND  a.question = c.question
+      AND  b.contributor_reference = :p_contributor_reference
+      AND  c.period = :p_period
+      AND  b.period = :p_period;
+
+    h_return =  CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to create ' +:h_reptable +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Get the currency too (for the ReportWriter)
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT currency AS h_currency
+    FROM   contributor_period
+    WHERE  contributor_reference = :p_contributor_reference
+      AND  period = :p_period;
+
+    h_return =  CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+    ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select currency from contributor period table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Print it
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_cp_callsys 
+           ( 'report ' 
+           + :g_database 
+           + ' ''(user_name = "' + :g_user_name + '"' 
+           + ',period = ' + VARCHAR(:p_period) 
+           + ',contributor_reference = "' + :p_contributor_reference + '"' 
+           + ',h_table = "' + :h_reptable + '"' 
+           + ',currency = "' + :h_currency + '"' 
+           + ',add_name1 = "' + :p_add_name1 + '"' 
+           + ')'' -i$REPORTS/msab_rw_form_values.rw' 
+           + ' > report.output 2> report.output');
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to produce report for printing. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ELSE
+
+    /*--------------------------------------------------------------
+         Remove last line so a blank end page is not printed,
+         then send to printer.
+    --------------------------------------------------------------*/
+
+    h_return2 = CALLPROC msa_cp_callsys 
+             ( 'lines=`wc -l < msab_rw_form_values.rpt`;' 
+             + 'lines=`expr ${lines} - 1`;' 
+             + 'head -${lines} msab_rw_form_values.rpt | ' 
+             + 'lp -o16l -d' + :g_printer 
+             + ' >> report.output 2>> report.output');
+
+    IF h_return2 != 0
+    THEN
+      MESSAGE 'ERROR: Failed to send report to printer ' + :g_printer +' .'
+          + 'Error code ' +VARCHAR(:h_return2) +'. '
+          + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ELSE
+      MESSAGE 'NOTE: Report successfully sent to printer ' + :g_printer + '. '
+      WITH STYLE = POPUP;
+    ENDIF;
+
+  ENDIF;
+
+  h_return = CALLPROC msa_fp_drop_table (h_table = :h_reptable);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure */
+    RETURN h_return;
+  ENDIF;
+
+}
+
+'End', KEY FRSKEY14  =
+{
+  MESSAGE 'Exiting Screen . . .';
+
+  h_return = CALLPROC msa_fp_drop_table (h_table = :h_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure */
+    RETURN h_return;
+  ENDIF;
+
+  RETURN 0;
+}
+
+'QuickView', KEY FRSKEY20 =
+{
+    CALL APPLICATION (exec = '$IMAGES/quickview_app -numeric_overflow=ignore ');
+}
+
+/*************************** LOCAL PROCEDURES *******************************/
+
+/*============================================================================
+    Local procedure to load data to screen.
+============================================================================*/
+PROCEDURE lp_load_table () =
+{
+  MESSAGE 'Loading Contributor''s Questions . . .';
+
+  /*-----------------------------------------------------------------------
+      Clear then insert questions into working table.
+  -----------------------------------------------------------------------*/
+
+  MODIFY :h_table TO TRUNCATED;
+
+  h_return =  CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to clear data from ' + :h_table +'. '
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO :h_table 
+              ( question,
+                quest_order,
+                brief_text,
+                unit)
+    SELECT      question,
+                quest_order,
+                'QUESTION DOES NOT EXIST FOR ' + VARCHAR(:p_period),
+                ' ' 
+    FROM        cqpv
+    WHERE       contributor_reference = :p_contributor_reference
+      AND       period                = :p_period;
+
+    h_return =  CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: No questions were found for this contributor' +
+            ' in this period.'
+    WITH STYLE = POPUP;
+    RETURN 1;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to insert question data into ' +:h_table +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+      Update working table with brief text descriptions.
+  -----------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE :h_table a
+    FROM   question_library b
+    SET    brief_text = b.brief_text,
+           unit       = b.unit_1
+    WHERE  a.question = b.question
+      AND  b.period   = :p_period;
+
+    h_return =  CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to update text descriptions on ' +:h_table +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+      Update working table with Volume descriptive text
+  -----------------------------------------------------------------------*/
+
+  SELECT question   AS h_question,
+         unit       AS h_unit,
+         brief_text AS h_text
+  FROM :h_table
+  BEGIN
+
+    IF MOD(h_question,10) = 2
+    OR MOD(h_question,10) = 5
+    THEN
+
+      IF MOD(h_question,10) = 2
+      THEN
+        h_text = '(Volume of above in ' + SQUEEZE(:h_unit);
+      ELSE
+        h_text = '(Total production of above in ' + SQUEEZE(:h_unit);
+      ENDIF;
+
+      IF RIGHT(:h_text,1) = 's'
+      THEN 
+        h_text = :h_text + ')';
+      ELSE
+        h_text = :h_text + 's)';
+      ENDIF;
+     
+      UPDATE :h_table
+      SET    brief_text = :h_text
+      WHERE  question = :h_question;  
+       
+      h_return2 =  CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return2 != 0
+      THEN
+        MESSAGE 'ERROR: Failed to update volume text on ' +:h_table +'. '
+              + 'Error code ' +VARCHAR(:h_return2) +'. '
+              + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+        RETURN 9;
+      ENDIF;
+
+    ENDIF;
+
+  END;
+
+  h_return = lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select for loop from ' +:h_table +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+      Load data to on screen table field.
+  -----------------------------------------------------------------------*/
+
+  tf =
+
+  SELECT   question,
+           quest_order AS quest_order,
+           brief_text
+  FROM     :h_table
+  ORDER BY quest_order,
+           question;
+
+  h_return =  CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to load data to screen. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+      Calculate question and value counts.
+  -----------------------------------------------------------------------*/
+
+  s_no_questions = 0;
+  s_no_values = 0;
+
+  UNLOADTABLE tf
+  BEGIN
+
+   s_no_questions = s_no_questions + 1;
+
+    IF tf.quest_order = 1 AND MOD(tf.question,10) = 1
+    THEN
+       s_no_values = s_no_values + 1;
+    ENDIF;
+
+  END;
+
+  REDISPLAY;
+
+  RETURN 0;
+
+}
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+
+/*=======================================================================
+    Local procedure to write to audit trail.
+=======================================================================*/
+
+PROCEDURE lp_write_to_audit_trail
+        ( p_contributor_reference = CHAR(11)    NOT NULL WITH DEFAULT,
+          p_question              = INTEGER4    NOT NULL WITH DEFAULT,
+          p_period                = INTEGER4    NOT NULL WITH DEFAULT,
+          p_code                  = INTEGER1    NOT NULL WITH DEFAULT,
+          p_val_1                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_val_2                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_val_3                 = VARCHAR(20) NOT NULL WITH DEFAULT,
+          p_frpr_name             = VARCHAR(36) NOT NULL WITH DEFAULT )=
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC write_to_audit_trail 
+            ( p_contributor_reference = :p_contributor_reference, 
+              p_question              = :p_question,
+              p_period                = :p_period,
+              p_code                  = :p_code, 
+              p_val_1                 = :p_val_1,
+              p_val_2                 = :p_val_2,
+              p_val_3                 = :p_val_3,
+              p_frpr_name             = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

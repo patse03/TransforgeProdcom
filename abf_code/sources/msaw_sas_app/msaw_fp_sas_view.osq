@@ -1,0 +1,127 @@
+/*-------------------------------------------------------------------------
+     This program is called by the TOP UTILITIES menu screen in
+     first_application.
+     Actually this program may not be used at all anymore.
+     may have been replaced by first_application/msae_fp_sas_view 
+--------------------------------------------------------------------------*/
+
+PROCEDURE msaw_fp_sas_view () =
+
+DECLARE h_retries_allowed  = INTEGER1 NOT NULL,
+        h_retries          = INTEGER1 NOT NULL,
+        h_retry_or_not     = CHAR(5) NOT NULL,
+        h_frpr_name        = VARCHAR(24) NOT NULL,
+        h_table            = VARCHAR(24) NOT NULL,
+        h_output_category  = CHAR(1) NOT NULL,
+        h_current_category = CHAR(1) NOT NULL,
+        h_rows             = INTEGER4 NOT NULL,
+        h_total            = INTEGER4 NOT NULL,
+        h_current_total    = INTEGER4 NOT NULL,
+        ret_val            = INTEGER1 NOT NULL
+
+{
+    h_frpr_name = 'msaw_fp_sas_view';
+    h_retries_allowed = 3;
+    h_table = 'temp_relift';
+
+    select dbmsinfo('database') as g_database;
+
+    /*------------------------------------------------------------------
+     Create Table
+    ------------------------------------------------------------------*/
+    /*** test message  *****
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Entering sas_view',
+                    :h_frpr_name,
+                    0,
+                    :g_user_id);
+        COMMIT;
+   */
+    ret_val = CALLPROC batch_fp_drop_table (
+              h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+
+    CREATE TABLE :h_table
+    AS SELECT  a.*,
+               b.question_industry
+    FROM       contributor_sas a,
+	       question_library b
+    WHERE extracted = 'n'
+    AND a.question = b.question
+    AND a.run_period/100 = b.period/100;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error selecting relifts',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows in contributor_sas';
+        RETURN 9;
+    ENDIF;
+
+    MESSAGE 'Preparing Report . .  .';
+    ret_val = CALLPROC msa_cp_callsys (
+
+
+                       'report ' +
+                       :g_database +
+                       ' ''(h_table = "' + :h_table + '"' +
+                       ',user_name = "' + 'OVERNIGHT' + '"' +
+                       ')'' -f$SAS/msaw_rw_sas_view.rpt' +
+                       ' -i$REPORTS/msaw_rw_sas_view.rw' +
+                       ' > report.output 2> report.output');
+
+    IF ret_val <> 0
+    THEN
+        MESSAGE 'Error producing report msaw_rw_sas_view.rpt';
+    ELSE
+    /*--------------------------------------------------------------
+        Remove last line - so a blank end page is not printed
+    --------------------------------------------------------------*/
+
+    IF :g_database = 'prodlivedb'
+    THEN
+	g_printer = 'n1325_9mf ';
+    ELSE
+	g_printer = 'nd115_9mf ';
+    ENDIF;
+
+    ret_val = CALLPROC msa_cp_callsys (
+                        'lp -o12p -d' + :g_printer +
+			'$SAS/msaw_rw_sas_view.rpt' +
+                        ' >> report.output 2>> report.output');
+
+       IF ret_val <> 0
+        THEN
+            MESSAGE 'Error sending report msaw_rw_sas_view.rpt to printer ' +
+                        :g_printer ;
+        ELSE
+            MESSAGE 'Report sent to printer ' +
+                :g_printer ;
+        ENDIF;
+
+    ENDIF;
+
+}
+
+

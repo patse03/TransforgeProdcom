@@ -1,0 +1,456 @@
+/***********************************************************************
+  Views local units
+
+  s_contributor_reference and s_period passed through directly to
+  screen fields by calling frame msafd_fr_in_contper, so no validation 
+  needed.
+
+***********************************************************************/
+
+INITIALIZE () =
+
+DECLARE 
+  h_retries_allowed  = INTEGER1 NOT NULL,
+  h_retries          = INTEGER1 NOT NULL,
+  h_retry_or_not     = CHAR(5) NOT NULL,
+  h_frpr_name        = VARCHAR(24) NOT NULL,
+  h_dummy            = CHAR(11) NOT NULL,
+  h_idbr             = CHAR(11) NOT NULL,
+  h_region           = CHAR(2) NOT NULL,
+  h_keyresp          = INTEGER1 NOT NULL,
+  h_output_category  = CHAR(1) NOT NULL,
+  h_return           = INTEGER1 NOT NULL,
+  h_display          = INTEGER1 NOT NULL,
+  h_counter          = INTEGER4 NOT NULL,
+  h_max_rows         = INTEGER4 NOT NULL,
+  h_num_rows         = INTEGER4 NOT NULL,
+
+  lp_load_lu          = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+
+{
+  msa_date = 'now';
+  h_retries_allowed = 3;
+  h_frpr_name = 'msafd_fr_in_cont_lu';
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  s_enforcement = 'UNDER ENFORCEMENT';
+  s_key         = 'KEY';
+  s_message     = '';
+
+  SET_FORMS FIELD '' (INVISIBLE(s_enforcement) = 1,
+                      INVISIBLE(s_country) = 1,
+                      INVISIBLE(s_key) = 1);
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+  MESSAGE 'Selecting Data . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT add_name1 AS s_add_name1,
+           add_name2 AS s_add_name2,
+           add_name3 AS s_add_name3
+    FROM   contributor
+    WHERE  contributor_reference = :s_contributor_reference;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 0
+  THEN
+    MESSAGE 'ERROR: Failed to access contributor data for prevalidated '
+          + 'contributor reference. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  h_return = CALLPROC msa_fp_latest_details 
+           ( p_contributor_reference = :s_contributor_reference,
+             p_region                = BYREF(:h_region),
+             p_output_category       = BYREF(:h_output_category));
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: Contributor has never been selected. '
+    WITH STYLE = POPUP;         
+  ELSEIF h_return > 1
+  THEN
+    /* Error message handled in external procedure */
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Set country code from region.
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT country AS s_countrY
+    FROM   region
+    WHERE  region = :h_region;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 0
+  THEN
+    MESSAGE 'ERROR: Failed to select country code from region table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Check Selection
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT contributor_industry AS s_industry,
+           keyresp              AS h_keyresp
+    FROM   contributor_period
+    WHERE  contributor_reference = :s_contributor_reference
+      AND  period                = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: Contributor was not selected for '
+          + VARCHAR(:s_period) +'. '
+    WITH STYLE = POPUP;         
+    RETURN 1;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select from contributor_period table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  REDISPLAY;
+
+  /*------------------------------------------------------------------------
+      Set 'screamer' fields
+  ------------------------------------------------------------------------*/
+
+  IF h_output_category = 'Y'
+  THEN
+    SET_FORMS FIELD '' (INVISIBLE(s_enforcement) = 0);
+  ENDIF;
+
+  IF s_country != ''
+  THEN
+    SET_FORMS FIELD '' (INVISIBLE(s_country) = 0);
+  ELSE
+    SET_FORMS FIELD '' (INVISIBLE(s_country) = 1);
+  ENDIF;
+
+  IF h_keyresp = 1
+  THEN
+    SET_FORMS FIELD '' (INVISIBLE(s_key) = 0);
+  ENDIF;
+
+  REDISPLAY;
+
+  /*------------------------------------------------------------------
+     Load up array
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    g_lu_array =
+
+    SELECT lu_reference
+    FROM   contributor_luaddress
+    WHERE  contributor_reference  = :s_contributor_reference
+      AND  period                 = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This Contributor has no Local Units recorded for ' 
+          + VARCHAR(:s_period) +'.'
+    WITH STYLE = POPUP;
+    RETURN 1;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select from contributor_luaddress table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  h_max_rows = :h_num_rows; 
+
+  h_counter = 1;
+
+  IF s_lu_reference != ''
+  THEN
+
+    UNLOADTABLE g_lu_array
+    BEGIN
+
+      IF :g_lu_array.lu_reference = :s_lu_reference
+      THEN
+        ENDLOOP;
+      ENDIF;
+
+      h_counter = h_counter + 1;
+
+    END;
+
+  ENDIF;
+
+  IF h_counter > h_max_rows
+  THEN
+    h_counter = 1;
+  ENDIF;
+
+  h_return = CALLPROC lp_load_lu ();
+
+}
+
+/*********************** KEY ACTIVATIONS ***********************************/
+
+'Prev', KEY FRSKEY5 =
+{
+  INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(s_period));
+
+  IF :h_display = 0
+  THEN
+    MESSAGE 'WARNING: Please enter a valid period.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_period;
+  ENDIF;
+
+  INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(s_contributor_reference));
+
+  IF :h_display = 0
+  THEN
+    MESSAGE 'WARNING: Please enter a valid contributor reference.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_contributor_reference;
+  ENDIF;
+
+  IF :h_counter = 1
+  THEN
+    MESSAGE 'NOTE: This is the first Local Unit.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  h_counter = :h_counter - 1;
+
+  h_return = CALLPROC lp_load_lu ();
+
+  IF h_return > 1
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+}
+
+'Next', KEY FRSKEY6 =
+{
+  INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(s_period));
+
+  IF :h_display = 0
+  THEN
+    MESSAGE 'WARNING: Please enter a valid period.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_period;
+  ENDIF;
+
+  INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(s_contributor_reference));
+
+  IF :h_display = 0
+  THEN
+    MESSAGE 'WARNING: Please enter a valid contributor reference.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_contributor_reference;
+  ENDIF;
+
+  IF :h_counter = :h_max_rows
+  THEN
+    MESSAGE 'NOTE: This is the last Local Unit.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  h_counter = :h_counter + 1;
+
+  h_return = CALLPROC lp_load_lu ();
+
+  IF h_return > 1
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+}
+
+'End', KEY FRSKEY14 =
+{
+  RETURN 0;
+}
+
+/************************** LOCAL PROCEDURES *******************************/
+
+/*=======================================================================
+    Local procedure to load lu details to screen.
+=======================================================================*/
+
+PROCEDURE lp_load_lu () =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+  s_lu_reference = :g_lu_array[:h_counter].lu_reference;
+  s_message      = 'Local Unit ' + VARCHAR(:h_counter) + ' of ' 
+                 + VARCHAR(:h_max_rows);
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT lu_name1           AS s_lu_name1,
+           lu_name2           AS s_lu_name2,
+           lu_name3           AS s_lu_name3,
+           lu_addr1           AS s_lu_addr1,
+           lu_addr2           AS s_lu_addr2,
+           lu_addr3           AS s_lu_addr3,
+           lu_addr4           AS s_lu_addr4,
+           lu_addr5           AS s_lu_addr5,
+           lu_postcode        AS s_lu_postcode,
+           register_emp       AS s_lu_reg_emp,
+           VARCHAR(lu_region) AS s_lu_region
+    FROM   contributor_luaddress
+    WHERE  contributor_reference = :s_contributor_reference
+    AND    lu_reference          = :s_lu_reference
+    AND    period                = :s_period;
+
+    lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF lp_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF lp_return > 0
+  THEN
+    MESSAGE 'ERROR: Failed to select details from contributor_luaddress table. '
+          + 'Error code ' +VARCHAR(:lp_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_num_row    = BYREF(:h_num_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_retries    = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

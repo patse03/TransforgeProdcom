@@ -1,0 +1,607 @@
+INITIALIZE() =
+
+DECLARE  
+  h_return               = INTEGER      NOT NULL,
+  h_retries              = INTEGER1     NOT NULL,
+  h_retries_allowed      = INTEGER1     NOT NULL,
+  h_retry_or_not         = CHAR(5)      NOT NULL,
+  h_frpr_name            = VARCHAR(24)  NOT NULL,
+  tf.user_id             = VARCHAR(10)  NOT NULL,
+  h_field_name           = VARCHAR(24)  NOT NULL,
+  h_prompt               = CHAR(1)      NOT NULL,
+  non_prod_sic           = CHAR(5)      NOT NULL,
+  h_rows                 = INTEGER4     NOT NULL,
+  h_hold_ref             = VARCHAR(11)  NOT NULL,
+  h_message              = VARCHAR(200) NOT NULL,
+  h_prompt_ref           = VARCHAR(11)  NOT NULL,
+  h_on_record            = INTEGER4     NOT NULL,
+  h_record               = INTEGER4     NOT NULL,
+  h_scope                = INTEGER1     NOT NULL,
+
+  lp_load_table          = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_full_error_check    = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_set_form_status     = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+  SET_FORMS FIELD '' (MODE(tf)='READ');
+
+  msa_date = 'now';
+  h_frpr_name = 'msafd_fr_reclass_accept';
+  h_retries_allowed = 3;
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+  /*----------------------------------------------------------------------
+      initial population of table field.
+  ----------------------------------------------------------------------*/
+
+  h_return = CALLPROC lp_load_table();
+
+  IF h_return != 0
+  THEN
+    /* Error message hadled in local procedure */
+    RETURN h_return;
+  ENDIF;
+
+}
+
+/*************************** KEY ACTIVATIONS *******************************/
+
+/*--------------------------------------------------------------------
+ Go to specific reference.
+--------------------------------------------------------------------*/
+
+'Find', KEY FRSKEY4 =
+{
+  h_message = 'Type (start of) reference and press <return>';
+
+  IF h_hold_ref != ''
+  THEN
+    h_message = h_message + X'0D' 
+              + 'or just press <return> to go to the next ' 
+              + 'form whose reference starts with ' 
+              + VARCHAR(:h_hold_ref) +'.';
+  ENDIF;
+
+  h_prompt_ref = PROMPT h_message WITH STYLE = POPUP;
+
+  IF h_prompt_ref = '' AND h_hold_ref != ''
+  THEN
+    h_prompt_ref = h_hold_ref;
+    h_on_record = :tf._record;
+  ELSE
+     h_on_record = 0;
+  ENDIF;
+
+  h_hold_ref = h_prompt_ref;
+
+  UNLOADTABLE tf (h_record = _record)
+  BEGIN
+    IF h_record > h_on_record
+    THEN
+      IF LEFT(VARCHAR(tf.contributor_reference),
+              LENGTH(h_prompt_ref)) = :h_prompt_ref
+      THEN
+        SCROLL tf TO h_record;
+        RESUME;
+      ENDIF;
+    ENDIF;
+  END;
+}
+
+/*--------------------------------------------------------------------
+ Accept the reclassification
+--------------------------------------------------------------------*/
+
+'Accept', KEY FRSKEY5 =
+{
+
+  INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+  IF :h_field_name != 'tf'
+  THEN
+    MESSAGE 'WARNING: Please highlight the contributor you want to action.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+  IF :h_rows = 0
+  THEN
+    MESSAGE 'WARNING: Please highlight the contributor you want to action.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  msa_date = 'now';
+
+  h_prompt = '';
+
+  WHILE h_prompt != 'y' AND h_prompt != 'n'
+  DO
+    h_prompt = PROMPT 'WARNING: Before you go any further please confirm ' 
+                    + 'that you have closed the reg ammend [Y/N] : ' 
+               WITH STYLE = POPUP;
+
+    h_prompt = LOWERCASE(h_prompt);
+  ENDWHILE;
+
+  IF h_prompt = 'n'
+  THEN
+    RESUME FIELD tf;
+  ENDIF;
+
+  h_prompt = '';
+
+  WHILE h_prompt != 'y' AND h_prompt != 'n'
+  DO
+    h_prompt = PROMPT 'WARNING: Please confirm that you wish to accept '
+                    + 'this contributor for reclassification [Y/N] :'
+               WITH STYLE = POPUP;
+
+    h_prompt = LOWERCASE(h_prompt);
+
+  ENDWHILE;
+
+  IF h_prompt = 'n'
+  THEN
+    RESUME FIELD tf;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE reclass_contrib
+    SET    action                = 'ACCEPTED',
+           action_date           = 'now',
+           user_id               = :g_user_id
+    WHERE  contributor_reference = :tf.contributor_reference
+      AND  period                = :tf.period
+      AND  proposed_ind         != 111111111;
+
+    h_return = CALLPROC lp_full_error_check ( p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return = 9
+  THEN
+    MESSAGE 'ERROR: Failed to update acceptance for contributor ' 
+          + VARCHAR(:tf.contributor_reference) +' on reclass_contrib. ' 
+          + 'Error code 9. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'ERROR: No rows have been updated with acceptance. '
+          + 'Please ensure that the new industry is valid.'
+    WITH STYLE = POPUP;
+    RETURN 1;
+  ENDIF;
+
+  h_return = CALLPROC lp_set_form_status ();
+
+  IF h_return != 0
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+  h_return = CALLPROC lp_load_table();
+  IF h_return != 0
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+}
+
+/*--------------------------------------------------------------------
+ Reject the Reclassification
+--------------------------------------------------------------------*/
+
+'Reject', KEY FRSKEY6 =
+{
+
+  INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+  IF :h_field_name != 'tf'
+  THEN
+    MESSAGE 'WARNING: Please highlight the contributor you want to action.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+  IF :h_rows = 0
+  THEN
+    MESSAGE 'WARNING: Please highlight the contributor you want to action.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  msa_date = 'now';
+
+  h_prompt = '';
+
+  WHILE h_prompt != 'y' AND h_prompt != 'n'
+  DO
+    h_prompt = PROMPT 'WARNING: Please confirm that you wish to reject the '
+                    + 'reclassification proposal for this contributor [Y/N] :'
+               WITH STYLE = POPUP;
+
+    h_prompt = LOWERCASE(h_prompt);
+
+  ENDWHILE;
+
+  IF h_prompt = 'n'
+  THEN
+    RESUME FIELD tf;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE reclass_contrib
+    SET    action                = 'REJECTED',
+           action_date           = 'now',
+           user_id               = :g_user_id
+    WHERE  contributor_reference = :tf.contributor_reference
+      AND  period                = :tf.period;
+
+    h_return = CALLPROC lp_full_error_check ( p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to update rejection for contributor ' 
+          + VARCHAR(:tf.contributor_reference) +' on reclass_contrib. ' 
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+    RETURN :h_return;
+  ENDIF;
+
+  h_return = CALLPROC lp_set_form_status ();
+  IF h_return != 0
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+  h_return = CALLPROC lp_load_table();
+
+  IF h_return != 0
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+}
+
+'Contact', KEY FRSKEY8 =
+{
+  CALL APPLICATION (exec = '$IMAGES/communicate',
+                    param = VARCHAR(:tf.contributor_reference));
+}
+
+
+'End', KEY FRSKEY14 =
+{
+  RETURN 0;
+}
+
+
+'QuickView', KEY FRSKEY20 =
+{
+  CALL APPLICATION (exec = '$IMAGES/quickview_app -numeric_overflow=ignore ');
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*========================================================================
+   Local procedure to populate table field.
+=========================================================================*/
+
+PROCEDURE lp_load_table () =
+
+DECLARE   lp_return = INTEGER2 NOT NULL WITH DEFAULT,
+
+{
+
+  MESSAGE 'Selecting Reclassifications . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+    /*---------------------------------------------------
+              Scope 3
+    ----------------------------------------------------*/
+
+    IF :g_user_level = 5
+    OR :g_user_class = 'D'
+    THEN
+      h_scope = 3;
+      tf = SELECT    contributor_reference,
+                     period,
+                     current_ind,
+                     proposed_ind,
+                     action,
+                     action_date,
+                     user_id
+           FROM      reclass_contrib
+           WHERE     action = 'PROPOSED'
+           ORDER BY  proposed_ind,
+                     contributor_reference,
+                     period;
+
+    /*---------------------------------------------------
+              Scope 2
+    ----------------------------------------------------*/
+
+    ELSEIF :g_access_code = 'I4'
+    THEN
+
+      h_scope = 2;
+
+      tf = 
+
+      SELECT contributor_reference,
+             period,
+             current_ind,
+             proposed_ind,
+             action,
+             action_date,
+             user_id
+      FROM   reclass_contrib
+      WHERE  action = 'PROPOSED'
+        AND  ((proposed_ind/10)*10) IN
+             ( SELECT DISTINCT b.industry
+               FROM   analyst_coordinator_manager a,
+                      industry_analysts b
+               WHERE  a.analyst_id     = b.user_id
+               AND  ( a.coordinator_id = :g_user_id OR
+                        a.coordinator_id =
+                        ( SELECT c.id_two
+                          FROM   job_share c
+                          WHERE  c.id_one  = :g_user_id)))
+      ORDER BY  proposed_ind,
+                contributor_reference,
+                period;
+
+    /*---------------------------------------------------
+              Scope 1
+    ----------------------------------------------------*/
+
+    ELSEIF :g_access_code = 'I3'
+    THEN
+      h_scope = 1;
+      tf = 
+           SELECT    contributor_reference,
+                     period,
+                     current_ind,
+                     proposed_ind,
+                     action,
+                     action_date
+           FROM      reclass_contrib
+           WHERE     ((proposed_ind/10)*10) IN 
+                               ( SELECT industry
+                                 FROM   industry_analysts
+                                 WHERE  user_id = :g_user_id)
+             AND     contributor_reference >= 
+                               ( SELECT low_ref 
+                                 FROM   industry_analysts
+                                 WHERE  user_id = :g_user_id
+                                   AND  industry = ((proposed_ind/10)*10))
+              AND     contributor_reference <= 
+                              ( SELECT high_ref 
+                                FROM   industry_analysts
+                                WHERE  user_id = :g_user_id
+                                  AND  industry = ((proposed_ind/10)*10))
+              AND     action IN ('PROPOSED')
+         ORDER BY     proposed_ind,
+                      contributor_reference,
+                      period;
+    ENDIF;
+
+    lp_return = CALLPROC check_inq_ing 
+             ( h_num_row         = BYREF(:no_contributors),
+               h_num_row_ck      = 1,
+               h_commit          = 'Y',
+               h_rollback        = 'N',
+               h_retries         = :h_retries,
+               h_retries_allowed = :h_retries_allowed,
+               h_frpr_name       = :h_frpr_name);
+
+    IF lp_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF lp_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF lp_return = 9
+  THEN
+    MESSAGE 'ERROR: Failed to populate table field for scope '
+          + VARCHAR(:h_scope) + '. Error code 9.'
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/*==========================================================================
+    Local procedure to update status on contributor period.
+==========================================================================*/
+PROCEDURE lp_set_form_status () =
+
+DECLARE   lp_return = INTEGER2 NOT NULL WITH DEFAULT,
+
+{
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE contributor_period a
+    FROM   inquiry_period b
+    SET    correct_date            = 'today',
+           corr_week_no            = b.week_no,
+           form_status             = 4
+    WHERE  a.contributor_reference = :tf.contributor_reference
+    AND    a.period                = :tf.period
+    AND    a.period                = b.period;
+
+    lp_return = CALLPROC lp_full_error_check ( p_num_row_ck = 1);
+
+    IF lp_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF lp_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to update form_status for contributor ' 
+          + VARCHAR(:tf.contributor_reference) +' on contributor_period. ' 
+          + 'Error code ' +VARCHAR(:lp_return) +'. '
+          + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+    RETURN :lp_return;
+  ENDIF;
+
+
+  /*------------------------------------------------------------------
+    If this is the first time the form was cleared, mark it.
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE contributor_period
+    SET    user_id = :tf.user_id
+    WHERE  contributor_reference = :tf.contributor_reference
+      AND  period = :tf.period
+      AND  user_id = '';
+
+    lp_return = CALLPROC lp_full_error_check ( p_num_row_ck = 1);
+
+    IF lp_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF lp_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to update user_id for contributor ' 
+          + VARCHAR(:tf.contributor_reference) +' on contributor_period. ' 
+          + 'Error code ' +VARCHAR(:lp_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+  RETURN 0;
+}
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+                  h_num_row_ck = :p_num_row_ck,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

@@ -1,0 +1,120 @@
+
+/*----------------------------------------------------------------------
+  Drops a table - if it exists
+----------------------------------------------------------------------*/
+
+PROCEDURE msa_fp_drop_table ( p_table = VARCHAR(40) NOT NULL,
+                              h_table = VARCHAR(40) NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_check_table     = VARCHAR(40) NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msa_fp_drop_table';
+
+   IF h_table = '' AND p_table != ''
+   THEN
+     h_table = p_table;
+   ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT table_name AS h_check_table
+        FROM   iitables
+        WHERE  table_name = :h_table
+        AND    table_owner = (SELECT user_name FROM iidbconstants);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing iitables'
+        WITH STYLE = POPUP;
+
+        INSERT INTO error_log (
+                    error_time,
+                    error_text,
+                    frpr_name,
+                    error_code,
+                    user_id)
+	SELECT      'now',
+                    'Failed to find on iitables >' + :h_table + '<', 
+                    :h_frpr_name,
+                    9,
+                    user_name 
+	FROM        iidbconstants;
+
+        COMMIT;
+        RETURN 9;
+
+    ELSEIF ret_val = 0
+    THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            DROP :h_table;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+    
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+    
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in dropping ' + :h_table
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ENDIF;
+
+    ENDIF;
+
+    RETURN 0;
+}

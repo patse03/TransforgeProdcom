@@ -1,0 +1,247 @@
+/****************************************************************************
+
+   Standard procedure to calculates an output category for a contributor
+
+   p_selection_category and p_output category are usually BYREF returns.
+
+   DF - May 2013 - Reworked to comply with new processes and standards.
+
+****************************************************************************/
+
+PROCEDURE msa_fp_calc_output_cat (
+
+        p_period                = INTEGER4 NOT NULL,
+        p_structure             = CHAR(1) NOT NULL,
+        p_region                = CHAR(2) NOT NULL,
+        p_contributor_reference = CHAR(11) NOT NULL,
+        p_contributor_industry  = INTEGER4 NOT NULL,
+        p_selection_category    = INTEGER4 NOT NULL,
+        p_output_category       = CHAR(1) NOT NULL) =
+
+DECLARE 
+
+  h_retries_allowed  = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries          = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not     = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name        = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_return           = INTEGER1    NOT NULL WITH DEFAULT,
+  h_new_con          = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_prev_con         = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_reent_con        = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_prev_period1     = INTEGER4    NOT NULL WITH DEFAULT,
+  h_prev_period2     = INTEGER4    NOT NULL WITH DEFAULT,
+  h_industry         = INTEGER4    NOT NULL WITH DEFAULT,
+
+ lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT, 
+
+{
+  h_frpr_name = 'msa_fp_calc_output_cat';
+  h_retries_allowed = 3;
+
+  h_new_con = 'N';
+  h_prev_con = 'N';
+  h_reent_con = 'N';
+
+  /*------------------------------------------------------------------
+    Get five previous quarters and two previous annual years
+  ------------------------------------------------------------------*/
+
+   CALLPROC msa_fp_prev_periods 
+          ( p_period       = :p_period,
+            p_prev_period1 = BYREF(:h_prev_period1),
+            p_prev_period2 = BYREF(:h_prev_period2));
+
+  /*------------------------------------------------------------------
+    Set prev_con = Y if contributor selected last period.
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT contributor_industry AS h_industry
+    FROM   contributor_period
+    WHERE  contributor_reference = :p_contributor_reference
+      AND  period                = :h_prev_period1;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select span end from contributor_period table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ELSEIF h_return = 0
+  THEN
+    h_prev_con = 'Y';
+
+  ELSEIF h_return = 1
+  THEN
+
+    /*--------------------------------------------------------------
+        Set reent_con = Y if contributor didn't exist in the 
+        previous period, but did exist in the period before that.
+    --------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      SELECT contributor_industry AS h_industry
+      FROM   contributor_period
+      WHERE  contributor_reference = :p_contributor_reference
+        AND  period                = :h_prev_period2;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return > 1
+    THEN
+      MESSAGE 'ERROR: Failed to select span start '
+            + 'from contributor_period table. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+
+    ELSEIF h_return = 0
+    THEN
+      h_reent_con = 'Y';
+    ENDIF;
+
+  ENDIF;
+
+  /*--------------------------------------------------------------------
+     If not selected in previous two periods, count as new contributor.
+  --------------------------------------------------------------------*/
+
+  IF  h_prev_con  = 'N' 
+  AND h_reent_con = 'N'
+  THEN
+    h_new_con = 'Y';
+  ENDIF;
+    
+  /*--------------------------------------------------------------------
+     Calculate output category and selection category.
+  --------------------------------------------------------------------*/
+
+  IF p_region = 'YY'
+  THEN
+
+    /*....................................................................
+        NI categories.
+    ....................................................................*/
+
+    IF h_new_con = 'Y'
+    THEN
+      p_selection_category = 7;
+      p_output_category = 'G';
+
+    ELSEIF h_reent_con = 'Y'
+    THEN
+      p_selection_category = 12;
+      p_output_category = 'M';
+
+    ELSEIF h_prev_con = 'Y'
+    THEN
+      p_selection_category = 6;
+
+      IF p_contributor_industry != h_industry
+      THEN
+        p_output_category = 'J';
+      ELSE
+        p_output_category = 'F';
+      ENDIF;
+
+    ENDIF;
+
+  ELSE
+
+    /*....................................................................
+        GB categories.
+    ....................................................................*/
+
+    IF h_new_con = 'Y'
+    THEN
+      p_selection_category = 3;
+      p_output_category = 'C';
+
+    ELSEIF h_reent_con = 'Y'
+    THEN
+      p_selection_category = 10;
+      p_output_category = 'K';
+
+    ELSEIF h_prev_con = 'Y'
+    THEN
+      p_selection_category = 2;
+
+      IF p_contributor_industry != h_industry
+      THEN
+        p_output_category = 'H';
+      ELSE
+        p_output_category = 'A';
+      ENDIF;
+
+    ENDIF;
+
+  ENDIF;
+
+  IF p_structure = 'L'
+  THEN
+    p_selection_category = p_selection_category + 20;
+  ENDIF;
+
+
+  RETURN 0;
+
+}
+
+/***************************** LOCAL PROCEDURES *****************************/
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

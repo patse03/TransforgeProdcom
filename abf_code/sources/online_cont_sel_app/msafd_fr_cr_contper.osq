@@ -1,0 +1,1292 @@
+/*****************************************************************************
+
+    Frame to create contributor periodic details.
+
+    JUNE 2013 - DF - Reworked in line with new procedures and standards.
+
+*****************************************************************************/
+
+INITIALIZE () =
+
+DECLARE 
+  h_dummy              = CHAR(11)    NOT NULL WITH DEFAULT,
+  h_output_category    = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_cycle_point        = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_structure          = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_selection_category = INTEGER4    NOT NULL WITH DEFAULT,
+  h_yesno              = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_exit               = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_min_period         = INTEGER4    NOT NULL WITH DEFAULT,
+  h_display            = INTEGER1    NOT NULL WITH DEFAULT,
+  h_company            = INTEGER1    NOT NULL WITH DEFAULT,
+  h_currency           = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_return             = INTEGER4    NOT NULL WITH DEFAULT,
+  h_return2            = INTEGER4    NOT NULL WITH DEFAULT,
+  h_return3            = INTEGER4    NOT NULL WITH DEFAULT,
+  h_keyresp            = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries            = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries_allowed    = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not       = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name          = VARCHAR(24) NOT NULL WITH DEFAULT,
+
+  lp_full_error_check  = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name = 'msafd_fr_cr_contper';
+  h_retries_allowed = 3;
+  msa_date = 'now';
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+  s_enforcement = 'UNDER ENFORCEMENT';
+  s_key         = 'KEY';
+
+  SET_FORMS FIELD '' (INVISIBLE  (s_enforcement) = 1,
+                      INVISIBLE  (s_country) = 1,
+                      INVISIBLE  (s_key) = 1,
+
+                      DISPLAYONLY(s_period) = 0,
+                      UNDERLINE  (s_period) = 1,
+                      REVERSE    (s_period) = 0,
+
+                      DISPLAYONLY(s_contributor_reference) = 0,
+                      UNDERLINE  (s_contributor_reference) = 1,
+                      REVERSE    (s_contributor_reference) = 0,
+
+                      DISPLAYONLY(s_industry) = 1,
+                      UNDERLINE  (s_industry) = 0,
+                      REVERSE    (s_industry) = 1,
+
+                      DISPLAYONLY(s_subclass) = 1,
+                      UNDERLINE  (s_subclass) = 0,
+                      REVERSE    (s_subclass) = 1,
+
+                      DISPLAYONLY(s_enterprise) = 1,
+                      UNDERLINE  (s_enterprise) = 0,
+                      REVERSE    (s_enterprise) = 1,
+
+                      DISPLAYONLY(s_reg_emp) = 1,
+                      UNDERLINE  (s_reg_emp) = 0,
+                      REVERSE    (s_reg_emp) = 1,
+
+                      DISPLAYONLY(s_region) = 1,
+                      UNDERLINE  (s_region) = 0,
+                      REVERSE    (s_region) = 1,
+
+                      DISPLAYONLY(s_legal_status) = 1,
+                      UNDERLINE  (s_legal_status) = 0,
+                      REVERSE    (s_legal_status) = 1,
+
+                      DISPLAYONLY(s_euros) = 1,
+                      UNDERLINE  (s_euros) = 0,
+                      REVERSE    (s_euros) = 1);
+
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+       Get minimum acceptable period from cqpv.  
+  ----------------------------------------------------------------------*/
+
+  MESSAGE 'Please wait. . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT MIN(period) AS :h_min_period
+    FROM   cqpv; 
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select minimum period from CQPV table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+}
+
+/*************************** FIELD ACTIVATIONS *****************************/
+
+FIELD s_period =
+{
+  MESSAGE 'Checking Period . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT period AS :s_period
+    FROM   inquiry_period 
+    WHERE  period = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This period does not exist in the ProdCom system.'
+    WITH STYLE = POPUP;
+    CLEAR FIELD s_period;
+    RESUME FIELD s_period;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to validate inquiry period. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN :h_return;
+  ENDIF;
+
+  IF :s_period < :h_min_period
+  THEN
+    MESSAGE 'WARNING: The earliest data period on the ProdCom system is '
+          + VARCHAR(:h_min_period) + '. The period entered is earlier than '
+          + 'that and so cannot be accepted.'
+    WITH STYLE = POPUP;
+    CLEAR FIELD  s_period;
+    RESUME FIELD s_period;
+  ENDIF;
+
+  SET_FORMS FIELD '' (DISPLAYONLY(s_period) = 1,
+                      UNDERLINE  (s_period) = 0,
+                      REVERSE    (s_period) = 1);
+
+  RESUME FIELD s_contributor_reference;
+
+}
+
+FIELD s_contributor_reference =
+{
+  MESSAGE 'Checking Reference . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT add_name1    AS s_add_name1,
+           add_name2    AS s_add_name2,
+           add_name3    AS s_add_name3,
+           add_line1    AS s_add_line1,
+           add_line2    AS s_add_line2,
+           add_line3    AS s_add_line3,
+           add_line4    AS s_add_line4,
+           add_line5    AS s_add_line5,
+           add_postcode AS s_add_postcode
+    FROM   contributor
+    WHERE  contributor_reference = :s_contributor_reference;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+    ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This contributor does not exist on the ProdCom system. '
+          + 'It needs to have its contributor details saved before any '
+          + 'periodic details can be created.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_contributor_reference;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select contributor details. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN :h_return;
+  ENDIF;
+
+  REDISPLAY;
+
+  /*------------------------------------------------------------------
+    Check not already selected
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT contributor_reference AS h_dummy
+    FROM   contributor_period
+    WHERE  contributor_reference = :s_contributor_reference
+      AND  period                = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 0);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This contributor has already been selected for '
+          + VARCHAR(:s_period) + '.' +X'0D'
+          + 'Please use "Update Contributor Periodic Details" to make '
+          + 'any necessary changes.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_contributor_reference;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select contributor details. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN :h_return;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+     Get latest details to give some defaults.
+  ----------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_latest_details
+           ( p_contributor_reference = :s_contributor_reference,
+             p_contributor_industry  = BYREF(:s_industry),
+             p_output_category       = BYREF(:h_output_category),
+             p_enterprise            = BYREF(:s_enterprise),
+             p_region                = BYREF(:s_region),
+             p_legal_status          = BYREF(:s_legal_status),
+             p_currency              = BYREF(:h_currency));
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: System error on call to msa_fp_latest_details. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN :h_return;
+  ENDIF;
+
+  /*--------------------------------------------------------------------------
+    Check if contributor has previously been listed as key to the period.
+  --------------------------------------------------------------------------*/
+
+  h_keyresp = 0;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT contributor_reference AS :h_dummy
+    FROM   key_responder
+    WHERE  contributor_reference = :s_contributor_reference
+      AND  period                = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 0);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    h_keyresp = 1;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select key responder marker for period. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+      Set some other variables.
+  ------------------------------------------------------------------------*/
+
+  IF s_contributor_reference LIKE '499%'
+  THEN
+    h_structure = 'E';
+    h_company = 0
+  ELSE
+    h_structure = 'L';
+    h_company = 1
+  ENDIF;
+
+  IF h_currency = 'E'
+  THEN
+    s_euros = 'Y';
+  ELSE
+    s_euros = 'N';
+  ENDIF;
+
+  IF s_region != ''
+  THEN
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      SELECT country AS :s_country
+      FROM   region
+      WHERE  region = :s_region;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to select contributors country from region table. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN :h_return;
+    ENDIF;
+
+  ENDIF;
+  
+  /*------------------------------------------------------------------------
+       Lock contributor reference and unlock periodic data fields.
+  ------------------------------------------------------------------------*/
+
+  SET_FORMS FIELD '' (DISPLAYONLY(s_contributor_reference) = 1,
+                      UNDERLINE  (s_contributor_reference) = 0,
+                      REVERSE    (s_contributor_reference) = 1,
+
+                      DISPLAYONLY(s_industry) = 0,
+                      UNDERLINE  (s_industry) = 1,
+                      REVERSE    (s_industry) = 0,
+
+                      DISPLAYONLY(s_subclass) = 0,
+                      UNDERLINE  (s_subclass) = 1,
+                      REVERSE    (s_subclass) = 0,
+
+                      DISPLAYONLY(s_enterprise) = 0,
+                      UNDERLINE  (s_enterprise) = 1,
+                      REVERSE    (s_enterprise) = 0,
+
+                      DISPLAYONLY(s_reg_emp) = 0,
+                      UNDERLINE  (s_reg_emp) = 1,
+                      REVERSE    (s_reg_emp) = 0,
+
+                      DISPLAYONLY(s_region) = 0,
+                      UNDERLINE  (s_region) = 1,
+                      REVERSE    (s_region) = 0,
+
+                      DISPLAYONLY(s_legal_status) = 0,
+                      UNDERLINE  (s_legal_status) = 1,
+                      REVERSE    (s_legal_status) = 0,
+
+                      DISPLAYONLY(s_euros) = 0,
+                      UNDERLINE  (s_euros) = 1,
+                      REVERSE    (s_euros) = 0);
+
+  /*------------------------------------------------------------------------
+       Set screamer fields to be visible as apropriate.
+  ------------------------------------------------------------------------*/
+  /*.....................................................................
+      Enforcement.
+  ..................................................................*/
+
+  IF :h_output_category = 'Y'
+  THEN
+    SET_FORMS FIELD '' (INVISIBLE(s_enforcement)= 0);
+  ELSE
+    SET_FORMS FIELD '' (INVISIBLE(s_enforcement)= 1);
+  ENDIF;
+
+  /*..................................................................
+      Country.
+  ..................................................................*/
+
+  IF s_country != ''
+  THEN
+    SET_FORMS FIELD '' (INVISIBLE(s_country) = 0);
+  ELSE
+    SET_FORMS FIELD '' (INVISIBLE(s_enforcement)= 1);
+  ENDIF;
+
+  /*..................................................................
+      Key.
+  ..................................................................*/
+
+  IF :h_keyresp = 1
+  THEN
+    SET_FORMS FIELD '' (INVISIBLE(s_key) = 0);
+  ELSE
+    SET_FORMS FIELD '' (INVISIBLE(s_key) = 1);
+  ENDIF;
+
+  RESUME FIELD s_industry;
+
+}
+
+FIELD s_industry =
+{
+  /*--------------------------------------------------------------------
+      Validate industry in period.
+  --------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT industry AS s_industry
+    FROM   industry_period
+    WHERE  industry = :s_industry
+      AND  period   = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This industry was not a valid prodcom industry in ' 
+          + VARCHAR(:s_period) + '.' +X'0D'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_industry;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to validate contributor industry. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN :h_return;
+  ENDIF;
+
+  /*--------------------------------------------------------------------
+      Ensure user has responsibility for industry.
+  --------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_industry_responsibility 
+            ( p_industry  = :s_industry,
+              p_reference = :s_contributor_reference);
+
+  IF h_return = 1
+  THEN
+    /* Error message handled in external procedure */
+    RESUME FIELD s_industry;
+  ELSEIF h_return = 9
+  THEN
+    /* Error message handled in external procedure */
+    RETURN 9;
+  ENDIF;
+
+  /*--------------------------------------------------------------------
+      Lock field and progress.
+  --------------------------------------------------------------------*/
+
+  SET_FORMS FIELD '' (DISPLAYONLY(s_industry) = 1,
+                      UNDERLINE  (s_industry) = 0,
+                      REVERSE    (s_industry) = 1);
+
+  RESUME FIELD s_subclass;
+
+}
+
+FIELD s_subclass =
+{
+  /*------------------------------------------------------------------
+      If subclass is different to industry, it must be one of the 
+      correct IDBR versions of the prodcom industry as defined in the
+      industry_class_level table.
+  ------------------------------------------------------------------*/
+
+  IF :s_subclass != :s_industry
+  THEN
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      SELECT sub_class AS s_subclass
+      FROM   industry_class_level
+      WHERE  sub_class = :s_subclass
+        AND  class     = :s_industry;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 1
+    THEN
+      MESSAGE 'WARNING: The subclass must either be the same as the '
+            + 'contributor industry, or one of the valid IDBR subclsses '
+            + 'for that industry.' 
+      WITH STYLE = POPUP;
+      RESUME FIELD s_subclass;
+    ELSEIF h_return > 1
+    THEN
+      MESSAGE 'ERROR: Failed to validate the IDBR subclass. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN :h_return;
+    ENDIF;
+
+  ENDIF;
+
+  /*--------------------------------------------------------------------
+      Lock field and progress.
+  --------------------------------------------------------------------*/
+
+  SET_FORMS FIELD '' (DISPLAYONLY(s_subclass) = 1,
+                      UNDERLINE  (s_subclass) = 0,
+                      REVERSE    (s_subclass) = 1);
+
+  RESUME FIELD s_enterprise;
+
+}
+
+FIELD s_enterprise =
+{
+  /*--------------------------------------------------------------------
+      Provide default entrprise reference.
+  --------------------------------------------------------------------*/
+
+  IF s_enterprise = ''
+  THEN
+    s_enterprise = RIGHT(s_contributor_reference,10);
+  ENDIF;
+
+  /*--------------------------------------------------------------------
+      Lock field and progress.
+  --------------------------------------------------------------------*/
+
+  SET_FORMS FIELD '' (DISPLAYONLY(s_enterprise) = 1,
+                      UNDERLINE  (s_enterprise) = 0,
+                      REVERSE    (s_enterprise) = 1);
+
+  RESUME FIELD s_reg_emp;
+
+}
+
+FIELD s_reg_emp =
+{
+  /*--------------------------------------------------------------------
+      Validate register employment.
+  --------------------------------------------------------------------*/
+
+  IF s_reg_emp < 0
+  THEN
+    MESSAGE 'WARNING: Register Employment cannot be a negative number.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_reg_emp;
+  ENDIF;
+
+  /* Congruence with any local units is enforced as they are created. */
+
+  /*--------------------------------------------------------------------
+      Lock field and progress.
+  --------------------------------------------------------------------*/
+
+  SET_FORMS FIELD '' (DISPLAYONLY(s_reg_emp) = 1,
+                      UNDERLINE  (s_reg_emp) = 0,
+                      REVERSE    (s_reg_emp) = 1);
+
+  RESUME FIELD s_region;
+
+}
+
+FIELD s_region =
+{
+  /*--------------------------------------------------------------------
+      Validate region code.
+  --------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT country AS s_country
+    FROM   region
+    WHERE  region = :s_region;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: That is not a valid ProdCom region code.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_region;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to validate the region code. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN :h_return;
+  ENDIF;
+
+  /*--------------------------------------------------------------------
+      Displays country field as appropriate.
+  --------------------------------------------------------------------*/
+
+  IF s_country != ''
+  THEN
+    SET_FORMS FIELD '' (INVISIBLE(s_country) = 0);
+  ELSE
+    SET_FORMS FIELD '' (INVISIBLE(s_country) = 1);
+  ENDIF;
+
+  /*--------------------------------------------------------------------
+      Lock field and progress.
+  --------------------------------------------------------------------*/
+
+  SET_FORMS FIELD '' (DISPLAYONLY(s_region) = 1,
+                      UNDERLINE  (s_region) = 0,
+                      REVERSE    (s_region) = 1);
+
+  RESUME FIELD s_legal_status;
+
+}
+
+
+FIELD s_legal_status =
+{
+  /*--------------------------------------------------------------------
+      Validate legal status code.
+  --------------------------------------------------------------------*/
+
+  IF  s_legal_status != 1 
+  AND s_legal_status != 2 
+  AND s_legal_status != 3
+  AND s_legal_status != 4 
+  AND s_legal_status != 7
+  THEN
+    MESSAGE 'WARNING: Legal Status must be either 1, 2, 3, 4 or 7.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_legal_status;
+  ENDIF;
+
+  /*--------------------------------------------------------------------
+      Lock field and progress.
+  --------------------------------------------------------------------*/
+
+  SET_FORMS FIELD '' (DISPLAYONLY(s_legal_status) = 1,
+                      UNDERLINE  (s_legal_status) = 0,
+                      REVERSE    (s_legal_status) = 1);
+
+  RESUME FIELD s_euros;
+
+}
+
+FIELD s_euros =
+{  
+  /*--------------------------------------------------------------------
+      Validate Euros and set h_currency accordingly.
+  --------------------------------------------------------------------*/
+
+  IF s_euros != 'N' AND s_euros != 'Y'
+  THEN
+    MESSAGE 'WARNING: Euros must be set to either Y or N.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_euros;
+  ENDIF;
+
+  IF s_euros = 'Y'
+  THEN
+    h_currency = 'E';
+  ELSE
+    h_currency = 'S';
+  ENDIF;
+
+  /*--------------------------------------------------------------------
+      Lock field.
+  --------------------------------------------------------------------*/
+
+  SET_FORMS FIELD '' (DISPLAYONLY(s_euros) = 1,
+                      UNDERLINE  (s_euros) = 0,
+                      REVERSE    (s_euros) = 1);
+
+  RESUME MENU;
+
+}
+
+
+/************************* KEY ACTIVAIONS *******************************/
+
+
+'Save', KEY FRSKEY4 =
+{
+  /*------------------------------------------------------------------------
+      Make sure all fields have been locked after validation.
+  ------------------------------------------------------------------------*/
+
+  INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(s_period));
+
+  IF :h_display = 0
+  THEN
+    MESSAGE 'WARNING: Please enter a valid period.' 
+    WITH STYLE = POPUP;
+    RESUME FIELD s_period;
+  ENDIF;
+
+  INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(s_contributor_reference));
+
+  IF :h_display = 0
+  THEN
+    MESSAGE 'WARNING: Please complete the Contributor Reference.' 
+    WITH STYLE = POPUP;
+    RESUME FIELD s_contributor_reference;
+  ENDIF;
+
+  INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(s_industry));
+
+  IF :h_display = 0
+  THEN
+    MESSAGE 'WARNING: Please enter a valid Contributor Industry.' 
+    WITH STYLE = POPUP;
+    RESUME FIELD s_industry;
+  ENDIF;
+
+  INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(s_subclass));
+
+  IF :h_display = 0
+  THEN
+    MESSAGE 'WARNING: Please enter a valid IDBR subclass.' 
+    WITH STYLE = POPUP;
+    RESUME FIELD s_subclass;
+  ENDIF;
+
+  INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(s_enterprise));
+
+  IF :h_display = 0
+  THEN
+    MESSAGE 'WARNING: Please complete the Enterprise reference.' 
+    WITH STYLE = POPUP;
+    RESUME FIELD s_enterprise;
+  ENDIF;
+
+  INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(s_reg_emp));
+
+  IF :h_display = 0
+  THEN
+    MESSAGE 'Warning: Please enter the Register Employment.' 
+    WITH STYLE = POPUP;
+    RESUME FIELD s_reg_emp;
+  ENDIF;
+
+  INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(s_region));
+
+  IF :h_display = 0
+  THEN
+    MESSAGE 'WARNING: Please enter the Region code.' 
+    WITH STYLE = POPUP;
+    RESUME FIELD s_region;
+  ENDIF;
+
+  INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(s_legal_status));
+
+  IF :h_display = 0
+  THEN
+    MESSAGE 'WARNING: Please enter the Legal Status code.' 
+    WITH STYLE = POPUP;
+    RESUME FIELD s_legal_status;
+  ENDIF;
+
+  INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(s_euros));
+
+  IF :h_display = 0
+  THEN
+    MESSAGE 'WARNING: Please complete the Euro currency field.' 
+    WITH STYLE = POPUP;
+    RESUME FIELD s_euros;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Calculate output category.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Checking Output Category . . .';
+
+  h_return = CALLPROC msa_fp_calc_output_cat 
+           ( p_period                = :s_period,
+             p_structure             = :h_structure,
+             p_region                = :s_region,
+             p_contributor_reference = :s_contributor_reference,
+             p_contributor_industry  = :s_industry,
+             p_selection_category    = BYREF(:h_selection_category),
+             p_output_category       = BYREF(:h_output_category));
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to set output category. '
+          + 'External procedure reports error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN :h_return;
+  ENDIF;
+    
+  /*------------------------------------------------------------------
+     Insert into contributor_period
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Inserting Contributor Periodic Data . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO contributor_period 
+              ( contributor_reference,
+                period,
+                inquiry,
+                contributor_industry,
+                alt_industry,
+                form_received,
+                form_taken_on,
+                selection_category,
+                output_category,
+                region,
+                structure,
+                company,
+                keyresp,
+                enterprise,
+                register_emp,
+                receipt_date,
+                correct_date,
+                rec_week_no,
+                corr_week_no,
+                lu_count,
+                consent_marker,
+                legal_status,
+                f9_count,
+                user_id,
+                form_status,
+                currency)
+    VALUES (    :s_contributor_reference,
+                :s_period,
+                14,
+                :s_industry,
+                :s_subclass,
+                'N',
+                'N',
+                :h_selection_category,
+                :h_output_category,
+                :s_region,
+                :h_structure,
+                :h_company,
+                :h_keyresp,
+                :s_enterprise,
+                :s_reg_emp,
+                '',
+                '',
+                0,
+                0,
+                1,
+                'N',
+                1,
+                0,
+                '',
+                0,
+                :h_currency);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to create standard heading questions. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Create standard headings for that Contributor
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating Standard Headings . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT industry_cycle_point AS h_cycle_point
+    FROM   industry
+    WHERE  industry = :s_industry;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF (h_cycle_point = 'Q' OR h_cycle_point = 'F')
+  THEN
+
+    h_return = CALLPROC msafd_fp_st_heads 
+                      ( p_contributor_reference = :s_contributor_reference,
+                        p_period                = :s_period,
+                        p_contributor_industry  = :s_industry);
+
+    IF h_return != 0
+    THEN
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Check if the postcode is Welsh. If so, insert into welsh_contributor
+    so that their forms will have the "do you want a welsh form?"
+    sentence on them.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Checking Postcode . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT postcode AS s_add_postcode
+    FROM   welsh_pcd
+    WHERE  postcode = :s_add_postcode;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 0);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select from welsh postcodes table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN :h_return;
+
+  ELSEIF h_return = 1
+  THEN
+
+    /*--------------------------------------------------------------
+        Check it's not already in welsh_contributor.
+    --------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      SELECT contributor_reference AS h_dummy
+      FROM   welsh_contributor
+      WHERE  contributor_reference = :s_contributor_reference
+        AND  period                = :s_period;
+
+      h_return2 = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return2 != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return2 > 1
+    THEN
+      MESSAGE 'ERROR: Failed to select from welsh postcodes table. '
+            + 'Error code ' +VARCHAR(:h_return2) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN :h_return2;
+
+    ELSEIF h_return2 = 1
+    THEN
+      /*----------------------------------------------------------
+          It's not on welsh_contributor, so insert it.
+      ----------------------------------------------------------*/
+
+      h_retry_or_not      = 'RETRY';
+      h_retries           = 0;
+
+      WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+      DO
+
+        h_retries = :h_retries + 1;
+
+        INSERT INTO welsh_contributor 
+                  ( contributor_reference,
+                    period)
+        VALUES    ( :s_contributor_reference,
+                    :s_period);
+
+        h_return3 = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+        IF h_return3 != 7
+        THEN
+          h_retry_or_not = '';
+        ENDIF;
+
+      ENDWHILE;
+
+      IF h_return3 > 1
+      THEN
+        MESSAGE 'ERROR: Failed to insert into welsh contributors table. '
+              + 'Error code ' +VARCHAR(:h_return3) +'. '
+              + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+        RETURN :h_return3;
+      ENDIF;
+
+    ENDIF;  /* End of "not on welsh contributor table" */
+
+  ENDIF;  /* End of "welsh postcode contributor" */
+
+  /*------------------------------------------------------------------
+    Add into log
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO added_contributor 
+              ( contributor_reference,
+                period,
+                contributor_industry,
+                user_id,
+                date_added)
+    VALUES    ( :s_contributor_reference,
+                :s_period,
+                :s_industry,
+                :g_user_id,
+                'now');
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to record creation in added contributor table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  MESSAGE 'NOTE: Periodic details for ' 
+        + VARCHAR(:s_contributor_reference) + ' created successfully. '
+  WITH STYLE = POPUP;
+
+  RETURN 0;
+}
+
+
+'Contact', KEY FRSKEY8 =
+{
+  CALL APPLICATION (exec = '$IMAGES/communicate',
+                    param = VARCHAR(:s_contributor_reference));
+}
+
+'Clear', KEY FRSKEY12 =
+{
+
+  CLEAR FIELD ALL;
+  msa_date = 'now';
+
+  s_enforcement = 'UNDER ENFORCEMENT';
+  s_key         = 'KEY';
+
+  SET_FORMS FIELD '' (INVISIBLE  (s_enforcement) = 1,
+                      INVISIBLE  (s_country) = 1,
+                      INVISIBLE  (s_key) = 1,
+
+                      DISPLAYONLY(s_period) = 0,
+                      UNDERLINE  (s_period) = 1,
+                      REVERSE    (s_period) = 0,
+
+                      DISPLAYONLY(s_contributor_reference) = 0,
+                      UNDERLINE  (s_contributor_reference) = 1,
+                      REVERSE    (s_contributor_reference) = 0,
+
+                      DISPLAYONLY(s_industry) = 1,
+                      UNDERLINE  (s_industry) = 0,
+                      REVERSE    (s_industry) = 1,
+
+                      DISPLAYONLY(s_subclass) = 1,
+                      UNDERLINE  (s_subclass) = 0,
+                      REVERSE    (s_subclass) = 1,
+
+                      DISPLAYONLY(s_enterprise) = 1,
+                      UNDERLINE  (s_enterprise) = 0,
+                      REVERSE    (s_enterprise) = 1,
+
+                      DISPLAYONLY(s_reg_emp) = 1,
+                      UNDERLINE  (s_reg_emp) = 0,
+                      REVERSE    (s_reg_emp) = 1,
+
+                      DISPLAYONLY(s_region) = 1,
+                      UNDERLINE  (s_region) = 0,
+                      REVERSE    (s_region) = 1,
+
+                      DISPLAYONLY(s_legal_status) = 1,
+                      UNDERLINE  (s_legal_status) = 0,
+                      REVERSE    (s_legal_status) = 1,
+
+                      DISPLAYONLY(s_euros) = 1,
+                      UNDERLINE  (s_euros) = 0,
+                      REVERSE    (s_euros) = 1);
+
+  RESUME FIELD s_period;
+}
+
+'End', KEY FRSKEY14 =
+{
+  RETURN 0;
+}
+
+/************************* LOCAL PROCEDURES *********************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

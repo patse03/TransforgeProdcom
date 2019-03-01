@@ -1,0 +1,457 @@
+/*****************************************************************************
+
+  Creates a contributor on the contributor table.
+
+  MAY 2013 - DF - Reworked to new standards and procedures as part 
+                  of gereral overhaul of ProdCom syste,
+
+*****************************************************************************/
+
+INITIALIZE () =
+
+DECLARE 
+  h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name       = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_dummy           = CHAR(11)    NOT NULL WITH DEFAULT,
+  h_letter          = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_yesno           = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_character       = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_test_string     = VARCHAR(30) NOT NULL WITH DEFAULT,
+  h_counter         = INTEGER1    NOT NULL WITH DEFAULT,
+  h_display         = INTEGER1    NOT NULL WITH DEFAULT,
+  h_return          = INTEGER1    NOT NULL WITh DEFAULT,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL, 
+
+{
+  msa_date = 'now';
+  h_frpr_name = 'msafd_fr_cr_cont';
+  h_retries_allowed = 3;
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+  SET_FORMS FIELD '' ( DISPLAYONLY (s_contributor_reference) = 0,
+                       UNDERLINE   (s_contributor_reference) = 1,
+                       REVERSE     (s_contributor_reference) = 0,
+
+                       DISPLAYONLY (s_check_letter) = 1,
+                       UNDERLINE   (s_check_letter) = 1,
+                       REVERSE     (s_check_letter) = 0);
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+}
+
+/********************** FIELD ACTIVATIONS *********************************/
+
+FIELD s_contributor_reference =
+{
+
+  /*------------------------------------------------------------------
+    Check format of supplied reference
+  ------------------------------------------------------------------*/
+
+  IF s_contributor_reference NOT LIKE 
+  '\[0-9\]\[0-9\]\[0-9\]\[0-9\]\[0-9\]\[0-9\]\[0-9\]\[0-9\]\[0-9\]\[0-9\]\[0-9\]' escape '\'
+  THEN
+    MESSAGE 'WARNING: Contributor Reference must be 11 digits.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_contributor_reference;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Check for existence of reference number on contributor table
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT contributor_reference AS h_dummy
+    FROM   contributor
+    WHERE  contributor_reference = :s_contributor_reference;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 0);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1 
+  THEN
+    MESSAGE 'WARNING: This contributor reference already exists in the '
+          + 'ProdCom system.' 
+    WITH STYLE = POPUP;
+    CLEAR FIELD s_contributor_reference, s_check_letter;
+    RESUME FIELD s_contributor_reference;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select contributor reference number. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Calculate checkletter.
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_cp_check_digit 
+           ( :s_contributor_reference,
+             BYREF(:h_letter));
+
+  s_check_letter = :h_letter;
+
+  SET_FORMS FIELD '' ( DISPLAYONLY (s_contributor_reference) = 1,
+                       UNDERLINE   (s_contributor_reference) = 0,
+                       REVERSE     (s_contributor_reference) = 1,
+
+                       DISPLAYONLY (s_check_letter) = 1,
+                       UNDERLINE   (s_check_letter) = 0,
+                       REVERSE     (s_check_letter) = 1);
+  REDISPLAY;
+
+  MESSAGE 'NOTE: Please check that the check letter on any print you have '
+        + 'used as a reference matches the calculated value shown. If it ' 
+        + 'does not, please use the "Clear" function and try again.' 
+  WITH STYLE = POPUP;
+
+  RESUME FIELD s_addressee;
+
+}
+
+/************************ KEY ACTIVATIONS ***********************************/
+
+'Save', KEY FRSKEY4 =
+{
+  /*-----------------------------------------------------------------------
+       Validate text fields.
+  -----------------------------------------------------------------------*/
+
+  IF s_add_name1 = ''
+  THEN
+    MESSAGE 'WARNING: Please supply the name of the Contributor.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_add_name1;
+  ENDIF;
+
+  IF s_add_line1 = ''
+  THEN
+    MESSAGE 'WARNING: Please supply the address of the Contributor.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_add_line1;
+  ENDIF;
+
+  IF s_add_line2 = ''
+  THEN
+    MESSAGE 'WARNING: Please complete the address of the Contributor.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_add_line2;
+  ENDIF;
+
+  IF s_add_postcode = ''
+  THEN
+    MESSAGE 'WARNING: Please supply the postcode of the Contributor.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_add_postcode;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Prevent any non-numeric or non-space characters from corrupting
+    the phone and fax numbers
+  ------------------------------------------------------------------*/
+
+  /*.................................................................
+     Phone area code.
+  .................................................................*/
+
+  s_phone_area_code = SQUEEZE(s_phone_area_code);
+  h_test_string = '';
+  h_counter = 1;
+
+  WHILE h_counter <= LENGTH(s_phone_area_code)
+  DO
+
+    h_character = CHAREXTRACT(s_phone_area_code,h_counter);
+
+    IF LOCATE('0123456789',h_character) < 11
+    THEN
+      h_test_string = h_test_string + h_character;
+    ENDIF;
+
+    h_counter = h_counter + 1;
+
+  ENDWHILE;
+
+  s_phone_area_code = h_test_string;
+
+  /*.................................................................
+     Phone number.
+  .................................................................*/
+
+  s_phone = SQUEEZE(s_phone);
+  h_test_string = '';
+  h_counter = 1;
+
+  WHILE h_counter <= LENGTH(s_phone)
+  DO
+
+    h_character = CHAREXTRACT(s_phone,h_counter);
+
+    IF LOCATE('0123456789',h_character) < 11
+    THEN
+      h_test_string = h_test_string + h_character;
+    ENDIF;
+
+    h_counter = h_counter + 1;
+
+  ENDWHILE;
+
+  s_phone = h_test_string;
+
+  /*.................................................................
+     Phone extension.
+  .................................................................*/
+
+  s_phone_extension = SQUEEZE(s_phone_extension);
+  h_test_string = '';
+  h_counter = 1;
+
+  WHILE h_counter <= LENGTH(s_phone_extension)
+  DO
+
+    h_character = CHAREXTRACT(s_phone_extension,h_counter);
+
+    IF LOCATE('0123456789',h_character) < 11
+    THEN
+      h_test_string = h_test_string + h_character;
+    ENDIF;
+
+    h_counter = h_counter + 1;
+
+  ENDWHILE;
+
+  s_phone_extension = h_test_string;
+
+  /*.................................................................
+     Fax area code
+  .................................................................*/
+
+  s_fax_area_code = SQUEEZE(s_fax_area_code);
+  h_test_string = '';
+  h_counter = 1;
+
+  WHILE h_counter <= LENGTH(s_fax_area_code)
+  DO
+
+    h_character = CHAREXTRACT(s_fax_area_code,h_counter);
+
+    IF LOCATE('0123456789',h_character) < 11
+    THEN
+      h_test_string = h_test_string + h_character;
+    ENDIF;
+
+    h_counter = h_counter + 1;
+
+  ENDWHILE;
+
+  s_fax_area_code = h_test_string;
+
+  /*.................................................................
+     Fax number
+  .................................................................*/
+
+  s_fax = SQUEEZE(s_fax);
+  h_test_string = '';
+  h_counter = 1;
+
+  WHILE h_counter <= LENGTH(s_fax)
+  DO
+
+    h_character = CHAREXTRACT(s_fax,h_counter);
+
+    IF LOCATE('0123456789',h_character) < 11
+    THEN
+      h_test_string = h_test_string + h_character;
+    ENDIF;
+
+    h_counter = h_counter + 1;
+
+  ENDWHILE;
+
+  s_fax = h_test_string;
+
+  REDISPLAY;
+
+  /*------------------------------------------------------------------
+      Insert details into contributor_table.
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO contributor 
+              ( contributor_reference,
+                add_name1,
+                add_name2,
+                add_name3,
+                addressee,
+                add_tradstyle1,
+                add_tradstyle2,
+                add_tradstyle3,
+                phone_contact,
+                add_line1,
+                add_line2,
+                add_line3,
+                add_line4,
+                add_line5,
+                add_postcode,
+                phone_area_code,
+                phone,
+                phone_extension,
+                fax_area_code,
+                fax,
+                email)
+    VALUES    ( :s_contributor_reference,
+                :s_add_name1,
+                :s_add_name2,
+                :s_add_name3,
+                :s_addressee,
+                :s_add_tradstyle1,
+                :s_add_tradstyle2,
+                :s_add_tradstyle3,
+                :s_phone_contact,
+                :s_add_line1,
+                :s_add_line2,
+                :s_add_line3,
+                :s_add_line4,
+                :s_add_line5,
+                :s_add_postcode,
+                :s_phone_area_code,
+                :s_phone,
+                :s_phone_extension,
+                :s_fax_area_code,
+                :s_fax,
+                :s_email);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to create contributor. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.' 
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  MESSAGE 'NOTE: New Contributor details saved successfully.'
+  WITH STYLE = POPUP;
+
+  RETURN 0;
+}
+
+
+'Clear', KEY FRSKEY12 =
+{
+  SET_FORMS FIELD '' ( DISPLAYONLY (s_contributor_reference) = 0,
+                       UNDERLINE   (s_contributor_reference) = 1,
+                       REVERSE     (s_contributor_reference) = 0,
+
+                       DISPLAYONLY (s_check_letter) = 0,
+                       UNDERLINE   (s_check_letter) = 1,
+                       REVERSE     (s_check_letter) = 0);
+  CLEAR FIELD ALL;
+  REDISPLAY;
+  RESUME FIELD s_contributor_reference;
+}
+
+
+'End', KEY FRSKEY14 =
+{
+  INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(s_contributor_reference));
+
+  IF :h_display = 1
+  THEN
+
+    h_yesno = '';
+
+    WHILE h_yesno != 'Y' AND h_yesno != 'N'
+    DO
+      h_yesno = PROMPT 'WARNING: Do you really wish to exit without saving '
+                     + 'the details you have entered? [Y/N] :'
+                WITH STYLE = POPUP;
+      h_yesno = UPPER(:h_yesno);
+    ENDWHILE;
+
+    IF h_yesno = 'N'
+    THEN
+      RESUME;
+    ENDIF;
+
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+
+/************************ LOCAL PROCEDURES *******************************/
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
