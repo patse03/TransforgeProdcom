@@ -1,0 +1,201 @@
+
+/*---------------------------------------------------------------------------
+
+Program Name:		msa_fr_del_dev_code.osq
+
+Description:		Deletes all development code     
+
+
+Called By:		Either direct from msa_fr_version_menu.osq (Option 7)
+			Or from msa_fr_copy_menu.osq
+
+Calls:
+
+Date Written:		April 1996
+
+Author:			
+
+Changed By:
+
+Change date:
+
+-----------------------------------------------------------------------------*/
+
+/*---------------------------------------------------------------------
+
+delete development code
+
+---------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(25) NOT NULL,
+	h_command         = VARCHAR(500) NOT NULL,
+	h_dir             = VARCHAR(55) NOT NULL,
+	h_prompt          = CHAR(1) NOT NULL,
+	ret_val           = INTEGER1 NOT NULL 
+
+
+{
+
+    h_retries_allowed = 3;
+    h_frpr_name = 'msa_fr_del_dev_code';
+    msa_date = 'now';
+
+}
+
+'Go', key FRSKEY4 =
+{
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        IF username = ''
+	THEN
+	    MESSAGE 'Username is not filled in. Please retype'
+	    WITH STYLE = POPUP;
+	    RESUME field application_name;
+        ENDIF;
+
+        IF application_name = ''
+	THEN
+	    MESSAGE 'Application name is not filled in. Please retype'
+	    WITH STYLE = POPUP;
+	    RESUME field application_name;
+        ENDIF;
+
+
+       SELECT application_name from vca_application
+       WHERE  application_name = :application_name;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error selecting from vca_application'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Application does not exist on table, please retype'
+        WITH STYLE = POPUP;
+        RESUME field application_name;
+    ENDIF;
+
+        IF dbasefrom = ''
+	THEN
+	    MESSAGE 'You must enter the source database .Please retype'
+	    WITH STYLE = POPUP;
+	    RESUME field dbasefrom;
+        ENDIF;
+
+        IF dbasefrom =  'produserdb'
+	THEN
+	    MESSAGE 'You cannot delete from produser database'
+	    WITH STYLE = POPUP;
+	    RESUME field dbasefrom;
+        ENDIF;
+
+      IF :username = 'proddev'
+      THEN
+          h_dir = '/home/prodcom/admin/proddev/';
+      ENDIF;
+       
+       h_command = 'cd ' + :h_dir +
+		   ';cp_runasuser ' +
+		   ' " cd sources/' +
+		   :application_name
+		   + '; chmod 775 * ;  rm * "';
+
+
+	message 'All files in this directory will be deleted  ' 
+		 + :h_command
+	with style =popup;
+
+        h_prompt = '';
+	WHILE h_prompt != 'y' AND h_prompt != 'n'
+	DO
+	    h_prompt = PROMPT 'All files will be deleted' +
+		       ' Are you sure you wish to proceed ? Type Y/N' +
+		       ' and press <return> '
+	    WITH STYLE = POPUP;
+	    h_prompt = LOWERCASE(h_prompt);
+
+	ENDWHILE;
+
+	IF h_prompt = 'y'
+	THEN
+	    ret_val = CALLPROC msa_cp_callsys(:h_command);
+	    IF ret_val != 0
+	    THEN
+	       message 'Error deleting files'
+	       WITH STYLE = popup;
+	       RETURN ret_val;
+	    ELSE message 'Files deleted OK'
+	      with style =popup;
+            ENDIF;
+
+              h_command = 'cd ' + :h_dir +
+	         	   ';cp_runasuser ' +
+                          ' "cd sources/' +
+	                  ' ; rmdir ' + :application_name + '"';
+
+	      message 'directory will be deleted  ' 
+		 + :h_command
+	         WITH STYLE = popup;
+
+	      ret_val = CALLPROC msa_cp_callsys(:h_command);
+	      IF ret_val != 0
+	      THEN
+	         message 'Error deleting source directory'
+	         WITH STYLE = popup;
+		 RETURN ret_val;
+	      ELSE
+	         message 'Source directory deleted OK '
+	         WITH STYLE = popup;
+	      ENDIF;
+	ELSE
+	    RESUME FIELD username;
+	ENDIF;
+
+
+
+}
+
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'End', key FRSKEY6 =
+{
+  RETURN 0;
+}

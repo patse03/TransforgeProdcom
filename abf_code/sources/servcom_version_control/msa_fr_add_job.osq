@@ -1,0 +1,223 @@
+
+/*---------------------------------------------------------------------------
+
+Program Name: 		msa_fr_add_job.osq
+
+Description: 		Adds job number and details to table job
+
+
+Called By:		Called by msa_fr_version_menu.osq
+
+Calls:
+
+Date Written:		April 1996
+
+Author:			
+
+Changed By:
+
+Change date:
+
+-----------------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(25) NOT NULL,
+	ret_val           = INTEGER1 NOT NULL 
+
+
+{
+
+    h_retries_allowed = 3;
+    h_frpr_name = 'msa_fr_add_job';
+    msa_date = 'now';
+    date_received = 'today';
+
+    SELECT (max(job_number)+ 1) as job_number
+    FROM   vca_job;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+    IF ret_val = 9
+    THEN
+        MESSAGE 'System error selecting from vca_job'
+        WITH STYLE = POPUP;
+        RETURN 9;
+	RESUME field job_number;
+    ENDIF;
+
+    REDISPLAY;
+    RESUME field description;
+
+}
+
+field 'description' =
+{
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+	ret_val = CALLFRAME look_up(
+        ii_query = SELECT application_name
+		   FROM vca_application
+		   ORDER BY application_name;
+		   application_name = BYREF(application_name);
+		   ii_field1 = 'application_name');
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error selecting from vca_application'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Application does not exist on table, please retype'
+        WITH STYLE = POPUP;
+        RESUME field application_name;
+    ENDIF;
+        RESUME field programmer_name;
+}
+
+before field 'programmer_name' = 
+{
+	ret_val = callframe look_up(
+        ii_query = SELECT name
+		   FROM vca_programmer
+		   ORDER BY name;
+
+		   name = BYREF(programmer_name);
+		   ii_field1 = 'name');
+
+    RESUME field end_date;
+}
+
+field 'end_date' =
+{
+ IF end_date < date_received
+ THEN 
+        MESSAGE 'End date is earlier than date received please retype'
+        WITH STYLE = POPUP;
+        RESUME field end_date;
+    ENDIF;
+
+ INSERT INTO vca_job(job_number,
+		 description,
+		 application_name,
+		 programmer_name,
+		 date_received,
+		 planned_end_date,
+		 hmd_taken,
+		 job_status)
+	VALUES  (:job_number,
+	         :description,
+		 :application_name,
+		 :programmer_name,
+		 :date_received,
+		 :end_date,
+		 0,
+		 0);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        MESSAGE 'System error inserting into job table'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Error inserting into job table, please check'
+        WITH STYLE = POPUP;
+        RESUME field job_number;
+    ELSEIF ret_val = 0
+    THEN
+        MESSAGE 'Job ' + ascii(:job_number) + ' inserted successfully onto job table'
+        WITH STYLE = POPUP;
+        RESUME field job_number;
+
+    ENDIF;
+
+}
+
+'Next job' = 
+{   CLEAR FIELD ALL;
+    date_received = 'now';
+    end_date = '  /  /  ';
+    SELECT (max(job_number)+ 1) as job_number
+    FROM   vca_job;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        MESSAGE 'System error selecting next job from table'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Error next job number could not be found, please check'
+        WITH STYLE = POPUP;
+        RESUME field job_number;
+    ENDIF;
+
+    RESUME FIELD description;
+}
+
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'End', key FRSKEY6 =
+{
+  RETURN 0;
+}
