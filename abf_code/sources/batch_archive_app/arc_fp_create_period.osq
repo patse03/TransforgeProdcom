@@ -1,0 +1,359 @@
+/******************************************************************************
+
+    Procedure to create the records for the new period in the
+    arc_table_status  and arc_period_ status tables.
+
+******************************************************************************/
+
+PROCEDURE arc_fp_create_period () =
+
+DECLARE
+  h_param_list         = VARCHAR(100) NOT NULL WITH DEFAULT,
+  h_varchar_variable   = VARCHAR(100) NOT NULL WITH DEFAULT,
+  h_integer_variable   = INTEGER1     NOT NULL WITH DEFAULT,
+  h_table_name         = VARCHAR(32)  NOT NULL WITH DEFAULT,
+  h_text               = VARCHAR(80)  NOT NULL WITH DEFAULT,
+  h_like               = VARCHAR(80)  NOT NULL WITH DEFAULT,
+  h_status             = CHAR(1)      NOT NULL WITH DEFAULT,
+  h_return             = INTEGER2     NOT NULL WITH DEFAULT,
+  h_return2            = INTEGER2     NOT NULL WITH DEFAULT,
+  h_return3            = INTEGER2     NOT NULL WITH DEFAULT,
+  h_frpr_name          = VARCHAR(24)  NOT NULL WITH DEFAULT,
+
+  lp_error_check          = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  h_frpr_name = 'arc_fp_create_period';
+
+  /*------------------------------------------------------------------
+      If it doesnt exist, create new record on arc_period_status.
+  ------------------------------------------------------------------*/
+
+  SELECT status AS h_status
+  FROM   arc_period_status
+  WHERE  period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return = 1
+  THEN
+
+    INSERT INTO arc_period_status
+    VALUES    ( :g_period,
+                'L');
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed to create new period on arc_period_status.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return2,
+               p_text      = :h_text);
+      RETURN :h_return;
+    ENDIF;
+
+  ELSEIF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to check for existance of period status record.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Loop through tables listed in arc_table_data that have a
+      start period of equal or earlier than the archiving period
+      to create rows on the status table for these tables where 
+      no record already exists.. 
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Initialising period creation loop.');
+
+  SELECT table_name AS h_table_name
+  FROM   arc_table_data
+  WHERE  start_period <= :g_period
+  BEGIN
+
+    SELECT status AS h_status
+    FROM   arc_table_status
+    WHERE  table_name = :h_table_name
+      AND  period     = :g_period; 
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 = 1
+    THEN
+
+      INSERT INTO arc_table_status
+      VALUES    ( :h_table_name,
+                  :g_period,
+                  'L',
+                  'today');
+
+      h_return3 = CALLPROC lp_error_check (p_num_row_ck = 1);
+  
+      IF h_return3 != 0
+      THEN
+        h_text = 'ERROR: Failed to create table status record for'
+               + ' ' + :h_table_name +'.';
+        CALLPROC write_to_process_log
+               ( p_frpr_name = :h_frpr_name,
+                 p_code      = :h_return3,
+                 p_text      = :h_text);
+        RETURN :h_return3;
+      ENDIF;
+
+    ELSEIF h_return2 > 1
+    THEN
+
+      h_text = 'ERROR: Failed to check existance of status record for'
+             + ' ' + :h_table_name +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return2,
+               p_text      = :h_text);
+      RETURN :h_return2;
+
+    ENDIF;
+      
+  END;
+      
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return = 1
+  THEN
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = 'NOTE: No standard tables eligable this period. ' 
+                         + 'No status records created.');
+
+  ELSEIF h_return > 1
+  THEN
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = 'ENDING: Failed to select for record insert loop.');
+
+    RETURN :h_return;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Add question_word_yyyy00  and regional yearly table for this period 
+    to list of live tables for this period.
+  ------------------------------------------------------------------*/
+
+  h_like = '%' +VARCHAR(:g_period) +'%';
+
+  SELECT table_name AS h_table_name
+  FROM   iitables
+  WHERE  (table_name LIKE 'question_word_%' OR
+          table_name LIKE 'rgn_%' ) 
+    AND  table_name LIKE :h_like
+    AND  table_type = 'T'
+  BEGIN
+
+    SELECT status AS h_status
+    FROM   arc_table_status
+    WHERE  table_name = :h_table_name
+      AND  period     = :g_period; 
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 = 1
+    THEN
+
+      INSERT INTO arc_table_status
+      VALUES    ( :h_table_name,
+                  :g_period,
+                  'L',
+                  'today');
+
+      h_return3 = CALLPROC lp_error_check (p_num_row_ck = 1);
+  
+      IF h_return3 != 0
+      THEN
+        h_text = 'ERROR: Failed to create status record for'
+               + ' ' + :h_table_name +'.';
+        CALLPROC write_to_process_log
+               ( p_frpr_name = :h_frpr_name,
+                 p_code      = :h_return3,
+                 p_text      = :h_text);
+        RETURN :h_return3;
+      ENDIF;
+
+    ELSEIF h_return2 > 1
+    THEN
+
+      h_text = 'ERROR: Failed to check existance of status '
+             + 'record for ' + :h_table_name +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return2,
+               p_text      = :h_text);
+      RETURN :h_return2;
+
+    ENDIF;
+      
+  END;
+      
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return = 1
+  THEN
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = 'NOTE: No question word or regional tables '
+                         + 'eligable this period. No status records created.');
+
+  ELSEIF h_return > 1
+  THEN
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = 'ENDING: Failed to select for question_word loop.');
+
+    RETURN :h_return;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Add PPI tables to list of live tables for previous period.
+  ------------------------------------------------------------------*/
+
+  h_like = '%' +VARCHAR(:g_period - 100) +'%';
+
+  SELECT table_name AS h_table_name
+  FROM   iitables
+  WHERE  table_name LIKE 'ppi_%' 
+    AND  table_name LIKE :h_like
+    AND  table_type = 'T'
+  BEGIN
+
+    SELECT status AS h_status
+    FROM   arc_table_status
+    WHERE  table_name = :h_table_name
+      AND  period     = :g_period-100; 
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 = 1
+    THEN
+
+        INSERT INTO arc_table_status
+        VALUES    ( :h_table_name,
+                    :g_period-100,
+                    'L',
+                    'today');
+
+      h_return3 = CALLPROC lp_error_check (p_num_row_ck = 1);
+  
+      IF h_return3 != 0
+      THEN
+        h_text = 'ERROR: Failed to create ppi table status record for'
+               + ' ' + :h_table_name +'.';
+        CALLPROC write_to_process_log
+               ( p_frpr_name = :h_frpr_name,
+                 p_code      = :h_return3,
+                 p_text      = :h_text);
+        RETURN :h_return3;
+      ENDIF;
+
+    ELSEIF h_return2 > 1
+    THEN
+
+      h_text = 'ERROR: Failed to check existance of ppi table status '
+             + 'record for ' + :h_table_name +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return2,
+               p_text      = :h_text);
+      RETURN :h_return2;
+
+    ENDIF;
+      
+  END;
+      
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return = 1
+  THEN
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = 'NOTE: No ppi annual tables eligable this period. '
+                         + 'No status records created.');
+
+  ELSEIF h_return > 1
+  THEN
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = 'ENDING: Failed to select for ppi insert loop.');
+
+    RETURN :h_return;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Finish off
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Completed period creation loop.');
+
+  RETURN 0
+
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+
+
+  
+  
+
+
+

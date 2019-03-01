@@ -1,0 +1,209 @@
+/******************************************************************************
+
+    Procedure to create the archive tables, remove the live data 
+    and record the archiving in the arc_table_status table.
+
+******************************************************************************/
+
+PROCEDURE arc_fp_combine_sim_tables () =
+
+DECLARE
+  h_frpr_name          = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_return             = INTEGER2     NOT NULL WITH DEFAULT,
+  h_return2            = INTEGER2     NOT NULL WITH DEFAULT,
+  h_count              = INTEGER4     NOT NULL WITH DEFAULT,
+  h_table_name         = VARCHAR(32)  NOT NULL WITH DEFAULT,
+  h_arch_table         = VARCHAR(32)  NOT NULL WITH DEFAULT,
+  h_temp_table         = VARCHAR(32)  NOT NULL WITH DEFAULT,
+  h_text               = VARCHAR(80)  NOT NULL WITH DEFAULT,
+
+  lp_error_check          = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  h_frpr_name  = 'arc_fp_combine_sim_tables';
+  h_temp_table = 'tt_arc_sim_tables';
+  h_arch_table = 'zzz_' +VARCHAR(:g_arch_period) +'_sim_tables';
+  
+  /*------------------------------------------------------------------
+      Drop then create temp table of sim tables.
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to delete existing ' +h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+ 
+  CREATE TABLE :h_temp_table
+  AS
+  SELECT  table_name
+  FROM    iitables
+  WHERE   table_name  LIKE 'sim_%'
+    AND   table_type = 'T';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return = 1
+  THEN
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = 'NOTE: No SIM tables exist to combine.');
+
+    RETURN 0
+
+  ELSEIF h_return > 1
+  THEN
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = 'ERROR: Failed to create ' +:h_temp_table +'.');
+
+    RETURN :h_return;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Loop through the temp table to find the tamles that match the 
+      archiving period. Copy the first one to become the new archive
+      table, and then insert the rest. As each table added to archive 
+      table, drop the original.
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Initialising archive sim table creation loop.');
+
+
+  h_text = '%' +VARCHAR(:g_arch_period) + '%';
+
+  h_count = 0; 
+
+  SELECT  table_name  AS h_table_name
+  FROM    :h_temp_table
+  WHERE   table_name  LIKE :h_text
+  BEGIN
+
+    h_count = :h_count + 1;
+    
+    MESSAGE 'Combining: ' +:h_table_name +'...';
+
+    /*...................................................................
+        Create the archive table 
+    ...................................................................*/
+
+    IF h_count = 1
+    THEN
+
+      CREATE TABLE :h_arch_table
+      AS
+      SELECT *
+      FROM   :h_table_name;
+
+    ELSE
+ 
+      INSERT INTO :h_arch_table
+      SELECT *
+      FROM   :h_table_name;
+
+    ENDIF;
+       
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+    IF h_return2 > 1
+    THEN
+
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return2,
+               p_text      = 'ERROR: Failed to process ' +:h_table_name +'.');
+
+      RETURN :h_return2;
+
+    ENDIF;
+
+    /*...................................................................
+        Remove the live sim table
+    ...................................................................*/
+
+    h_return2 = CALLPROC batch_fp_drop_table (p_table = :h_table_name);
+
+    IF h_return2 != 0
+    THEN
+      /* Error message logged in external procedure */
+      RETURN :h_return;
+    ENDIF;
+      
+
+  END;
+      
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return > 1
+  THEN
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = 'ERROR: Failed to select for sim archiving loop.');
+
+    RETURN :h_return;
+
+  ENDIF;
+
+  IF h_return = 1
+  THEN
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = 'NOTE: No SIM tables to combine.');
+  ELSE
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = 'Finished creating combined SIM table.');
+
+  ENDIF;
+
+  RETURN 0
+
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

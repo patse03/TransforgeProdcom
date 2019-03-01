@@ -1,0 +1,200 @@
+/*****************************************************************************
+
+  Checks for industries that have more than one data coordinator.
+
+*****************************************************************************/
+
+PROCEDURE ah_allocation_eo_count () =
+
+DECLARE
+  h_frpr_name = VARCHAR(25) NOT NULL WITH DEFAULT,
+  h_return    = INTEGER1    NOT NULL WITH DEFAULT,
+  h_create    = INTEGER1    NOT NULL WITH DEFAULT,
+  h_count     = INTEGER4    NOT NULL WITH DEFAULT,
+  h_industry  = VARCHAR(5)  NOT NULL WITH DEFAULT,
+  h_text      = VARCHAR(80) NOT NULL WITH DEFAULT,
+  h_filename  = VARCHAR(60) NOT NULL WITH DEFAULT,
+  h_table1    = VARCHAR(60) NOT NULL WITH DEFAULT,
+  h_table2    = VARCHAR(60) NOT NULL WITH DEFAULT,
+
+  lp_drop_table  = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,	
+  lp_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,	
+
+{
+
+  h_filename = '/admin/scratch/allocation_errors.txt';
+  h_table1   = 'tt_allocation_errors_1';
+  h_table2   = 'tt_allocation_errors_2';
+  h_count    = 0;
+  h_create   = 0;
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table1);
+
+  IF h_return > 0 
+  THEN 
+    EXIT;
+  ENDIF;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table2);
+
+  IF h_return > 0 
+  THEN 
+    EXIT;
+  ENDIF;
+
+  CREATE TABLE :h_table1
+  AS
+  SELECT industry,
+         user_id   AS analyst,
+         '       ' AS coordinator
+  FROM   industry_analysts;
+  commit;
+
+  UPDATE :h_table1 a
+  FROM   analyst_coordinator_manager b
+   SET   coordinator = b.coordinator_id
+  WHERE  b.analyst_id = a.analyst;
+  commit;
+
+  CREATE TABLE :h_table2
+  AS 
+  SELECT DISTINCT industry,
+         COUNT ( DISTINCT coordinator ) AS num_coords,
+         '99999'                        AS output
+  FROM :h_table1
+  GROUP BY industry;
+  commit;
+
+  SELECT COUNT (industry) AS h_count
+  FROM   :h_table2
+  WHERE  num_coords > 1;
+  commit;
+
+  IF h_count = 0
+  THEN
+    MESSAGE 'ALL GOOD: Each industry has but a single master!'
+    WITH STYLE = POPUP;
+    EXIT;
+  ELSE
+
+    UPDATE :h_table2
+    SET output = VARCHAR(industry);
+    commit;
+
+    UPDATE :h_table2
+    SET output = '0' + output
+    WHERE LENGTH(output) = 4;
+    commit;
+
+    SELECT VARCHAR(output) as :h_industry 
+    FROM   :h_table2
+    WHERE  num_coords > 1
+    BEGIN  
+
+      h_text = :h_text + h_industry + ', ';
+
+    END;
+
+    h_text = LEFT(:h_text, LENGTH(:h_text)-2) +'.';
+   
+    IF LENGTH(:h_text) > 70
+    THEN
+      h_text = 'TOO MANY TO LIST HERE! (File created in admin scratch.)';
+      h_create = 1;  
+    ENDIF; 
+    
+    MESSAGE 'WARNING: These industries have more than one coordinator:' +X'0D'
+          + '         ' + SQUEEZE(:h_text)
+    WITH STYLE = POPUP;
+
+    IF h_create = 1 
+    THEN 
+      DELETE FROM :h_table2
+      WHERE       num_coords < 2;
+      commit;
+
+      COPY TABLE :h_table2
+               ( output = c0nl)
+      INTO :h_filename; 
+      commit;
+    ENDIF;
+
+  ENDIF;
+
+  EXIT;
+
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table (p_table_name = CHAR(36) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(36) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name  = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  h_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF h_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

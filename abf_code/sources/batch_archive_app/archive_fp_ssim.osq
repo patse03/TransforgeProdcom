@@ -1,0 +1,290 @@
+
+/*----------------------------------------------------------------------
+ssim tables: created from many sources
+
+e.g. archiving 199300 to create a table called ssim_1993
+
+  (1) get 199300 from ssim_199500 tables
+  (2) get 199303 from ssim_199403 tables
+  (3) get 199306 from ssim_199406 tables
+  (4) get 199309 from ssim_199409 tables
+  (5) get 199312 from ssim_199412 tables
+
+----------------------------------------------------------------------*/
+
+PROCEDURE archive_fp_ssim () =
+
+DECLARE h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_table           = VARCHAR(24) NOT NULL,
+        h_pattern         = VARCHAR(24) NOT NULL,
+        h_pattern_q1      = VARCHAR(24) NOT NULL,
+        h_pattern_q2      = VARCHAR(24) NOT NULL,
+        h_pattern_q3      = VARCHAR(24) NOT NULL,
+        h_pattern_q4      = VARCHAR(24) NOT NULL,
+        h_counter         = INTEGER1 NOT NULL,
+        h_quarter         = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+
+{
+    h_frpr_name = 'archive_fp_ssim';
+
+    INSERT INTO error_log
+    VALUES(     'now',
+                'Archiving of ' + :g_table + ' for ' +
+                VARCHAR(:g_period) + ' begins',
+                :h_frpr_name,
+                0,
+                :g_user_id);
+    COMMIT;
+
+    /*------------------------------------------------------------------
+    Create Initial Table
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Creating ' + :g_archive_table + ' . . .';
+
+    ret_val = batch_fp_drop_table (h_table = :g_archive_table);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :g_archive_table (
+                 contributor_reference  CHAR(11)    NOT NULL,
+                 quest_order            INTEGER1    NOT NULL,
+                 question               INTEGER4    NOT NULL,
+                 aperiod                INTEGER4    NOT NULL,
+                 qperiod                INTEGER4    NOT NULL,
+                 inquiry                INTEGER2    NOT NULL,
+                 contributor_industry   INTEGER4    NOT NULL,
+                 question_industry      INTEGER4    NOT NULL,
+                 acell                  CHAR(2)     NOT NULL,
+                 avalue                 INTEGER4    NOT NULL,
+                 acell_type             CHAR(2)     NOT NULL,
+                 imputation_ratio       FLOAT8      NOT NULL,
+                 enterprise             VARCHAR(10) NOT NULL,
+                 confirmation_code      CHAR(1)     NOT NULL,
+                 confirmation_date      DATE        NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :g_archive_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Insert Annual Values from ssim_tables of two years future
+
+    h_pattern = 'ssim_______' + VARCHAR(:g_period + 200) + '_cqpv%';
+    ------------------------------------------------------------------*/
+    h_pattern = 'ssim_______' + VARCHAR(:g_period + 100) + '_cqpv%';
+
+    SELECT   table_name AS h_table
+    FROM     iitables
+    WHERE    table_name LIKE :h_pattern
+    AND      table_owner = :g_user_id
+    ORDER BY h_table
+    {
+        MESSAGE 'Inserting ' + VARCHAR(:g_period) +
+                ' from Annual ' + :h_table + ' . . .';
+
+        INSERT INTO :g_archive_table
+        SELECT      *
+        FROM        :h_table
+        WHERE       aperiod = :g_period;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error inserting from ' + :h_table,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+
+    };
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error selecting annual tables from iitables',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Insert Quarterly Values
+    ------------------------------------------------------------------*/
+
+    h_counter = 1;
+
+    WHILE h_counter < 5
+    DO
+        IF h_counter = 1
+        THEN
+            h_quarter = :g_q1;
+
+        ELSEIF h_counter = 2
+        THEN
+            h_quarter = :g_q2;
+
+        ELSEIF h_counter = 3
+        THEN
+            h_quarter = :g_q3;
+
+        ELSE
+            h_quarter = :g_q4;
+        ENDIF;
+
+        h_pattern = 'ssim_______' + VARCHAR(:h_quarter + 100) + '_cqpv%';
+
+        SELECT   table_name AS h_table
+        FROM     iitables
+        WHERE    table_name LIKE :h_pattern
+        AND      table_owner = :g_user_id
+        ORDER BY h_table
+        {
+            MESSAGE 'Inserting ' + VARCHAR(:h_quarter) +
+                    ' from Quarterly ' + :h_table + ' . . .';
+
+            INSERT INTO :g_archive_table
+            SELECT      *
+            FROM        :h_table
+            WHERE       qperiod = :h_quarter;
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9
+            THEN
+                INSERT INTO error_log
+                VALUES(     'now',
+                            'Error inserting from ' + :h_table,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN 9;
+            ENDIF;
+
+        };
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error selecting quarterly tables from iitables',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+
+        h_counter = :h_counter + 1;
+
+    ENDWHILE;
+
+    /*------------------------------------------------------------------
+    Drop any ssim tables from the period you're archiving from 
+    (both annual and quarterly ssim tables)
+
+    MESSAGE 'Dropping ssim Tables . . .';
+
+    h_pattern_q1 = 'ssim_______' + VARCHAR(:g_q1) + '_cqpv%';
+    h_pattern_q2 = 'ssim_______' + VARCHAR(:g_q2) + '_cqpv%';
+    h_pattern_q3 = 'ssim_______' + VARCHAR(:g_q3) + '_cqpv%';
+    h_pattern_q4 = 'ssim_______' + VARCHAR(:g_q4) + '_cqpv%';
+    h_pattern = 'ssim_______' + VARCHAR(:g_period) + '_cqpv%';
+
+    SELECT   table_name AS h_table
+    FROM     iitables
+    WHERE    (table_name LIKE :h_pattern_q1 OR
+              table_name LIKE :h_pattern_q2 OR
+              table_name LIKE :h_pattern_q3 OR
+              table_name LIKE :h_pattern_q4 OR
+              table_name LIKE :h_pattern)
+    AND      table_owner = :g_user_id
+    ORDER BY h_table
+    {
+            
+        ret_val = CALLPROC batch_fp_drop_table (
+                  h_table = :h_table);
+
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+    };
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error selecting tables to be dropped from iitables',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+    ------------------------------------------------------------------*/
+
+    /*------------------------------------------------------------------
+    Copydb
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC archive_fp_copy_out ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    RETURN 0;
+}

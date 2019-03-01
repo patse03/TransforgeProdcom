@@ -1,0 +1,275 @@
+/******************************************************************
+
+******************************************************************/
+
+INITIALIZE () =
+
+DECLARE h_retries_max        = INTEGER1    NOT NULL WITH DEFAULT,
+        h_retries            = INTEGER1    NOT NULL WITH DEFAULT,
+        h_retry_or_not       = CHAR(5)     NOT NULL WITH DEFAULT,
+        h_return             = INTEGER1    NOT NULL WITH DEFAULT,
+        h_date               = INGRESDATE  NOT NULL WITH DEFAULT,
+        h_frpr_name          = VARCHAR(24) NOT NULL WITH DEFAULT,
+        h_staff_no           = INTEGER4    NOT NULL WITH DEFAULT,
+        h_name               = CHAR(24)    NOT NULL WITH DEFAULT,
+        h_password           = VARCHAR(6)  NOT NULL WITH DEFAULT,
+        h_dummy              = INTEGER4    NOT NULL WITH DEFAULT,
+        h_count              = INTEGER1    NOT NULL WITH DEFAULT,
+        h_max_count          = INTEGER1    NOT NULL WITH DEFAULT,
+        h_store_no           = INTEGER1    NOT NULL WITH DEFAULT,
+        h_admin              = CHAR(1)     NOT NULL WITH DEFAULT,
+
+        lp_drop_table           = PROCEDURE RETURNING INTEGER,
+        lp_error_check          = PROCEDURE RETURNING INTEGER,
+        lp_full_error_check     = PROCEDURE RETURNING INTEGER
+{
+
+SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+SELECT DBMSINFO('username') AS g_user_id;
+
+h_frpr_name = 'lo_fr_user_logon';
+h_date = 'now';
+h_count = 0;
+h_max_count = 3;
+
+REDISPLAY;
+RESUME FIELD s_staff_no;
+
+}
+
+FIELD s_staff_no = 
+{
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_max       = 3;
+
+  WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT name     AS h_name, 
+           password AS h_password, 
+           store_no AS h_store_no,
+           admin    AS h_admin
+    FROM   ac_staff_details
+    WHERE  staff_no = :s_staff_no;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    EXIT;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed to select from lo_fr_user_logon table. '
+	  + 'Error code '+VARCHAR(:h_return)+'.' +X'0D'
+	  + 'Please contact I.M. immediately. Process cannot continue.'
+    WITH STYLE = POPUP;
+    EXIT;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'WARNING: Staff number could not be found on the system. '
+          + 'Please try again or hit F12 to abort.'
+    WITH STYLE = POPUP;
+    CLEAR  FIELD s_staff_no;
+    RESUME FIELD s_staff_no;
+
+  ENDIF;
+
+  s_user_name  = SHIFT(:h_name,(((24-LENGTH(:h_name))/2)*1));
+
+  REDISPLAY;
+
+  RESUME FIELD s_password;
+
+}
+
+FIELD s_password = 
+{
+
+  h_count = h_count +1;
+
+  IF s_password != h_password
+  THEN
+  
+    IF h_count < h_max_count
+    THEN
+      MESSAGE 'WARNING: Password entered is incorrect. Please try again.'
+      WITH STYLE = POPUP;
+      CLEAR FIELD s_password;
+      RESUME FIELD s_password;
+    ELSE 
+      MESSAGE 'ERROR: Password is incorrect and has now been locked. '
+            + 'Please contact.........'
+      WITH STYLE = POPUP;
+      EXIT;
+    ENDIF;
+
+  ENDIF;
+
+  g_user_name = :h_name;
+  g_store_no  = :h_store_no;
+  g_admin     = :h_admin;
+
+  IF h_store_no > 0
+  THEN
+    CALLFRAME st_fr_menu;
+  /*  MESSAGE 'This would now launch Store menu'
+    WITH STYLE = POPUP;
+    EXIT;*/
+
+  ELSE
+
+    IF h_admin = 'Y'
+    THEN
+      MESSAGE 'This would now launch Office menu'
+      WITH STYLE = POPUP;
+      EXIT;
+    ELSE
+      MESSAGE 'This would now launch Warehouse menu'
+      WITH STYLE = POPUP;
+      EXIT;
+    ENDIF;
+
+  ENDIF;
+
+}
+
+
+/*=======================================================================
+   FRSKEY12: Exit - Returns to the previous screen.
+======================================================================*/
+
+'Exit', KEY FRSKEY12 = 
+{
+
+EXIT;
+
+}
+
+/****************************************************************************/
+/*********************** LOCAL PROCEDURES ***********************************/
+/****************************************************************************/
+
+/*===========================================================================
+	      Local procedure for error checking within retry loop.
+============================================================================*/
+
+PROCEDURE lp_full_error_check
+	  (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT)=
+
+DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+
+BEGIN
+
+lp_return = CALLPROC check_inq_ing (h_num_row_ck      = :p_num_row_ck,
+ 				    h_commit          = 'Y',
+				    h_rollback        = 'N',
+				    h_retries         = :h_retries,
+                                    h_retries_allowed = :h_retries_max,
+                                    h_frpr_name       = ':h_frpr_name');
+RETURN :lp_return;
+
+END
+
+/*===========================================================================
+	      Local procedure for basic error checking.
+============================================================================*/
+
+PROCEDURE lp_error_check
+	  (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT)=
+
+DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+
+BEGIN
+
+lp_return = CALLPROC check_inq_ing (h_num_row_ck      = :p_num_row_ck,
+ 				    h_commit          = 'Y',
+				    h_rollback        = 'N',
+				    h_retries         = 1,
+                                    h_retries_allowed = 1,
+                                    h_frpr_name       = ':h_frpr_name');
+RETURN :lp_return;
+
+END
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(24) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(20) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

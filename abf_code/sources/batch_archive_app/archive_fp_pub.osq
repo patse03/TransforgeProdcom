@@ -1,0 +1,146 @@
+/*----------------------------------------------------------------------
+published_history table: has periods as data_for_period and run_period
+
+e.g. archiving 199300
+
+  (1) get data_for_period 199303 from run_period 199403
+  (2) get data_for_period 199306 from run_period 199406
+  (3) get data_for_period 199309 from run_period 199409
+  (4) get data_for_period 199312 from run_period 199412
+  (5) get data_for_period 199300 from run_period 199500
+
+----------------------------------------------------------------------*/
+
+PROCEDURE archive_fp_pub () =
+
+DECLARE h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_command         = VARCHAR(500) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+
+{
+    h_frpr_name = 'archive_fp_pub';
+
+    INSERT INTO error_log
+    VALUES(     'now',
+                'Archiving of ' + :g_table + ' for ' +
+                VARCHAR(:g_period) + ' begins',
+                :h_frpr_name,
+                0,
+                :g_user_id);
+    COMMIT;
+
+    /*------------------------------------------------------------------
+    Create Initial Table
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Creating ' + :g_archive_table + ' . . .';
+
+    ret_val = batch_fp_drop_table (h_table = :g_archive_table);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :g_archive_table
+    AS SELECT    *
+    FROM         :g_table
+    WHERE        (run_period = :g_q1 + 100 AND data_for_period = :g_q1)
+    OR           (run_period = :g_q2 + 100 AND data_for_period = :g_q2)
+    OR           (run_period = :g_q3 + 100 AND data_for_period = :g_q3)
+    OR           (run_period = :g_q4 + 100 AND data_for_period = :g_q4)
+    OR           (run_period = :g_period + 200 AND data_for_period = :g_period);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :g_archive_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Delete rows from original table
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Deleting from ' + :g_table + ' . . .';
+
+    DELETE FROM :g_table
+    WHERE       run_period IN (:g_period, :g_q1, :g_q2, :g_q3, :g_q4);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error deleting from ' + :g_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Copydb
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC archive_fp_copy_out ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Remodify
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Remodifying ' + :g_table + ' . . .';
+
+    h_command = 'cd $ARCHIVE; remodify ' + :g_database +
+                ' ' + :g_table +
+                ' >> ' + :g_error_file;
+
+    ret_val = CALLPROC msa_cp_callsys ( :h_command);
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error calling remodify on ' + :g_table,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    h_command = 'cd $ARCHIVE; remodify.script >> ' + :g_error_file;
+
+    ret_val = CALLPROC msa_cp_callsys ( :h_command);
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error running remodify.script on ' + :g_table,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+    RETURN 0;
+}

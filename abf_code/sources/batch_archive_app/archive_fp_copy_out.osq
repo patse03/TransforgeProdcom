@@ -1,0 +1,134 @@
+/*----------------------------------------------------------------------
+Copy the archived table out disk & saving the help table & copy.in
+----------------------------------------------------------------------*/
+
+PROCEDURE archive_fp_copy_out () =
+
+DECLARE h_frpr_name   = VARCHAR(24) NOT NULL,
+        h_command     = VARCHAR(200) NOT NULL,
+        ret_val       = INTEGER1 NOT NULL
+
+{
+    h_frpr_name = 'archive_fp_copy_out';
+    g_rows = 0;
+
+    /*------------------------------------------------------------------
+    See how many rows are on the archive file
+    ------------------------------------------------------------------*/
+
+    SELECT IFNULL(COUNT(*),0) AS g_rows
+    FROM   :g_archive_table;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error counting rows on ' + :g_archive_table,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Copydb
+    ------------------------------------------------------------------*/
+
+    h_command = 'cd $ARCHIVE; copydb -c ' + :g_database + ' ' +
+                :g_archive_table + ' > ' + :g_error_file;
+
+    MESSAGE 'Calling copydb ' + :g_table + ' . . .';
+
+    ret_val = CALLPROC msa_cp_callsys (:h_command);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error calling copydb for ' + :g_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Copy the file out
+    ------------------------------------------------------------------*/
+
+    h_command = 'cd $ARCHIVE; \rm *.pro >> ' + :g_error_file + 
+                ' 2>&1 ; sql ' + :g_database + 
+                ' < copy.out >> ' + :g_error_file;
+
+    MESSAGE 'Copying Out ' + VARCHAR(:g_rows) + ' rows . . .';
+
+    ret_val = CALLPROC msa_cp_callsys (:h_command);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error copying out of ' + :g_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Save the files
+    ------------------------------------------------------------------*/
+
+    h_command = 'cd $ARCHIVE; mv *.pro $ARCHIVE/totape/' +
+                :g_archive_table + '.dat >> ' + :g_error_file + ';' +
+                'mv copy.in $ARCHIVE/totape/' + :g_archive_table +
+                '.in >> ' + :g_error_file;
+
+    MESSAGE 'Saving Files . . .';
+
+    ret_val = CALLPROC msa_cp_callsys (:h_command);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error saving files for ' + :g_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    help_table
+    ------------------------------------------------------------------*/
+
+    h_command = 'echo "help table ' + :g_table + '\\p\\g" | sql ' +
+                :g_database + ' > $ARCHIVE/totape/' + :g_archive_table +
+                '.hlp';
+
+    ret_val = CALLPROC msa_cp_callsys (:h_command);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error calling help table for ' + :g_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+}

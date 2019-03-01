@@ -1,0 +1,299 @@
+/******************************************************************************
+
+    Procedure to delete expired archive tables and record the 
+    deletion in the arc_table_status table.
+
+******************************************************************************/
+
+PROCEDURE arc_fp_delete_tables () =
+
+DECLARE
+  h_frpr_name          = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_return             = INTEGER2     NOT NULL WITH DEFAULT,
+  h_return2            = INTEGER2     NOT NULL WITH DEFAULT,
+  h_command            = VARCHAR(200) NOT NULL WITH DEFAULT,
+  h_table_name         = VARCHAR(32)  NOT NULL WITH DEFAULT,
+  h_original_table     = VARCHAR(32)  NOT NULL WITH DEFAULT,
+  h_temp_table         = VARCHAR(32)  NOT NULL WITH DEFAULT,
+  h_text               = VARCHAR(80)  NOT NULL WITH DEFAULT,
+
+  lp_error_check       = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_tidy_up           = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  h_frpr_name = 'arc_fp_delete_tables';
+  h_temp_table = 'tt_arc_del_tables';
+
+  /*------------------------------------------------------------------
+      Drop then create temp table of expired tables excluding the
+      two core tables. (Just in case the file creation failed and 
+      needs to be re_run.)
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to delete existing ' +h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  h_text = 'zzz_' +VARCHAR(:g_file_period) +'%';
+
+  CREATE TABLE :h_temp_table
+  AS
+  SELECT  table_name
+  FROM    iitables
+  WHERE   table_name  LIKE :h_text
+    AND   table_name != :g_cqpv
+    AND   table_name != :g_cper;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = 'ERROR: Failed to create ' +:h_temp_table +'.');
+
+    RETURN :h_return;
+
+  ELSEIF h_return = 1
+  THEN
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = 'NOTE: No expired archive tables found to delete.');
+
+    h_return2 = CALLPROC lp_tidy_up ();
+
+    IF h_return2 != 0
+    THEN
+      /* Error message logged in local procedure */
+      RETURN :h_return2;
+    ENDIF;
+
+    RETURN 0;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Loop through tables listed in temp table, drop them,
+      then remove them from arc_table_status.
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Initialising expired archive deletion loop.');
+
+  SELECT  table_name AS h_table_name
+  FROM    :h_temp_table
+  BEGIN
+    
+    MESSAGE 'Expiring: ' +:h_table_name +'...'; 
+
+    /*...................................................................
+        Drop the expired table 
+    ...................................................................*/
+
+    h_return2 = CALLPROC batch_fp_drop_table (p_table = :h_table_name);
+
+    IF h_return2 != 0
+    THEN
+      /* Error message logged in external procedure */
+      RETURN :h_return2;
+    ENDIF;
+      
+    h_text = '  Successfully deleted ' +:h_table_name +'.';  
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+    /*...................................................................
+        Remove the data from the arc_table_status table
+    ...................................................................*/
+    
+    h_original_table = RIGHT(:h_table_name, (LENGTH(:h_table_name)-11));
+
+    DELETE FROM arc_table_status
+    WHERE  table_name = :h_original_table
+      AND  period     = :g_file_period;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+    IF h_return2 > 1
+    THEN
+      h_text = 'ERROR: Failed to remove status record for ' 
+             + :h_original_table +'.';
+      CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return2,
+             p_text      = :h_text);
+      RETURN :h_return2;
+    ENDIF;
+      
+  END;
+      
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return = 1
+  THEN
+
+    h_text = 'NOTE: No tables eligible for expired archive deletion loop.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+
+  ELSEIF h_return > 1
+  THEN
+
+    h_text = 'ERROR: Failed to select for expired archive deletion loop.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+
+    RETURN :h_return;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Tidy up, Log completion and return to main process.
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC lp_tidy_up ();
+
+  IF h_return != 0
+  THEN
+    /* Error message logged in local procedure */
+    RETURN 9;
+  ENDIF;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Completed expired archive table deletion loop.');
+
+  RETURN 0
+
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+  /*==================================================================
+      Local procedure to tidy up stray expired core table archives. 
+
+      Double checks to see if core tables have been filed and if so
+      tidy up if archives tables left behind due to re-run issues.
+  ==================================================================*/
+
+PROCEDURE lp_tidy_up (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+          lp_return2  = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+  /*......................................................................
+      cqpv (expecting it to be missing ie return 1.)
+  ......................................................................*/
+
+  h_command = '$SCRIPTS/check_file_exists.script '
+            + :g_cqpv_file
+            + ' 1>/dev/null '
+            + ' 2>/dev/null';
+  lp_return = CALLPROC msa_cp_callsys(:h_command);
+
+  IF lp_return > 1
+  THEN
+
+    h_text = 'ERROR: Failed on check existence of cqpv archive file .';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+
+  ELSEIF lp_return = 0
+  THEN
+
+    lp_return2 = CALLPROC batch_fp_drop_table (p_table = :g_cqpv);
+
+    IF lp_return2 != 0
+    THEN
+      /* Error message logged in external procedure */
+      RETURN :lp_return;
+    ENDIF;
+
+  ENDIF;
+
+  /*......................................................................
+      cper (expecting it to be missing ie return 1.)
+  ......................................................................*/
+
+  h_command = '$SCRIPTS/check_file_exists.script '
+            + :g_cper_file
+            + ' 1>/dev/null '
+            + ' 2>/dev/null';
+  lp_return = CALLPROC msa_cp_callsys(:h_command);
+
+  IF lp_return > 1
+  THEN
+
+    h_text = 'ERROR: Failed on check existence of cper archive file .';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+
+  ELSEIF lp_return = 0
+  THEN
+
+    lp_return2 = CALLPROC batch_fp_drop_table (p_table = :g_cper);
+
+    IF lp_return2 != 0
+    THEN
+      /* Error message logged in external procedure */
+      RETURN :lp_return;
+    ENDIF;
+
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}

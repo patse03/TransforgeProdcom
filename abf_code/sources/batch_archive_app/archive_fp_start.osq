@@ -1,0 +1,212 @@
+/*-S--------------------------------------------------------------------
+ Start of Archive Application
+ Parameters: Period & Table
+--------------------------------------------------------------------e-*/
+
+PROCEDURE archive_fp_start () =
+
+DECLARE h_param_list         = VARCHAR(100) NOT NULL,
+        h_varchar_variable   = VARCHAR(100) NOT NULL,
+        h_integer_variable   = INTEGER1 NOT NULL,
+        h_param1             = VARCHAR(20) NOT NULL,
+        h_param2             = VARCHAR(50) NOT NULL,
+        h_directory          = VARCHAR(200) NOT NULL,
+        h_min_period         = INTEGER4 NOT NULL,
+        ret_val              = INTEGER1 NOT NULL,
+        h_frpr_name          = VARCHAR(24) NOT NULL
+
+{
+    h_frpr_name = 'archive_fp_start';
+
+    SELECT DBMSINFO('username') AS g_user_id;
+    SELECT DBMSINFO('database') AS g_database;
+
+    /*------------------------------------------------------------------
+    Check that the directory $ARCHIVE has been set up
+    ------------------------------------------------------------------*/
+
+    h_directory = '';
+    h_directory = CALLPROC msa_cp_getvar('ARCHIVE');
+
+    IF LENGTH(h_directory) < 6
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Please set up $ARCHIVE (& $ARCHIVE/totape)',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    h_param_list = CALLPROC CommandLineParameters();
+
+    h_varchar_variable = SQUEEZE (h_param_list);
+
+    h_integer_variable = LOCATE (h_varchar_variable, ' ');
+    h_param1         =   LEFT (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = SHIFT (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = LOCATE (h_varchar_variable, ' ');
+    h_param2         =   LEFT (h_varchar_variable,h_integer_variable - 1);
+
+    g_period = INT4(:h_param1);
+    g_table = VARCHAR(:h_param2);
+
+    /*------------------------------------------------------------------
+     Check Period
+
+    SELECT MIN(period) AS h_min_period
+    FROM   inquiry_period
+    WHERE  inquiry = 14;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error selecting from inquiry_period',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+    ------------------------------------------------------------------*/
+
+    /*------------------------------------------------------------------
+     Check Period - should be the earliest annual one or the one before
+
+    IF :g_period <> :h_min_period AND :g_period <> :h_min_period - 100
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Period = ' + VARCHAR(:g_period) +
+                    ', Should be ' + VARCHAR(:h_min_period) +
+                    ' (Earliest Annual Period) or ' +
+                    VARCHAR(:h_min_period - 100),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+    ------------------------------------------------------------------*/
+
+    g_q1 = :g_period + 3;
+    g_q2 = :g_period + 6;
+    g_q3 = :g_period + 9;
+    g_q4 = :g_period + 12;
+
+    /*------------------------------------------------------------------
+    Some tables plus 4 digit year are too long.
+    If archiving for 199300:
+
+      If 20 or more chars, use the leftmost 20 and add 1993
+      Otherwise use the table_name and add _1993
+    ------------------------------------------------------------------*/
+
+    IF LENGTH(:g_table) >= 20
+    THEN
+        g_archive_table = LEFT(:g_table,18) + VARCHAR(:g_period/100);
+    ELSE
+        g_archive_table = :g_table + '_' + VARCHAR(:g_period/100);
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Process table
+    ------------------------------------------------------------------*/
+
+    g_error_file = :g_archive_table + '.error';
+    g_rows = 0;
+
+    IF :g_table = 'added_contributor'
+    OR :g_table = 'contributor_luaddress'
+    OR :g_table = 'contributor_period'
+    OR :g_table = 'cqpv'
+    OR :g_table = 'disc_despatch'
+    OR :g_table = 'disc_table'
+    OR :g_table = 'industry_period'
+    OR :g_table = 'inquiry_period'
+    OR :g_table = 'question_period'
+    OR :g_table = 'question_sph_gross'
+    OR :g_table = 'removed_contrib_period'
+    OR :g_table = 'removed_cqpv'
+    OR :g_table = 'removed_extra_detail'
+    OR :g_table = 'removed_lu'
+    OR :g_table = 'bto_archive'
+    OR :g_table = 'reclass_contrib'
+
+
+    OR :g_table = 'question_library'
+    THEN
+        ret_val = CALLPROC archive_fp_standard ();
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+    ELSEIF :g_table = 'asi_to_qsi_link'
+    THEN
+        ret_val = CALLPROC archive_fp_atq ();
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+    ELSEIF :g_table = 'sim'
+    THEN
+        ret_val = CALLPROC archive_fp_sim ();
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+    ELSEIF :g_table = 'ssim'
+    THEN
+        ret_val = CALLPROC archive_fp_ssim ();
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+    ELSEIF :g_table = 'published_history'
+    THEN
+        ret_val = CALLPROC archive_fp_pub ();
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+    ELSE
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Table ' + :g_table + ' is not a table' +
+                    ' that is archived',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     End
+    ------------------------------------------------------------------*/
+
+    INSERT INTO error_log
+    VALUES(     'now',
+                VARCHAR(:g_rows) + ' rows on ' + :g_table + 
+                ' for ' + VARCHAR(:g_period) + ' archived OK',
+                :h_frpr_name,
+                0,
+                :g_user_id);
+    COMMIT;
+
+    RETURN 0;
+}

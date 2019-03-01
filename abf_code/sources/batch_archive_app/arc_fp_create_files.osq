@@ -1,0 +1,522 @@
+
+/******************************************************************************
+
+    Procedure to export the question_library, cqpv and contributor_period 
+    archive tables that are about to expire to data files for permanent
+    storage.
+
+    Archive directory is /prodcom/live5/files/archive
+
+******************************************************************************/
+
+PROCEDURE arc_fp_create_files () =
+
+DECLARE
+  h_frpr_name          = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_return             = INTEGER2     NOT NULL WITH DEFAULT,
+  h_return2            = INTEGER2     NOT NULL WITH DEFAULT,
+  h_return3            = INTEGER2     NOT NULL WITH DEFAULT,
+  h_table_name         = VARCHAR(32)  NOT NULL WITH DEFAULT,
+  h_original_table     = VARCHAR(32)  NOT NULL WITH DEFAULT,
+  h_temp_table         = VARCHAR(32)  NOT NULL WITH DEFAULT,
+  h_text               = VARCHAR(80)  NOT NULL WITH DEFAULT,
+  h_command            = VARCHAR(200) NOT NULL WITH DEFAULT,
+
+  lp_error_check          = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  h_frpr_name = 'arc_fp_delete_tables';
+  h_temp_table = 'tt_arc_del_tables';
+
+  g_cqpv = 'zzz_' +VARCHAR(:g_file_period) +'_cqpv';
+  g_cper = 'zzz_' +VARCHAR(:g_file_period) +'_contributor_period';
+  g_qlib = 'zzz_' +VARCHAR(:g_file_period) +'_question_library';
+
+  IF g_database = 'prodlivedb'
+  THEN
+    g_cqpv_file = '/prodcom/live5/files/archive/' +:g_cqpv +'.arc';
+    g_cper_file = '/prodcom/live5/files/archive/' +:g_cper +'.arc';
+    g_qlib_file = '/prodcom/live5/files/archive/' +:g_qlib +'.arc';
+  ELSE
+    g_cqpv_file = '/prodcom/live5/files/archive/' +:g_cqpv +'_TEST.arc';
+    g_cper_file = '/prodcom/live5/files/archive/' +:g_cper +'_TEST.arc';
+    g_qlib_file = '/prodcom/live5/files/archive/' +:g_qlib +'_TEST.arc';
+  ENDIF;
+  
+  /*----------------------------------------------------------------------
+   1) Check if cqpv archive file exists. If it does, note existance
+      in log and move on as the cqpv archive table will no longer exist.
+  ----------------------------------------------------------------------*/
+
+  MESSAGE 'Filing: cqpv...';
+     
+  h_command = '$SCRIPTS/check_file_exists.script '
+            + :g_cqpv_file
+            + ' 1>/dev/null '
+            + ' 2>/dev/null';
+
+  h_return = CALLPROC msa_cp_callsys(:h_command);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed on check for pre-existence of cqpv archive file .';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+
+  /*----------------------------------------------------------------------
+      If it doesnt, create it and then delete the archive table.
+  ----------------------------------------------------------------------*/
+
+  ELSEIF h_return = 1
+  THEN
+
+    /*...................................................................
+       Check to see if table exists to be archived from.
+
+       NB: This is a warning till system fully implemented, but will 
+           need to be changed to an error when all up and running.
+    ...................................................................*/
+      
+    SELECT table_name AS :h_table_name
+    FROM   iitables
+    WHERE  table_name = :g_cqpv;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 = 1 
+    THEN 
+      h_text = 'WARNING: Unable to find ' +:g_cqpv +' to create archive file.'; 
+      CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return2,
+             p_text      = :h_text);
+    ELSEIF h_return2 > 1
+    THEN
+      h_text = 'SYSTEM ERROR: Failed to select from iitables.'; 
+      CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return2,
+             p_text      = :h_text);
+      RETURN 9;
+    ELSE
+
+      /*...................................................................
+         Create file. 
+      ...................................................................*/
+      
+      COPY TABLE :g_cqpv ()
+      INTO       :g_cqpv_file;
+
+      h_return3 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return3 = 1 
+      THEN 
+        h_text = 'WARNING: No data on ' +:g_cqpv +' to create archive file.'; 
+        CALLPROC write_to_process_log
+               ( p_frpr_name = :h_frpr_name,
+                 p_code      = :h_return3,
+                 p_text      = :h_text);
+        RETURN 9;
+      ELSEIF h_return3 > 1
+      THEN
+        h_text = 'ERROR: Failed to create cqpv archive file.'; 
+        CALLPROC write_to_process_log
+               ( p_frpr_name = :h_frpr_name,
+                 p_code      = :h_return3,
+                 p_text      = :h_text);
+        RETURN 9;
+      ELSE
+        h_text = '  Successfully created cqpv archive file.'; 
+        CALLPROC write_to_process_log
+               ( p_frpr_name = :h_frpr_name,
+                 p_code      = :h_return3,
+                 p_text      = :h_text);
+      ENDIF;
+
+      /*...................................................................
+         Double check its been created using same :h_command that 
+         triggered this section of code.
+      ...................................................................*/
+    
+      h_return3 = CALLPROC msa_cp_callsys(:h_command);
+
+      IF h_return3 != 0
+      THEN
+        h_text = 'ERROR: Double check for cqpv archive file failed.';
+        CALLPROC write_to_process_log
+               ( p_frpr_name = :h_frpr_name,
+                 p_code      = :h_return3,
+                 p_text      = :h_text);
+        RETURN 9;
+      ENDIF;
+
+      /*...................................................................
+         Double check was passed so ok to drop archive table.
+      ...................................................................*/
+    
+      h_return3 = CALLPROC batch_fp_drop_table (p_table = :g_cqpv);
+
+      IF h_return3 != 0
+      THEN
+        /* Error message logged in external procedure */
+        RETURN :h_return3;
+      ELSE
+        h_text = '  Successfully deleted ' +:g_cqpv +'.';
+        CALLPROC write_to_process_log
+               ( p_frpr_name = :h_frpr_name,
+                 p_code      = :h_return3,
+                 p_text      = :h_text);
+      ENDIF;
+
+    ENDIF;
+      
+  /*----------------------------------------------------------------------
+      If it does, note existance in log and move on as the cqpv archive
+      table will no longer exist.
+  ----------------------------------------------------------------------*/
+ 
+  ELSE  
+    h_text = 'NOTE: Pre-existing cqpv archive file for ' 
+           + VARCHAR(:g_file_period) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+  ENDIF;
+
+
+
+
+
+  /*----------------------------------------------------------------------
+     2) Check if cper archive file exists. If it does, note existance
+        in log and move on as the cper archive table will no longer exist.
+  ----------------------------------------------------------------------*/
+     
+  MESSAGE 'Filing: cper...';
+
+  h_command = '$SCRIPTS/check_file_exists.script '
+            + :g_cper_file
+            + ' 1>/dev/null '
+            + ' 2>/dev/null';
+
+  h_return = CALLPROC msa_cp_callsys(:h_command);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed on check for pre-existence of cper archive file .';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+
+  /*----------------------------------------------------------------------
+      If it doesnt, create it and then delete the archive table.
+  ----------------------------------------------------------------------*/
+
+  ELSEIF h_return = 1
+  THEN
+
+    /*...................................................................
+       Check to see if table exists to be archived from.
+
+       NB: This is a warning till system fully implemented, but will 
+           need to be changed to an error when all up and running.
+    ...................................................................*/
+      
+    SELECT table_name AS :h_table_name
+    FROM   iitables
+    WHERE  table_name = :g_cper;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 = 1 
+    THEN 
+      h_text = 'WARNING: Unable to find ' +:g_cper +' to create archive file.'; 
+      CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return2,
+             p_text      = :h_text);
+    ELSEIF h_return2 > 1
+    THEN
+      h_text = 'SYSTEM ERROR: Failed to select from iitables.'; 
+      CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return2,
+             p_text      = :h_text);
+      RETURN 9;
+    ELSE
+
+      /*...................................................................
+         Create file. 
+      ...................................................................*/
+    
+      COPY TABLE :g_cper ()
+      INTO       :g_cper_file;
+
+      h_return3 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return3 = 1 
+      THEN 
+        h_text = 'WARNING: Unable to find' +:g_cper +' to create archive file.'; 
+        CALLPROC write_to_process_log
+               ( p_frpr_name = :h_frpr_name,
+                 p_code      = :h_return3,
+                 p_text      = :h_text);
+        RETURN 9;
+      ELSEIF h_return3 > 1
+      THEN
+        h_text = 'ERROR: Failed to create cper archive file.'; 
+        CALLPROC write_to_process_log
+               ( p_frpr_name = :h_frpr_name,
+                 p_code      = :h_return3,
+                 p_text      = :h_text);
+        RETURN 9;
+      ENDIF;
+
+      /*...................................................................
+         Double check its been created using same :h_command that 
+         triggered this section of code.
+      ...................................................................*/
+    
+      h_return3 = CALLPROC msa_cp_callsys(:h_command);
+
+      IF h_return3 != 0
+      THEN
+        h_text = 'ERROR: Double check for cper archive file failed.';
+        CALLPROC write_to_process_log
+               ( p_frpr_name = :h_frpr_name,
+                 p_code      = :h_return3,
+                 p_text      = :h_text);
+        RETURN 9;
+      ELSE
+        h_text = '  Successfully created cper archive file.'; 
+        CALLPROC write_to_process_log
+               ( p_frpr_name = :h_frpr_name,
+                 p_code      = :h_return3,
+                 p_text      = :h_text);
+      ENDIF;
+
+      /*...................................................................
+         Double check was passed so ok to drop archive table.
+      ...................................................................*/
+    
+      h_return3 = CALLPROC batch_fp_drop_table (p_table = :g_cper);
+
+      IF h_return3 != 0
+      THEN
+        /* Error message logged in external procedure */
+        RETURN :h_return;
+      ELSE
+        h_text = '  Successfully deleted ' +:g_cper +'.';
+        CALLPROC write_to_process_log
+               ( p_frpr_name = :h_frpr_name,
+                 p_code      = :h_return3,
+                 p_text      = :h_text);
+      ENDIF;
+      
+    ENDIF;
+
+  /*----------------------------------------------------------------------
+      If it does, note existance in log and move on as the cper archive
+      table will no longer exist.
+  ----------------------------------------------------------------------*/
+ 
+  ELSE  
+    h_text = 'NOTE: Pre-existing cper archive file for ' 
+           + VARCHAR(:g_file_period) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+  ENDIF;
+
+
+  /*----------------------------------------------------------------------
+   3) Check if qlib archive file exists. If it does, note existance
+      in log and move on as the qlib archive table will no longer exist.
+  ----------------------------------------------------------------------*/
+     
+  MESSAGE 'Filing: qlib...';
+
+  h_command = '$SCRIPTS/check_file_exists.script '
+            + :g_qlib_file
+            + ' 1>/dev/null '
+            + ' 2>/dev/null';
+
+  h_return = CALLPROC msa_cp_callsys(:h_command);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed on check for pre-existence of qlib archive file .';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+
+  /*----------------------------------------------------------------------
+      If it doesnt, create it and then delete the archive table.
+  ----------------------------------------------------------------------*/
+
+  ELSEIF h_return = 1
+  THEN
+
+    /*...................................................................
+       Check to see if table exists to be archived from.
+
+       NB: This is a warning till system fully implemented, but will 
+           need to be changed to an error when all up and running.
+    ...................................................................*/
+      
+    SELECT table_name AS :h_table_name
+    FROM   iitables
+    WHERE  table_name = :g_qlib;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 = 1 
+    THEN 
+      h_text = 'WARNING: Unable to find ' +:g_qlib +' to create archive file.'; 
+      CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return2,
+             p_text      = :h_text);
+    ELSEIF h_return2 > 1
+    THEN
+      h_text = 'SYSTEM ERROR: Failed to select from iitables.'; 
+      CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return2,
+             p_text      = :h_text);
+      RETURN 9;
+    ELSE
+
+      /*...................................................................
+         Create file. 
+      ...................................................................*/
+    
+      COPY TABLE :g_qlib ()
+      INTO       :g_qlib_file;
+
+      h_return3 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return3 = 1 
+      THEN 
+        h_text = 'WARNING: Unable to find' +:g_qlib +' to create archive file.'; 
+        CALLPROC write_to_process_log
+               ( p_frpr_name = :h_frpr_name,
+                 p_code      = :h_return3,
+                 p_text      = :h_text);
+        RETURN 9;
+      ELSEIF h_return3 > 1
+      THEN
+        h_text = 'ERROR: Failed to create qlib archive file.'; 
+        CALLPROC write_to_process_log
+               ( p_frpr_name = :h_frpr_name,
+                 p_code      = :h_return3,
+                 p_text      = :h_text);
+        RETURN 9;
+      ENDIF;
+
+      /*...................................................................
+         Double check its been created using same :h_command that 
+         triggered this section of code.
+      ...................................................................*/
+    
+      h_return3 = CALLPROC msa_cp_callsys(:h_command);
+
+      IF h_return3 != 0
+      THEN
+        h_text = 'ERROR: Double check for qlib archive file failed.';
+        CALLPROC write_to_process_log
+               ( p_frpr_name = :h_frpr_name,
+                 p_code      = :h_return3,
+                 p_text      = :h_text);
+        RETURN 9;
+      ELSE
+        h_text = '  Successfully created qlib archive file.'; 
+        CALLPROC write_to_process_log
+               ( p_frpr_name = :h_frpr_name,
+                 p_code      = :h_return3,
+                 p_text      = :h_text);
+      ENDIF;
+
+      /*...................................................................
+         Double check was passed so ok to drop archive table.
+      ...................................................................*/
+    
+      h_return3 = CALLPROC batch_fp_drop_table (p_table = :g_qlib);
+
+      IF h_return3 != 0
+      THEN
+        /* Error message logged in external procedure */
+        RETURN :h_return;
+      ELSE
+        h_text = '  Successfully deleted ' +:g_qlib +'.';
+        CALLPROC write_to_process_log
+               ( p_frpr_name = :h_frpr_name,
+                 p_code      = :h_return3,
+                 p_text      = :h_text);
+      ENDIF;
+      
+    ENDIF;
+
+  /*----------------------------------------------------------------------
+      If it does, note existance in log and move on as the qlib archive
+      table will no longer exist.
+  ----------------------------------------------------------------------*/
+ 
+  ELSE  
+    h_text = 'NOTE: Pre-existing qlib archive file for ' 
+           + VARCHAR(:g_file_period) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+  ENDIF;
+
+
+  /*----------------------------------------------------------------------
+      Log completion and return.
+  ----------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Completed archive file creation.');
+
+  RETURN 0
+
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}

@@ -1,0 +1,342 @@
+/******************************************************************
+******************************************************************/
+
+INITIALIZE () =
+
+DECLARE h_retries_max        = INTEGER1    NOT NULL WITH DEFAULT,
+        h_retries            = INTEGER1    NOT NULL WITH DEFAULT,
+        h_retry_or_not       = CHAR(5)     NOT NULL WITH DEFAULT,
+        h_return             = INTEGER1    NOT NULL WITH DEFAULT,
+        h_date               = INGRESDATE  NOT NULL WITH DEFAULT,
+        h_frpr_name          = VARCHAR(24) NOT NULL WITH DEFAULT,
+        h_details            = VARCHAR(80) NOT NULL WITH DEFAULT,
+        h_size               = VARCHAR(15) NOT NULL WITH DEFAULT,
+        h_weight             = VARCHAR(15) NOT NULL WITH DEFAULT,
+        h_brand              = VARCHAR(20) NOT NULL WITH DEFAULT,
+        h_product            = VARCHAR(30) NOT NULL WITH DEFAULT,
+        h_warehouse_qty      = INTEGER4    NOT NULL WITH DEFAULT,
+        h_dummy              = INTEGER4    NOT NULL WITH DEFAULT,
+
+        lp_drop_table           = PROCEDURE RETURNING INTEGER,
+        lp_error_check          = PROCEDURE RETURNING INTEGER,
+        lp_full_error_check     = PROCEDURE RETURNING INTEGER
+{
+
+SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+SELECT DBMSINFO('username') AS g_user_id;
+
+h_frpr_name = 'st_fr_view_item';
+h_date = 'now';
+s_qty = 0;
+
+REDISPLAY;
+RESUME FIELD s_item_no;
+
+}
+
+FIELD s_item_no = 
+{
+
+h_retry_or_not      = 'RETRY';
+h_retries           = 0;
+h_retries_max       = 3;
+
+WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+DO
+
+  h_retries = :h_retries + 1;
+
+  SELECT product AS h_product, 
+         brand   AS h_brand,
+         size    AS h_size,
+         weight  AS h_weight,
+         details AS h_details,
+         price   AS s_price
+  FROM   ac_item_data
+  WHERE  item_no = :s_item_no;
+         
+  h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF h_return != 7
+  THEN
+    h_retry_or_not = '';
+  ENDIF;
+
+ENDWHILE;
+
+IF h_return = 7
+THEN
+  RETURN 7;
+
+ ELSEIF h_return > 1
+  THEN
+  MESSAGE 'SYSTEM ERROR: Failed to select from ac_item_data table. '
+	+ 'Error code '+VARCHAR(:h_return)+'.' +X'0D'
+	+ 'Please contact I.M. immediately. Process cannot continue.'
+  WITH STYLE = POPUP;
+  RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN
+  MESSAGE 'WARNING: That item number could not be found on the system. '
+        + 'Please try again or hit F12 to abort.'
+  WITH STYLE = POPUP;
+  RESUME FIELD s_item_no;
+ENDIF;
+
+h_retry_or_not      = 'RETRY';
+h_retries           = 0;
+h_retries_max       = 3;
+
+WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+DO
+
+  h_retries = :h_retries + 1;
+
+  SELECT qty AS s_qty 
+  FROM   ac_stock_levels
+  WHERE  item_no = :s_item_no
+    AND  store_no = 1;
+         
+  h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF h_return != 7
+  THEN
+    h_retry_or_not = '';
+  ENDIF;
+
+ENDWHILE;
+
+IF h_return = 7
+THEN
+  RETURN 7;
+
+ ELSEIF h_return > 1
+  THEN
+  MESSAGE 'SYSTEM ERROR: Failed to select from ac_stock_levels table. '
+	+ 'Error code '+VARCHAR(:h_return)+'.' +X'0D'
+	+ 'Please contact I.M. immediately. Process cannot continue.'
+  WITH STYLE = POPUP;
+  RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN
+  MESSAGE 'WARNING: The stock quantity could not be found on the system. '
+        + 'Details will be displayed without stock quantity. '
+        + 'Please inform the office that the stock quantity is missing.'
+  WITH STYLE = POPUP;
+ENDIF;
+
+s_product = SHIFT(:h_product, (((30-LENGTH(h_product))/2)*1));
+s_brand   = SHIFT(:h_brand, (((20-LENGTH(h_brand))/2)*1));
+s_size    = SHIFT(:h_size, (((15-LENGTH(h_size))/2)*1));
+s_weight  = SHIFT(:h_weight, (((15-LENGTH(h_weight))/2)*1));
+s_details = SHIFT(:h_details, (((62-LENGTH(h_details))/2)*1));
+
+REDISPLAY;
+
+}
+
+/*=======================================================================
+   FRSKEY4: New search
+======================================================================*/
+
+'NEW SEARCH', KEY FRSKEY4 = 
+{
+s_product = '';
+s_brand   = '';
+s_price   = 0;
+s_size    = '';
+s_weight  = '';
+s_qty     = 0;
+s_details = '';
+
+REDISPLAY;
+
+RESUME FIELD s_item_no;
+
+}
+
+/*=======================================================================
+   FRSKEY8: Warehouse Check
+======================================================================*/
+
+'WAREHOUSE', KEY FRSKEY8 = 
+{
+
+h_retry_or_not      = 'RETRY';
+h_retries           = 0;
+h_retries_max       = 3;
+
+WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+DO
+
+  h_retries = :h_retries + 1;
+
+  SELECT qty AS h_warehouse_qty 
+  FROM   ac_stock_levels
+  WHERE  item_no = :s_item_no
+    AND  store_no = 0;
+         
+  h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF h_return != 7
+  THEN
+    h_retry_or_not = '';
+  ENDIF;
+
+ENDWHILE;
+
+IF h_return = 7
+THEN
+  RETURN 7;
+
+ELSEIF h_return > 1
+THEN
+  MESSAGE 'SYSTEM ERROR: Failed to select from ac_stock_levels table. '
+	+ 'Error code '+VARCHAR(:h_return)+'.' +X'0D'
+	+ 'Please contact I.M. immediately. Process cannot continue.'
+  WITH STYLE = POPUP;
+  RETURN 9;
+
+ELSEIF h_return = 1
+THEN
+  MESSAGE 'WARNING: The warehouse quantity could not be found on the system. '
+        + 'Details will be displayed without stock quantity. '
+        + 'Please inform the office that the stock quantity is missing.'
+  WITH STYLE = POPUP;
+
+ELSE
+  MESSAGE 'WAREHOUSE STOCK: ' + VARCHAR(:h_warehouse_qty) + '.'
+  WITH STYLE = POPUP;
+  
+ENDIF;
+
+}
+
+/*=======================================================================
+   FRSKEY12: Back - Returns to the previous screen.
+======================================================================*/
+
+'BACK', KEY FRSKEY12 = 
+{
+
+RETURN 0;
+
+}
+
+/****************************************************************************/
+/*********************** LOCAL PROCEDURES ***********************************/
+/****************************************************************************/
+
+/*===========================================================================
+	      Local procedure for error checking within retry loop.
+============================================================================*/
+
+PROCEDURE lp_full_error_check
+	  (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT)=
+
+DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+
+BEGIN
+
+lp_return = CALLPROC check_inq_ing (h_num_row_ck      = :p_num_row_ck,
+ 				    h_commit          = 'Y',
+				    h_rollback        = 'N',
+				    h_retries         = :h_retries,
+                                    h_retries_allowed = :h_retries_max,
+                                    h_frpr_name       = ':h_frpr_name');
+RETURN :lp_return;
+
+END
+
+/*===========================================================================
+	      Local procedure for basic error checking.
+============================================================================*/
+
+PROCEDURE lp_error_check
+	  (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT)=
+
+DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+
+BEGIN
+
+lp_return = CALLPROC check_inq_ing (h_num_row_ck      = :p_num_row_ck,
+ 				    h_commit          = 'Y',
+				    h_rollback        = 'N',
+				    h_retries         = 1,
+                                    h_retries_allowed = 1,
+                                    h_frpr_name       = ':h_frpr_name');
+RETURN :lp_return;
+
+END
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(24) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(20) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
