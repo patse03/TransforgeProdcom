@@ -1,0 +1,316 @@
+INITIALIZE () =
+
+DECLARE h_retries_max  = INTEGER1 NOT NULL,
+        h_retries      = INTEGER1 NOT NULL,
+        h_retry_or_not = CHAR(5) NOT NULL,
+        h_return       = INTEGER1 NOT NULL,
+        h_exit         = CHAR(1) NOT NULL,
+        h_change       = CHAR(1) NOT NULL,
+        h_confirm      = CHAR(1) NOT NULL,
+        h_dummy        = INTEGER4 NOT NULL,
+        h_frpr_name    = VARCHAR(24) NOT NULL,
+        h_finalised    = INGRESDATE NOT NULL,
+
+        lp_drop_table           = PROCEDURE RETURNING INTEGER,
+        lp_error_check          = PROCEDURE RETURNING INTEGER,
+        lp_full_error_check     = PROCEDURE RETURNING INTEGER
+{
+
+SET_FORMS FRS (TIMEOUT = gc_timeout);
+
+h_frpr_name = 'val_gate_4ca';
+msa_date = 'now';
+
+REDISPLAY;
+
+h_retry_or_not      = 'RETRY';
+h_retries           = 0;
+h_retries_max       = 3;
+
+WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+DO
+
+  h_retries = :h_retries + 1;
+
+  SELECT   a.question, 
+	   a.finalised AS h_finalised,
+           a.minimum_change,
+           a.maximum_value,
+           a.increase,
+           a.decrease,
+           a.uv_increase,
+           a.uv_decrease,
+           a.sph_increase,
+           a.sph_decrease,
+           a.key_minimum_change,
+           a.key_maximum_value,
+           a.key_increase,
+           a.key_decrease,
+           a.key_uv_increase,
+           a.key_uv_decrease,
+           a.new_uv_range_from,
+           a.new_uv_range_to,
+           a.new_sph_range_from,
+           a.new_sph_range_to
+  FROM     credibility_changes a
+  WHERE    a.question = :g_question_no
+    AND    a.finalised = (SELECT MAX(b.finalised)
+			    FROM credibility_changes b
+			   WHERE b.finalised < :g_finalised
+			     AND b.status = 'A'
+			     AND a.question = b.question) ;
+
+
+  h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF h_return != 7
+  THEN
+    h_retry_or_not = '';
+  ENDIF;
+
+ENDWHILE;
+
+IF h_return = 7
+THEN
+  RETURN 7;
+
+ ELSEIF h_return > 1
+  THEN
+  MESSAGE 'SYSTEM ERROR: Failed to access credibility changes table. '
+	+ 'Error code '+VARCHAR(:h_return)+'.' +X'0D'
+	+ 'Please contact I.M. immediately. Process cannot continue.'
+  WITH STYLE = POPUP;
+  RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN
+  MESSAGE 'WARNING: Question ' + VARCHAR(:g_question_no) + ' does not have' +
+          ' any previous Credibility Gate changes on record.'
+  WITH STYLE = POPUP;
+  RETURN 0;
+ENDIF;
+
+RESUME;
+
+END
+
+/*=======================================================================
+   FRSKEY12: Back - Returns to the previous screen .
+======================================================================*/
+
+'Back', KEY FRSKEY12 = 
+BEGIN
+
+RETURN 0;
+
+END
+
+/*=====================================================================
+                              Timeout Errors
+======================================================================*/
+
+ON TIMEOUT =
+BEGIN
+
+h_retry_or_not      = 'RETRY';
+h_retries           = 0;
+h_retries_max   = 3;
+
+WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+DO
+
+  h_retries = :h_retries + 1;
+
+  DELETE FROM   inter_image_params
+  WHERE         user_id = :g_user_id;
+
+  h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF h_return <> 7
+  THEN
+    h_retry_or_not = '';
+  ENDIF;
+
+ENDWHILE;
+
+IF h_return = 7
+THEN
+  EXIT;
+
+ ELSEIF h_return = 9
+ THEN
+  MESSAGE 'Timeout: System error in deleting IIP record'
+           WITH STYLE = POPUP;
+
+ ELSEIF h_return = 1
+ THEN
+  MESSAGE 'Timeout: no IIP record could be updated'
+           WITH STYLE = POPUP;
+
+ENDIF;
+
+h_retry_or_not      = 'RETRY';
+h_retries           = 0;
+h_retries_max   = 3;
+
+WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+DO
+
+  h_retries = :h_retries + 1;
+
+  INSERT INTO error_log (
+              error_time,
+              error_text,
+              frpr_name,
+              error_code,
+              user_id)
+  VALUES (    'now',
+              'TIMEOUT',
+              :h_frpr_name,
+               0,
+              :g_user_id);
+
+  h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF h_return <> 7
+  THEN
+    h_retry_or_not = '';
+  ENDIF;
+
+ENDWHILE;
+
+IF h_return = 7
+THEN
+  EXIT;
+
+ ELSEIF h_return = 9
+ THEN
+   MESSAGE 'Timeout: System error inserting into error_log'
+            WITH STYLE = POPUP;
+
+ ELSEIF h_return = 1
+ THEN
+  MESSAGE 'Timeout: No record inserted into error_log'
+           WITH STYLE = POPUP;
+ENDIF;
+
+EXIT;
+
+END
+
+
+/****************************************************************************/
+/*********************** LOCAL PROCEDURES ***********************************/
+/****************************************************************************/
+
+/*===========================================================================
+	      Local procedure for error checking within retry loop.
+============================================================================*/
+
+PROCEDURE lp_full_error_check
+	  (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT)=
+
+DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+
+BEGIN
+
+lp_return = CALLPROC check_inq_ing (h_num_row_ck      = :p_num_row_ck,
+ 				    h_commit          = 'Y',
+				    h_rollback        = 'N',
+				    h_retries         = :h_retries,
+                                    h_retries_allowed = :h_retries_max,
+                                    h_frpr_name       = 'val_gates_1.fr');
+RETURN :lp_return;
+
+END
+
+/*===========================================================================
+	      Local procedure for basic error checking.
+============================================================================*/
+
+PROCEDURE lp_error_check
+	  (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT)=
+
+DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+
+BEGIN
+
+lp_return = CALLPROC check_inq_ing (h_num_row_ck      = :p_num_row_ck,
+ 				    h_commit          = 'Y',
+				    h_rollback        = 'N',
+				    h_retries         = 1,
+                                    h_retries_allowed = 1,
+                                    h_frpr_name       = 'val_gates_1.fr');
+RETURN :lp_return;
+
+END
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(24) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(20) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

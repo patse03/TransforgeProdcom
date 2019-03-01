@@ -1,0 +1,227 @@
+
+/*---------------------------------------------------------------------------
+
+Program Name:		msa_fr_copy_im_qa
+
+Description:		Copies image to produser for QA purposes
+
+
+Called By:		msa_fr_copy_im_menu.osq
+
+Calls:
+
+Date Written:		April 1996
+
+Author:			
+
+Changed By:
+
+Change date:
+
+-----------------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(25) NOT NULL,
+	h_command         = VARCHAR(500) NOT NULL,
+	h_dir             = VARCHAR(65) NOT NULL,
+	h_image_dir       = VARCHAR(65) NOT NULL,
+	h_reports_dir     = VARCHAR(65) NOT NULL,
+	h_source_dir      = VARCHAR(65) NOT NULL,
+	ret_val           = INTEGER1 NOT NULL 
+
+
+{
+
+    h_retries_allowed = 3;
+    h_frpr_name = 'msa_fr_copy_im_qa';
+    msa_date = 'now';
+
+    h_image_dir = '/home/prodcom/admin/produser/images/';
+    h_reports_dir = '/home/prodcom/admin/live/reports/';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+	ret_val = CALLFRAME look_up(
+        ii_query = SELECT application_name
+		   FROM vca_application
+		   ORDER BY application_name;
+		   application_name = BYREF(application_name);
+		   ii_field1 = 'application_name',
+		   ii_startcolumn = 28,
+		   ii_startrow = 15,
+		   ii_title = 'Select application');
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error selecting from vca_application'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Application does not exist on table, please retype'
+        WITH STYLE = POPUP;
+        RESUME field application_name;
+    ENDIF;
+    RESUME field dbasefrom;
+
+}
+
+'Go', key FRSKEY4 =
+{
+        IF dbasefrom = ''
+	THEN
+	    MESSAGE 'You must enter the source database .Please retype'
+	    WITH STYLE = POPUP;
+	    RESUME field dbasefrom;
+        ENDIF;
+
+        IF dbasefrom =  'produserdb'
+	THEN
+	    MESSAGE 'You cannot copy from produser to produser '
+	    WITH STYLE = POPUP;
+	    RESUME field dbasefrom;
+        ENDIF;
+
+
+      IF :dbasefrom = 'proddevdb'
+      THEN
+          h_dir = '/home/prodcom/admin/proddev/images/';
+          h_source_dir = '/home/prodcom/admin/proddev/sources/';
+      ELSEIF :dbasefrom = 'pauldb2'
+      THEN
+          h_dir = '/home/prodcom/devusers/pread/images/';
+          h_source_dir = '/home/prodcom/devusers/pread/sources/';
+      ENDIF;
+       
+       h_command = 'cd ' + :h_image_dir +
+		   '; cp ' + :h_dir + :application_name + ' .';
+
+
+	message 'This image will be copied to produser images ' 
+		 + :h_command
+	with style =popup;
+
+        message 'Copying Image ...';
+
+	      ret_val = CALLPROC msa_cp_callsys(:h_command);
+
+	      IF ret_val != 0
+	      THEN
+	         message 'Error copying image to produser. Somebody may be using the image. Please check'
+	         WITH STYLE = popup;
+		 RETURN ret_val;
+	      ELSE
+	         message 'Image copied OK '
+	         WITH STYLE = popup;
+              ENDIF;
+
+    IF :reports = 'Y'
+    THEN
+       h_command = 'cd ' + :h_reports_dir +
+		   '; cp ' + :h_source_dir + :application_name + '/*.rw .';
+
+	message 'All report writer programs will be copied to the live directory'
+		 + :h_command
+	with style =popup;
+
+	      ret_val = CALLPROC msa_cp_callsys(:h_command);
+	      IF ret_val != 0
+	      THEN
+	         message 'Error copying reports to live area. Please check'
+	         WITH STYLE = popup;
+		 RETURN ret_val;
+	      ELSE
+	         message 'Reports copied OK '
+	         WITH STYLE = popup;
+              ENDIF;
+    ENDIF;	
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+		 UPDATE vca_application
+		 SET    status = 'Q'
+		 WHERE  application_name = :application_name;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error updating from vca_application'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Error Updating vca_application , please check'
+        WITH STYLE = POPUP;
+        RESUME field application_name;
+    ENDIF;
+
+
+}
+
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'End', key FRSKEY6 =
+{
+  RETURN 0;
+}

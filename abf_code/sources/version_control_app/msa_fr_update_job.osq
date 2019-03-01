@@ -1,0 +1,322 @@
+
+/*---------------------------------------------------------------------------
+
+Program Name:		msa_fr_update_job.osq
+
+Description:		Allows job details to be updated
+
+
+Called By:		msa_fr_version_menu.osq
+
+Calls:
+
+Date Written:		April 1996
+
+Author:			
+
+Changed By:
+
+Change date:
+
+-----------------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(25) NOT NULL,
+	ret_val           = INTEGER1 NOT NULL ,
+
+	h_description      = CHAR(100) NOT NULL,
+	h_application_name = CHAR(25) NOT NULL,
+	h_programmer_name  = CHAR(20) NOT NULL,
+	h_date_received    = DATE NOT NULL,
+	h_planned_end_date = DATE NOT NULL,
+	h_actual_end_date  = DATE NOT NULL,
+	h_hmd_taken        = INTEGER1 NOT NULL,
+	h_prompt           = CHAR(1) NOT NULL,
+
+        lp_load_job       = PROCEDURE RETURNING INTEGER,
+	lp_store_screen   = PROCEDURE RETURNING NONE
+{
+
+    h_retries_allowed = 3;
+    h_frpr_name = 'msa_fr_update_job';
+    msa_date = 'now';
+
+    SET_fORMS FIELD '' (DISPLAYONLY (job_number) = 0);
+}
+field 'job_number' =
+{
+    ret_val = CALLPROC lp_load_job ();
+
+    IF ret_val != 0
+    THEN
+	IF ret_val != 1
+	THEN
+            RETURN ret_val;
+	ELSE
+	    RESUME FIELD job_number;
+	ENDIF;
+    ENDIF;
+
+    RESUME FIELD description;
+}
+
+'Clear Screen' =
+{
+    IF :h_description      != :description
+    OR :h_application_name != :application_name
+    OR :h_programmer_name  != :programmer_name
+    OR :h_date_received    != :date_received
+    OR :h_planned_end_date != :planned_end_date
+    OR :h_actual_end_date  != :actual_end_date
+    OR :h_hmd_taken        != :hmd_taken
+    THEN
+	h_prompt = '';
+	WHILE h_prompt != 'y' AND h_prompt != 'n'
+	DO
+	   h_prompt = PROMPT 'UPDATE must be selected to save any alterations made - do you wish to go back and select UPDATE? Type Y/N and press <return>'
+	WITH STYLE = POPUP;
+	h_prompt = LOWERCASE(h_prompt);
+	ENDWHILE;
+
+        IF h_prompt = 'y'
+	THEN
+	   RESUME field description;
+	ENDIF;
+    ENDIF;
+
+    CLEAR FIELD ALL;
+    msa_date = 'now';
+    
+    CALLPROC lp_store_screen();
+
+    RESUME FIELD job_number;
+}
+
+
+
+
+'Update' =
+{
+    IF :description = ''
+    THEN
+	MESSAGE 'Description is a mandatory field'
+	WITH STYLE = POPUP;
+	RESUME FIELD description;
+    ENDIF;
+
+    IF :application_name = ''
+    THEN
+	MESSAGE 'Application is a mandatory field'
+	WITH STYLE = POPUP;
+	RESUME FIELD description;
+    ENDIF;
+
+    IF :planned_end_date < :date_received 
+    THEN
+	MESSAGE 'The planned end date cannot be earlier than date received.'
+	WITH STYLE = POPUP;
+	RESUME FIELD planned_end_date;
+    ENDIF;
+
+    IF :actual_end_date < :date_received 
+    THEN
+	MESSAGE 'The date completed is earlier than date received, please retype'
+	WITH STYLE = POPUP;
+	RESUME FIELD actual_end_date;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE vca_job
+	SET    description       = :description,
+	       application_name  = :application_name,
+	       programmer_name   = :programmer_name,
+	       date_received     = :date_received,
+	       planned_end_date  = :planned_end_date,
+	       actual_end_date   = :actual_end_date,
+	       hmd_taken         = :hmd_taken
+        WHERE  job_number = :job_number;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error updating vca_job'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows updated for job'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    MESSAGE 'Job ' + ascii(:job_number) + ' updated OK'
+    WITH STYLE = POPUP;
+
+    CLEAR FIELD ALL;
+
+    SET_fORMS FIELD '' (DISPLAYONLY (job_number) = 0);
+
+    CALLPROC lp_store_screen ();
+
+    RESUME FIELD job_number;
+}
+'End' , KEY FRSKEY6 =
+{
+    IF :h_description      != :description
+    OR :h_application_name != :application_name
+    OR :h_programmer_name  != :programmer_name
+    OR :h_date_received    != :date_received
+    OR :h_planned_end_date != :planned_end_date
+    OR :h_actual_end_date  != :actual_end_date
+    OR :h_hmd_taken        != :hmd_taken
+    THEN
+	h_prompt = '';
+	WHILE h_prompt != 'y' AND h_prompt != 'n'
+	DO
+	   h_prompt = PROMPT 'UPDATE must be selected to save any alterations made - do you wish to go back and select UPDATE? Type Y/N and press <return>'
+	WITH STYLE = POPUP;
+	h_prompt = LOWERCASE(h_prompt);
+	ENDWHILE;
+
+        IF h_prompt = 'y'
+	THEN
+	   RESUME field description;
+	ELSE 
+           RETURN 0;
+	ENDIF;
+    ELSE
+	RETURN 0;
+    ENDIF;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+/*-------------------------------------------------------------------
+
+Local Procedures
+
+---------------------------------------------------------------------*/
+
+PROCEDURE lp_load_job()=
+{
+    IF job_number = ''
+    THEN
+        MESSAGE 'Please enter job_number'
+        WITH STYLE = POPUP;
+	RETURN 1;
+    ENDIF;
+
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+	h_retries = :h_retries + 1;
+
+	SELECT description,
+	       application_name,
+	       programmer_name,
+	       date_received,
+	       planned_end_date,
+	       actual_end_date,
+	       hmd_taken
+	FROM   vca_job
+	WHERE  job_number = :job_number;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error selecting from vca_job'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'job_number does not exist on table, please retype'
+        WITH STYLE = POPUP;
+	RETURN 1;
+    ENDIF;
+
+
+    REDISPLAY;
+
+    h_description      = :description;
+    h_application_name = :application_name;
+    h_programmer_name  = :programmer_name;
+    h_date_received    = :date_received;
+    h_planned_end_date = :planned_end_date;
+    h_actual_end_date  = :actual_end_date;
+    h_hmd_taken        = :hmd_taken;
+
+    SET_fORMS FIELD '' (DISPLAYONLY (job_number) = 1);
+
+    RETURN 0;
+}
+
+PROCEDURE lp_store_screen() =
+{
+
+    h_description      = :description;
+    h_application_name = :application_name;
+    h_programmer_name  = :programmer_name;
+    h_date_received    = :date_received;
+    h_planned_end_date = :planned_end_date;
+    h_actual_end_date  = :actual_end_date;
+
+    RETURN;
+}
+
+

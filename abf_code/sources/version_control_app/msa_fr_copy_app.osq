@@ -1,0 +1,253 @@
+
+/*---------------------------------------------------------------------------
+
+Program Name:		msa_fr_copy_app.osq
+
+Description:		Copies applications from one database to another
+
+
+Called By:		msa_fr_version_menu.osq
+
+Calls:			msa_fp_chk_status.osq
+			msa_cp_callsys.sc
+
+Date Written:		April 1996
+
+Author:			
+
+Changed By:
+
+Change date:
+
+-----------------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(25) NOT NULL,
+	h_command         = VARCHAR(500) NOT NULL,
+	h_source          = VARCHAR(55) NOT NULL,
+	h_output1         = VARCHAR(15) NOT NULL,
+	h_output2         = VARCHAR(15) NOT NULL,
+	h_pos             = CHAR(12) NOT NULL,
+	h_position        = INTEGER4 NOT NULL,
+	h_username        = CHAR(15) NOT NULL,
+	h_dir             = VARCHAR(55) NOT NULL,
+	h_copy_dir        = VARCHAR(55) NOT NULL,
+	ret_val           = INTEGER1 NOT NULL 
+
+{
+
+    h_retries_allowed = 3;
+    h_frpr_name = 'msa_fr_copy_app';
+    msa_date = 'now';
+
+    dbasefrom = 'produserdb';
+    dbaseto = 'proddevdb';
+    h_output1 = 'copyout.error';
+    h_output2 = 'copyin.error';
+}
+
+field 'application_name' = 
+{
+        IF application_name = ''
+	THEN
+	    MESSAGE 'Application name is not filled in. Please retype'
+	    WITH STYLE = POPUP;
+	    RESUME field application_name;
+        ENDIF;
+
+        ret_val = CALLPROC msa_fp_chk_status(h_application = :application_name);
+
+    IF ret_val != 0
+    THEN
+    /*    RETURN ret_val;*/
+        RESUME field application_name;
+    ELSE
+        RESUME field dbasefrom;
+    ENDIF;
+
+}
+
+field 'dbasefrom' =
+{
+
+        IF dbasefrom = ''
+	THEN
+	    MESSAGE 'You must enter the source database .Please retype'
+	    WITH STYLE = POPUP;
+	    RESUME field dbasefrom;
+        ENDIF;
+        RESUME field dbaseto;
+
+
+
+        IF dbaseto = ''
+	THEN
+	    MESSAGE 'You must enter the target database .Please retype'
+	    WITH STYLE = POPUP;
+	    RESUME field dbaseto;
+        ENDIF;
+
+        IF dbaseto = dbasefrom
+	THEN
+	    MESSAGE 'You cannot copy from a database into the same database'
+	    WITH STYLE = POPUP;
+	    RESUME field dbasefrom;
+        ENDIF;
+
+        IF dbaseto =  'prodlivedb'
+	THEN
+	    MESSAGE 'You cannot copy into the live database'
+	    WITH STYLE = POPUP;
+	    RESUME field dbaseto;
+        ENDIF;
+}
+'Go', key FRSKEY4 =
+{
+
+    ret_val = CALLPROC msa_fp_chk_status(h_application = :application_name);
+
+    IF ret_val != 0
+    THEN
+        RETURN ret_val;
+        RESUME field application_name;
+
+/*    ELSE RESUME field dbasefrom; */
+
+    ENDIF;
+
+    IF dbasefrom = 'produserdb'
+    THEN
+        h_dir = '/home/prodcom/admin/produser/';
+    ELSEIF dbasefrom = 'proddevdb'
+    THEN
+        h_dir = '/home/prodcom/admin/proddev/';
+    ELSE
+        MESSAGE 'Invalid DB-from'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+       h_command = 'cd ' + :h_dir +
+		   ';cp_runasuser ' +
+		   ' "copyapp out -d' + 
+		   :h_dir + 'copyapp -t' +
+		   :application_name +
+		   ' ' + :dbasefrom + ' ' +
+		   :application_name + ' > ' + :h_dir +
+		   'copyapp/' +:h_output1 + '"';
+
+
+        message 'Copying application out..';
+
+	ret_val = CALLPROC msa_cp_callsys(:h_command);
+
+
+	h_username = :dbaseto;
+	h_position = LOCATE(:h_username,'b');
+	h_pos = LEFT(:h_username,h_position -2);
+	h_username := :h_pos;
+
+
+	/* set directory */
+       IF :h_username = 'produser'
+       THEN
+	   h_copy_dir = '/home/prodcom/admin/produser/';
+           h_source = '/prodcom/source/produser/sources/';
+       ELSE
+	   h_copy_dir = '/home/prodcom/admin/proddev/';
+           h_source = '/prodcom/source/proddev/sources/';
+       ENDIF;
+
+
+
+	IF :h_username = 'proddev'
+	THEN
+	    h_command = 'cd ' + :h_source + ';' +
+			'mkdir ' +:application_name +
+			';chmod 775 ' +application_name;
+
+	    ret_val = CALLPROC msa_cp_callsys(:h_command);
+
+	    IF ret_val != 0
+	    THEN
+		message 'Error making new directory'
+		with style = popup;
+	    ENDIF;
+	ENDIF;
+
+
+
+       h_command = 'cd ' +:h_copy_dir + 
+		  '; cp_runasuser ' +
+                  ' "copyapp in  -d' + 
+		  :h_dir + 'copyapp/ -r '+
+		  '-s' +(:h_source) +
+		  (:application_name) + 
+		  ' ' +
+		  :dbaseto + 
+		  ' ' + :application_name + 
+		  ' > ' + :h_copy_dir +
+		  'copyapp/' +:h_output2 + ' 2>&1' +
+		  '" ' ;
+
+
+        message 'Copying application in...';
+
+	ret_val = CALLPROC msa_cp_callsys(:h_command);
+
+        IF ret_val = 0
+	THEN
+	    message 'Copying finished OK - Errors are in copyin.error '
+	    + 'and copyout.error'
+	    with style = popup;
+	ENDIF;
+
+	IF dbaseto = 'produserdb'
+	THEN
+	    UPDATE vca_application 
+	    SET status = 'L'
+	WHERE
+	    application_name = :application_name;
+	ELSE
+            UPDATE vca_application
+	    SET status = 'D'
+	    WHERE application_name = :application_name
+	ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+	IF ret_val = 9
+	THEN
+	    MESSAGE 'System error updating from vca_application'
+	    WITH STYLE = POPUP;
+	    RETURN 9;
+
+	ELSEIF ret_val = 1
+	THEN
+	    MESSAGE 'Application does not exist on table, please retype'
+	    WITH STYLE = POPUP;
+	    RESUME field application_name;
+	ENDIF;
+}
+
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'End', key FRSKEY6 =
+{
+  RETURN 0;
+}

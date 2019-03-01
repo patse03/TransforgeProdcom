@@ -1,0 +1,245 @@
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_return           = INTEGER1 NOT NULL,
+	h_password        = CHAR(5)   NOT NULL,
+	h_date_changed    = DATE      NOT NULL,
+        h_exit            = CHAR(1) NOT NULL,
+
+        lp_error_check = PROCEDURE RETURNING INTEGER,
+        lp_full_error_check = PROCEDURE RETURNING INTEGER
+{
+
+SELECT DBMSINFO('database') AS g_database;
+
+SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+h_frpr_name = 'val_gates_1_fr';
+msa_date = 'now';
+
+/*----------------------------------------------------------------------
+     Access check. (Error messages handled by procedure.)
+----------------------------------------------------------------------*/
+
+h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+IF h_return = 1
+THEN
+  RETURN;
+ELSEIF h_return > 1
+THEN
+  EXIT;
+ENDIF;
+
+ h_return = CALLPROC msa_fp_get_user_details (
+           h_user_id         = BYREF(:g_user_id),
+           h_password        = BYREF(:h_password),
+           h_date_changed    = BYREF(:h_date_changed),
+           h_grade           = BYREF(:g_grade),
+           h_access_level    = BYREF(:g_access_level),
+           h_user_name       = BYREF(:g_user_name),
+           h_default_printer = BYREF(:g_printer));
+
+IF h_return != 0
+THEN
+  MESSAGE 'SYSTEM ERROR: Unable to select user details. ' 
+        + 'Error code ' +VARCHAR(:h_return) +'.' +X'0D'
+        + 'Please contact I.M. immediately.'
+           WITH STYLE = POPUP;
+
+  RETURN;
+ENDIF; 
+
+
+}
+
+/*----------------------------------------------------------------------
+   Main menu routing.
+----------------------------------------------------------------------*/
+
+FIELD choice =
+BEGIN
+
+g_option = IFNULL(:choice,0);
+
+IF choice = 1
+THEN
+  h_return = CALLFRAME val_gates_1a_fr; 
+  choice = 0;
+
+ELSEIF choice = 2
+THEN
+  h_return = CALLFRAME val_gates_2b_fr;
+  choice = 0;
+
+ELSEIF choice = 3
+THEN
+  h_return = CALLFRAME val_gates_2b_fr;
+  choice = 0;
+
+ELSEIF choice = 4
+THEN
+  h_return = CALLFRAME val_gates_4b_fr;
+  choice = 0;
+
+ELSEIF choice = 0
+THEN
+  RETURN;
+
+ELSE
+  RESUME FIELD choice;
+
+ENDIF;
+
+IF h_return != 0 
+THEN 
+  RETURN; 
+ENDIF;
+
+RESUME FIELD choice;
+
+END;
+
+/*----------------------------------------------------------------------
+   Timeout Errors
+----------------------------------------------------------------------*/
+
+ON TIMEOUT =
+BEGIN
+
+h_retry_or_not      = 'RETRY';
+h_retries           = 0;
+
+WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+DO
+
+  h_retries = :h_retries + 1;
+
+  DELETE FROM   inter_image_params
+  WHERE         user_id = :g_user_id;
+
+  h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF h_return <> 7
+  THEN
+    h_retry_or_not = '';
+  ENDIF;
+
+ENDWHILE;
+
+IF h_return = 7
+THEN
+  EXIT;
+
+ ELSEIF h_return = 9
+ THEN
+  MESSAGE 'Timeout: System error in deleting IIP record'
+           WITH STYLE = POPUP;
+
+ ELSEIF h_return = 1
+ THEN
+  MESSAGE 'Timeout: no IIP record could be updated'
+           WITH STYLE = POPUP;
+
+ENDIF;
+
+h_retry_or_not      = 'RETRY';
+h_retries           = 0;
+
+WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+DO
+
+  h_retries = :h_retries + 1;
+
+  INSERT INTO error_log (
+              error_time,
+              error_text,
+              frpr_name,
+              error_code,
+              user_id)
+  VALUES (    'now',
+              'TIMEOUT',
+              :h_frpr_name,
+               0,
+              :g_user_id);
+
+  h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF h_return <> 7
+  THEN
+    h_retry_or_not = '';
+  ENDIF;
+
+ENDWHILE;
+
+IF h_return = 7
+THEN
+  EXIT;
+
+ ELSEIF h_return = 9
+ THEN
+   MESSAGE 'Timeout: System error inserting into error_log'
+            WITH STYLE = POPUP;
+
+ ELSEIF h_return = 1
+ THEN
+  MESSAGE 'Timeout: No record inserted into error_log'
+           WITH STYLE = POPUP;
+ENDIF;
+
+EXIT;
+
+END
+
+
+/****************************************************************************/
+/*********************** LOCAL PROCEDURES ***********************************/
+/****************************************************************************/
+
+/*===========================================================================
+	      Local procedure for error checking within retry loop.
+============================================================================*/
+
+PROCEDURE lp_full_error_check
+	  (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT)=
+
+DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+
+BEGIN
+
+lp_return = CALLPROC check_inq_ing ( h_num_row_ck      = :p_num_row_ck,
+ 				    h_commit          = 'Y',
+				    h_rollback        = 'N',
+				    h_retries         = :h_retries,
+                                    h_retries_allowed = :h_retries_allowed,
+                                    h_frpr_name       = 'val_gates_1.fr');
+RETURN :lp_return;
+
+END
+
+/*===========================================================================
+	      Local procedure for basic error checking.
+============================================================================*/
+
+PROCEDURE lp_error_check
+	  (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT)=
+
+DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+
+BEGIN
+
+lp_return = CALLPROC check_inq_ing ( h_num_row_ck      = :p_num_row_ck,
+ 				    h_commit          = 'Y',
+				    h_rollback        = 'N',
+				    h_retries         = 1,
+                                    h_retries_allowed = 1,
+                                    h_frpr_name       = 'val_gates_1.fr');
+RETURN :lp_return;
+
+END
