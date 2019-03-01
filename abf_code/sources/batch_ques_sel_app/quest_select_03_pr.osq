@@ -1,0 +1,724 @@
+/*----------------------------------------------------------------------
+ Selects questions industry by industry.
+
+ Rewritten to match the main program program, which was left unfinished 
+ with instructions to perform the last steps manually. Also removed code
+ relating to quarterly that is no longer relevant. DF 2012.
+
+----------------------------------------------------------------------*/
+
+PROCEDURE quest_select_03_pr () =
+
+DECLARE h_param_list         = VARCHAR(100) NOT NULL,
+        h_varchar_variable   = VARCHAR(100) NOT NULL,
+        h_integer_variable   = INTEGER1     NOT NULL,
+        h_param1             = VARCHAR(20)  NOT NULL,
+        h_text               = VARCHAR(70)  NOT NULL,
+        h_return             = INTEGER1     NOT NULL,
+        h_span_end           = INTEGER4     NOT NULL,
+        h_table_1            = VARCHAR(36)  NOT NULL,
+        h_table_2            = VARCHAR(36)  NOT NULL,
+        h_table_3            = VARCHAR(36)  NOT NULL,
+        h_table_4            = VARCHAR(36)  NOT NULL,
+        h_loss_file          = VARCHAR(55)  NOT NULL,
+        h_gain_file          = VARCHAR(55)  NOT NULL,
+        h_main_table         = VARCHAR(36)  NOT NULL,
+        h_frpr_name          = VARCHAR(24)  NOT NULL,
+
+        lp_error_check       = PROCEDURE RETURNING INTEGER NOT NULL,
+        lp_drop_table        = PROCEDURE RETURNING INTEGER NOT NULL,
+
+{
+  h_frpr_name = 'quest_sel_03_pr';
+  h_main_table = 'qsl_losses_gains';
+  /* temp tables 1 and 2 created after period validation */  
+  h_table_3 = 'tt_quest_sel_03_loss';
+  h_table_4 = 'tt_quest_sel_03_gain';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  h_param_list = CALLPROC CommandLineParameters();
+
+  h_varchar_variable = SQUEEZE (h_param_list);
+
+  h_integer_variable = LOCATE (h_varchar_variable, ' ');
+  h_param1         =   LEFT (h_varchar_variable,h_integer_variable - 1);
+  h_varchar_variable = SHIFT (h_varchar_variable, - h_integer_variable);
+
+  g_period = INT4(:h_param1);
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_procs (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Log start of process
+  ------------------------------------------------------------------*/
+
+  SELECT MAX(log_no) AS g_log_no
+  FROM qsl_process_log;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to pick up last log no from process log.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      =  :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  h_text = 'STARTING: Process 3 started.';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);  
+
+  /*------------------------------------------------------------------
+      Validate the period called.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[1/18] Validating parameters. . .';
+  SLEEP 1;
+
+  SELECT span_end AS h_span_end
+  FROM   inquiry
+  WHERE  inquiry = 14;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select span end from table inquiry.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      =  :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  IF h_span_end != g_period
+  THEN
+    h_text = 'ERROR: Period parameter does not match the span end.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Check cycle_point : if not Q, then stop
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[2/18] Checking cycle point. . .';
+  SLEEP 1;
+
+  SELECT industry AS g_industry
+  FROM   industry
+  WHERE  industry_cycle_point != 'Q'
+  AND    inquiry = 14;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 0);
+
+  IF h_return = 1
+  THEN
+    h_text = 'WARNING: Industry cycle point is not "Q". Aborting.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ELSEIF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to select cycle point from industry table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Set previous period and temp table names and file names.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[3/18] Setting variables. . .';
+  SLEEP 1;
+
+  g_prev_period1 = g_period - 100;
+
+  h_table_1 = 'tt_quest_sel_03_' +VARCHAR(:g_prev_period1);
+  h_table_2 = 'tt_quest_sel_03_' +VARCHAR(:g_period);
+
+  h_loss_file = '/admin/scratch/prodcom_question_losses_' 
+              + VARCHAR(:g_period) +'.csv';
+  h_gain_file = '/admin/scratch/prodcom_question_gains_'
+              + VARCHAR(:g_period) +'.csv';
+
+ /*------------------------------------------------------------------
+     Create table 1: contributor questions in previous period.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[4/18] Creating ' +VARCHAR(:g_prev_period1) +' table. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop working table ' +:h_table_1 + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table_1
+  AS 
+  SELECT *                         
+  FROM   cqpv
+  WHERE  period = :g_prev_period1
+    AND  quest_order = 1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create working table ' +:h_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+ /*------------------------------------------------------------------
+     Create table 2: contributor questions in new period.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[5/18] Creating ' +VARCHAR(:g_period) +' table. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_2);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop working table ' +:h_table_2 + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table_2
+  AS 
+  SELECT *                         
+  FROM   cqpv
+  WHERE  period = :g_period
+    AND  quest_order = 1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create working table ' +:h_table_2 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Modify temp tables                               
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[6/18] Modifying initial tables. . .';
+  SLEEP 1;
+
+  MODIFY :h_table_1 TO BTREE UNIQUE 
+  ON contributor_reference, quest_order, question, period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify working table ' +:h_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :h_table_2 TO BTREE UNIQUE 
+  ON contributor_reference, quest_order, question, period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify working table ' +:h_table_2 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*---------------------------------------------------------------------
+    Drop then Create table 3 : Losses (On table_1, not on table_2)
+  ---------------------------------------------------------------------*/
+
+  MESSAGE '[7/18] Creating loss table. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_3);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop working table ' +:h_table_3 + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table_3
+  AS 
+  SELECT a.contributor_reference,
+         a.contributor_industry,
+         a.question,
+         'L' AS change,
+         b.name
+  FROM   :h_table_1 a,
+         industry_analysts b
+  WHERE  a.contributor_industry   = b.industry
+    AND  a.contributor_reference >= b.low_ref
+    AND  a.contributor_reference <= b.high_ref
+    AND  a.question NOT IN 
+      (  SELECT question
+         FROM   :h_table_2 c
+         WHERE  a.contributor_reference = c.contributor_reference);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create working table ' +:h_table_3 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*---------------------------------------------------------------------
+    Delete from losses questions from contributors not selected in 2012.
+    These are different from questions lost from 2012 contributors, and
+    will already have been assessed during contributor losses and gains.
+  ---------------------------------------------------------------------*/
+
+  MESSAGE '[8/18] Removing contributor losses. . .';
+  SLEEP 1;
+
+  DELETE FROM :h_table_3
+  WHERE  contributor_reference NOT IN 
+      (  SELECT DISTINCT contributor_reference 
+         FROM   :h_table_2);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to delete from working table ' +:h_table_3 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*---------------------------------------------------------------------
+    Drop then Create table 4 : Gains (On table_2, not on table_1)
+  ---------------------------------------------------------------------*/
+
+  MESSAGE '[9/18] Creating gain table. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_4);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop working table ' +:h_table_4 + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table_4
+  AS 
+  SELECT a.contributor_reference,
+         a.contributor_industry,
+         a.question,
+         'G' AS change,
+         b.name
+  FROM   :h_table_2 a,
+         industry_analysts b
+  WHERE  a.contributor_industry   = b.industry
+    AND  a.contributor_reference >= b.low_ref
+    AND  a.contributor_reference <= b.high_ref
+    AND  a.question NOT IN 
+      (  SELECT question
+         FROM   :h_table_1 c
+         WHERE  a.contributor_reference = c.contributor_reference);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create working table ' +:h_table_4 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*---------------------------------------------------------------------
+    Create Losses file. (Saving a rainforrest!)
+  ---------------------------------------------------------------------*/
+
+  MESSAGE '[10/18] Creating losses file. . .';
+  SLEEP 1;
+
+  COPY TABLE :h_table_3
+           ( contributor_reference = c0comma,
+             contributor_industry  = c0comma,
+             question              = c0comma,
+             change                = c0comma,
+             name                  = c0nl   )
+  INTO :h_loss_file;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create loss file from ' +:h_table_3 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*---------------------------------------------------------------------
+    Create gains file. (Saving a smaller rainforrest!)
+  ---------------------------------------------------------------------*/
+
+  MESSAGE '[11/18] Creating gains file. . .';
+  SLEEP 1;
+
+  COPY TABLE :h_table_4
+           ( contributor_reference = c0comma,
+             contributor_industry  = c0comma,
+             question              = c0comma,
+             change                = c0comma,
+             name                  = c0nl   )
+  INTO :h_gain_file;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create gain file from ' +:h_table_4 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*---------------------------------------------------------------------
+    Delete any rows in permanent table for this period.
+  ---------------------------------------------------------------------*/
+
+  MESSAGE '[12/18] Deleting from main table. . .';
+  SLEEP 1;
+
+  DELETE FROM :h_main_table
+  WHERE  period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to delete ' +VARCHAR(:g_period) + ' records ' 
+           + 'from ' +:h_main_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*---------------------------------------------------------------------
+       Modify to heap for potentially large insert. 
+  ---------------------------------------------------------------------*/
+
+  MESSAGE '[13/18] Preparing main table. . .';
+  SLEEP 1;
+
+  MODIFY :h_main_table TO HEAP;
+  COMMIT;
+
+  /*---------------------------------------------------------------------
+    Insert losses for current period into main table
+  ---------------------------------------------------------------------*/
+
+  MESSAGE '[14/18] Inserting losses into main table. . .';
+  SLEEP 1;
+
+  INSERT INTO :h_main_table
+  SELECT      :g_period,
+              contributor_reference,
+              contributor_industry,
+              question,
+              change,
+              name
+  FROM        :h_table_3;
+                
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to insert losses into ' +:h_main_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*---------------------------------------------------------------------
+    Insert losses for current period into main table
+  ---------------------------------------------------------------------*/
+
+  MESSAGE '[15/18] Inserting gains into main table. . .';
+  SLEEP 1;
+
+  INSERT INTO :h_main_table
+  SELECT      :g_period,
+              contributor_reference,
+              contributor_industry,
+              question,
+              change,
+              name
+  FROM        :h_table_4;
+                
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to insert gains into ' +:h_main_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*---------------------------------------------------------------------
+       Modify to btree to ensure integrity and performance  
+  ---------------------------------------------------------------------*/
+
+  MESSAGE '[16/18] Finalising main table. . .';
+  SLEEP 1;
+
+  MODIFY :h_main_table TO BTREE UNIQUE
+      ON period, contributor_reference, question;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to re-modify ' +:h_main_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+ /*------------------------------------------------------------------
+     Tidy up...
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[17/18] Tidying up. . . ';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to tidy up working table ' +:h_table_1 + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_2);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to tidy up working table ' +:h_table_2 + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_3);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to tidy up working table ' +:h_table_3 + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_4);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to tidy up working table ' +:h_table_4 + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Log end of process
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[18/18] Loging end of process. . .';
+  SLEEP 1;
+
+  h_text = 'COMPLETE: Process 3 completed.';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  h_text = '*SIGNOFF*';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  RETURN 0;
+}
+
+
+/********************* LOCAL PROCEDURES *************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(36) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name  = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  h_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF h_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+

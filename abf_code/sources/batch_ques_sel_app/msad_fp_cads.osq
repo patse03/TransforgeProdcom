@@ -1,0 +1,532 @@
+/*----------------------------------------------------------------------
+CADS:
+
+The stopped CADS outweigh the added CADS, so the order is:
+
+   1  Add Blanket CADS
+   2  Add CADS
+   3  Delete CADS
+----------------------------------------------------------------------*/
+
+PROCEDURE msad_fp_cads () =
+
+DECLARE h_frpr_name     = VARCHAR(24) NOT NULL,
+        h_table         = VARCHAR(24) NOT NULL,
+        ret_val         = INTEGER1 NOT NULL
+
+{
+    h_frpr_name = 'msad_fp_cads';
+    h_table = 'temp_sel_cads';
+
+    /*------------------------------------------------------------------
+    1. Add Blanket CADS
+
+    Create for all volumes as it's quicker matching question_library on
+    question=question than it is on question/10*10+1=question
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Creating added Blanket CADS for ' +
+            VARCHAR(:g_industry) + ' . . .';
+
+    ret_val = CALLPROC batch_fp_drop_table ( h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_table
+    AS SELECT    question
+    FROM         blanket_cads
+    WHERE        :g_period BETWEEN start_period AND end_period
+    AND          contributor_industry = :g_industry
+    UNION SELECT question + 1
+    FROM         blanket_cads
+    WHERE        :g_period BETWEEN start_period AND end_period
+    AND          contributor_industry = :g_industry
+    UNION SELECT question + 3
+    FROM         blanket_cads
+    WHERE        :g_period BETWEEN start_period AND end_period
+    AND          contributor_industry = :g_industry
+    UNION SELECT question + 4
+    FROM         blanket_cads
+    WHERE        :g_period BETWEEN start_period AND end_period
+    AND          contributor_industry = :g_industry
+    UNION SELECT question + 5
+    FROM         blanket_cads
+    WHERE        :g_period BETWEEN start_period AND end_period
+    AND          contributor_industry = :g_industry
+    UNION SELECT question + 7
+    FROM         blanket_cads
+    WHERE        :g_period BETWEEN start_period AND end_period
+    AND          contributor_industry = :g_industry
+    UNION SELECT question + 8
+    FROM         blanket_cads
+    WHERE        :g_period BETWEEN start_period AND end_period
+    AND          contributor_industry = :g_industry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating added blanket CADS for ' +
+                    VARCHAR(:g_industry),
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Delete from temp_sel_cqpv where contributors have already got the
+    questions now being added via Blanket CADS
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Deleting existing added Blanket CADS for ' +
+            VARCHAR(:g_industry) + ' . . .';
+
+    DELETE FROM temp_sel_cqpv
+    WHERE       question IN (SELECT question FROM :h_table);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error deleting added blanket CADS for ' +
+                    VARCHAR(:g_industry),
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Add the Blanket CADS for all contributors regardless of how many 
+    questions they were originally asked
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Inserting Blanket CADS into temp_sel_cqpv for ' +
+            VARCHAR(:g_industry) + ' . . .';
+
+    INSERT INTO temp_sel_cqpv (
+                contributor_reference,
+                quest_order,
+                question,
+                period,
+                contributor_inquiry,
+                contributor_industry,
+                question_industry,
+                acell,
+                avalue,
+                acell_type,
+                aconstruction_type,
+                evalue,
+                fcell,
+                fvalue,
+                fcell_type,
+                fconstruction_type,
+                confirmation_code,
+                confirmation_date,
+                atypical)
+    SELECT      a.contributor_reference,
+                b.quest_order,
+                b.question,
+                :g_period,
+                :g_inquiry,
+                a.contributor_industry,
+                b.question_industry,
+                'N',
+                0,
+                '',
+                0,
+                0,
+                'N',
+                0,
+                '',
+                0,
+                '',
+                '',
+                'N'
+    FROM        contributor_period a,
+                question_library b,
+                :h_table c
+    WHERE       a.period = :g_period
+    AND         a.contributor_industry = :g_industry
+    AND         b.question = c.question
+    AND         b.period = :g_annual_period
+    AND         b.lag IN (0,2,5);
+
+    /*------------------------------------------------------------------
+
+    AND         a.contributor_reference IN (
+                SELECT contributor_reference
+                FROM   temp_sel_cqpv
+                WHERE  quest_order = 1);
+
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error inserting blanket CADS for ' +
+                    VARCHAR(:g_industry),
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    2. Add CADS
+
+    Create for all volumes as it's quicker matching question_library on
+    question=question than it is on question/10*10+1=question
+
+    Select CADS for contributors on temp_sel_cqpv (use quest_order = 10
+    to restrict the match to just one row).
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Creating added CADS for ' +
+            VARCHAR(:g_industry) + ' . . .';
+
+    ret_val = CALLPROC batch_fp_drop_table ( h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_table
+    AS SELECT    a.question,
+                 a.contributor_reference
+    FROM         cads a,
+                 temp_sel_cqpv b
+    WHERE        :g_period BETWEEN start_period AND end_period
+    AND          a.contributor_reference = b.contributor_reference
+    AND          b.quest_order = 10
+    AND          action = 'A'
+    UNION SELECT a.question + 1,
+                 a.contributor_reference
+    FROM         cads a, 
+                 temp_sel_cqpv b
+    WHERE        :g_period BETWEEN start_period AND end_period
+    AND          a.contributor_reference = b.contributor_reference
+    AND          b.quest_order = 10
+    AND          action = 'A'
+    UNION SELECT a.question + 3,
+                 a.contributor_reference
+    FROM         cads a, 
+                 temp_sel_cqpv b
+    WHERE        :g_period BETWEEN start_period AND end_period
+    AND          a.contributor_reference = b.contributor_reference
+    AND          b.quest_order = 10
+    AND          action = 'A'
+    UNION SELECT a.question + 4,
+                 a.contributor_reference
+    FROM         cads a,
+                 temp_sel_cqpv b
+    WHERE        :g_period BETWEEN start_period AND end_period
+    AND          a.contributor_reference = b.contributor_reference
+    AND          b.quest_order = 10
+    AND          action = 'A'
+    UNION SELECT a.question + 5,
+                 a.contributor_reference
+    FROM         cads a,
+                 temp_sel_cqpv b
+    WHERE        :g_period BETWEEN start_period AND end_period
+    AND          a.contributor_reference = b.contributor_reference
+    AND          b.quest_order = 10
+    AND          action = 'A'
+    UNION SELECT a.question + 7,
+                 a.contributor_reference
+    FROM         cads a,
+                 temp_sel_cqpv b
+    WHERE        :g_period BETWEEN start_period AND end_period
+    AND          a.contributor_reference = b.contributor_reference
+    AND          b.quest_order = 10
+    AND          action = 'A'
+    UNION SELECT a.question + 8,
+                 a.contributor_reference
+    FROM         cads a, 
+                 temp_sel_cqpv b
+    WHERE        :g_period BETWEEN start_period AND end_period
+    AND          a.contributor_reference = b.contributor_reference
+    AND          b.quest_order = 10
+    AND          action = 'A';
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating added CADS for ' +
+                    VARCHAR(:g_industry),
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Delete from temp_sel_cqpv where contributors have already got the
+    questions now being added via CADS
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Deleting existing added CADS for ' +
+            VARCHAR(:g_industry) + ' . . .';
+
+    DELETE FROM temp_sel_cqpv a
+    WHERE       question IN (
+                SELECT question
+                FROM   :h_table b
+                WHERE  a.contributor_reference = b.contributor_reference);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error deleting added CADS from temp_sel_cqpv for ' +
+                    VARCHAR(:g_industry),
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Add the CADS
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Inserting CADS into temp_sel_cqpv for ' +
+            VARCHAR(:g_industry) + ' . . .';
+
+    INSERT INTO temp_sel_cqpv (
+                contributor_reference,
+                quest_order,
+                question,
+                period,
+                contributor_inquiry,
+                contributor_industry,
+                question_industry,
+                acell,
+                avalue,
+                acell_type,
+                aconstruction_type,
+                evalue,
+                fcell,
+                fvalue,
+                fcell_type,
+                fconstruction_type,
+                confirmation_code,
+                confirmation_date,
+                atypical)
+    SELECT      a.contributor_reference,
+                b.quest_order,
+                b.question,
+                :g_period,
+                :g_inquiry,
+                a.contributor_industry,
+                b.question_industry,
+                'N',
+                0,
+                '',
+                0,
+                0,
+                'N',
+                0,
+                '',
+                0,
+                '',
+                '',
+                'N'
+    FROM        contributor_period a,
+                question_library b,
+                :h_table c
+    WHERE       a.period = :g_period
+    AND         a.contributor_industry = :g_industry
+    AND         b.question = c.question
+    AND         a.contributor_reference = c.contributor_reference
+    AND         b.period = :g_annual_period
+    AND         b.lag IN (0,2,5);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error inserting CADS for ' +
+                    VARCHAR(:g_industry),
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    4. Stop CADS
+
+    Create for all volumes as it's quicker matching question_library on
+    question=question than it is on question/10*10+1=question
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Creating stopped CADS for ' + VARCHAR(:g_industry) + ' . . .';
+
+    ret_val = CALLPROC batch_fp_drop_table ( h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_table
+    AS SELECT    a.question,
+                 a.contributor_reference
+    FROM         cads a, 
+                 temp_sel_cqpv b
+    WHERE        :g_period BETWEEN start_period AND end_period
+    AND          a.contributor_reference = b.contributor_reference
+    AND          b.quest_order = 10
+    AND          action = 'S'
+    UNION SELECT a.question + 1,
+                 a.contributor_reference
+    FROM         cads a,
+                 temp_sel_cqpv b
+    WHERE        :g_period BETWEEN start_period AND end_period
+    AND          a.contributor_reference = b.contributor_reference
+    AND          b.quest_order = 10
+    AND          action = 'S'
+    UNION SELECT a.question + 3,
+                 a.contributor_reference
+    FROM         cads a,
+                 temp_sel_cqpv b
+    WHERE        :g_period BETWEEN start_period AND end_period
+    AND          a.contributor_reference = b.contributor_reference
+    AND          b.quest_order = 10
+    AND          action = 'S'
+    UNION SELECT a.question + 4,
+                 a.contributor_reference
+    FROM         cads a, 
+                 temp_sel_cqpv b
+    WHERE        :g_period BETWEEN start_period AND end_period
+    AND          a.contributor_reference = b.contributor_reference
+    AND          b.quest_order = 10
+    AND          action = 'S'
+    UNION SELECT a.question + 5,
+                 a.contributor_reference
+    FROM         cads a,
+                 temp_sel_cqpv b
+    WHERE        :g_period BETWEEN start_period AND end_period
+    AND          a.contributor_reference = b.contributor_reference
+    AND          b.quest_order = 10
+    AND          action = 'S'
+    UNION SELECT a.question + 7,
+                 a.contributor_reference
+    FROM         cads a, 
+                 temp_sel_cqpv b
+    WHERE        :g_period BETWEEN start_period AND end_period
+    AND          a.contributor_reference = b.contributor_reference
+    AND          b.quest_order = 10
+    AND          action = 'S'
+    UNION SELECT a.question + 8,
+                 a.contributor_reference
+    FROM         cads a,
+                 temp_sel_cqpv b
+    WHERE        :g_period BETWEEN start_period AND end_period
+    AND          a.contributor_reference = b.contributor_reference
+    AND          b.quest_order = 10
+    AND          action = 'S';
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating stopped CADS for ' +
+                    VARCHAR(:g_industry),
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Delete the stop CADS
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Deleting stopped CADS for ' +
+            VARCHAR(:g_industry) + ' . . .';
+
+    DELETE FROM temp_sel_cqpv a
+    WHERE       question IN (
+                SELECT question
+                FROM   :h_table b
+                WHERE  a.contributor_reference = b.contributor_reference);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error deleting stopped CADS from temp_sel_cqpv for ' +
+                    VARCHAR(:g_industry),
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+}

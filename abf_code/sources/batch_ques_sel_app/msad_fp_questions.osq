@@ -1,0 +1,654 @@
+/*----------------------------------------------------------------------
+An industry at a time . . .
+Create temp_sel_cqpv (all contributor questions) & insert into sel_cqpv
+----------------------------------------------------------------------*/
+
+PROCEDURE msad_fp_questions () =
+
+DECLARE h_frpr_name      = VARCHAR(24) NOT NULL,
+        h_table1         = VARCHAR(24) NOT NULL,
+        h_table2         = VARCHAR(24) NOT NULL,
+        h_count_rows     = INTEGER4 NOT NULL,
+        h_count_refs     = INTEGER4 NOT NULL,
+        h_count_quests   = INTEGER4 NOT NULL,
+        ret_val          = INTEGER1 NOT NULL
+
+{
+    h_frpr_name = 'msad_fp_questions';
+    h_table1 = 'temp_sel_questions1';
+    h_table2 = 'temp_sel_questions2';
+
+    /*------------------------------------------------------------------
+    Create working table temp_sel_cqpv (for this industry)
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC batch_fp_drop_table ( h_table = 'temp_sel_cqpv');
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE temp_sel_cqpv (
+        contributor_reference  CHAR (11) NOT NULL,
+        quest_order            INTEGER1 NOT NULL,
+        question               INTEGER4 NOT NULL,
+        period                 INTEGER4 NOT NULL,
+        contributor_inquiry    INTEGER1 NOT NULL,
+        contributor_industry   INTEGER4 NOT NULL,
+        question_industry      INTEGER4 NOT NULL,
+        acell                  CHAR (2) NOT NULL,
+        avalue                 INTEGER4 NOT NULL,
+        acell_type             CHAR (2) NOT NULL,
+        aconstruction_type     INTEGER1 NOT NULL,
+        evalue                 INTEGER4 NOT NULL,
+        fcell                  CHAR (2) NOT NULL,
+        fvalue                 INTEGER4 NOT NULL,
+        fcell_type             CHAR (2) NOT NULL,
+        fconstruction_type     INTEGER1 NOT NULL,
+        confirmation_code      CHAR (1) NOT NULL,
+        confirmation_date      DATE NOT NULL,
+        atypical               CHAR (1) NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating temp_sel_cqpv for ' +
+                    VARCHAR(:g_industry),
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Insert standard headings
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Standard Headings for ' + VARCHAR(:g_industry) + ' . . .';
+
+    INSERT INTO temp_sel_cqpv (
+                contributor_reference,
+                quest_order,
+                question,
+                period,
+                contributor_inquiry,
+                contributor_industry,
+                question_industry,
+                acell,
+                avalue,
+                acell_type,
+                aconstruction_type,
+                evalue,
+                fcell,
+                fvalue,
+                fcell_type,
+                fconstruction_type,
+                confirmation_code,
+                confirmation_date,
+                atypical)
+    SELECT      a.contributor_reference,
+                b.quest_order,
+                b.question,
+                :g_period,
+                :g_inquiry,
+                a.contributor_industry,
+                b.question_industry,
+                'N',
+                0,
+                '',
+                0,
+                0,
+                'N',
+                0,
+                '',
+                0,
+                '',
+                '',
+                'N'
+    FROM        contributor_period a,
+                question_library b
+    WHERE       a.period = :g_period
+    AND         a.contributor_industry = :g_industry
+    AND         a.contributor_industry = b.question_industry
+    AND         b.period = :g_annual_period
+    AND         b.quest_order IN (8,9,10);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error inserting Std Headings for ' +
+                    VARCHAR(:g_industry),
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Insert all headings for industries with < 6 questions for new
+    contributors.
+    ------------------------------------------------------------------*/
+     
+    SELECT COUNT(question) AS h_count_quests
+    FROM   question_library
+    WHERE  period = :g_period
+    AND    question_industry = :g_industry
+    AND    quest_order = 1
+    AND    mod(question,10) = 1
+    AND    lag in(0,2,5);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error counting questions for ' + VARCHAR(:g_industry),
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+   /* Removed as requested in Assyst call R211120 on 09/09/2011 
+    IF :h_count_quests < 6
+    THEN
+
+        MESSAGE 'All Headings for new contributors ' + VARCHAR(:g_industry) + ' . . .';
+    
+        INSERT INTO temp_sel_cqpv (
+                    contributor_reference,
+                    quest_order,
+                    question,
+                    period,
+                    contributor_inquiry,
+                    contributor_industry,
+                    question_industry,
+                    acell,
+                    avalue,
+                    acell_type,
+                    aconstruction_type,
+                    evalue,
+                    fcell,
+                    fvalue,
+                    fcell_type,
+                    fconstruction_type,
+                    confirmation_code,
+                    confirmation_date,
+                    atypical)
+        SELECT      a.contributor_reference,
+                    b.quest_order,
+                    b.question,
+                    :g_period,
+                    :g_inquiry,
+                    a.contributor_industry,
+                    b.question_industry,
+                    'N',
+                    0,
+                    '',
+                    0,
+                    0,
+                    'N',
+                    0,
+                    '',
+                    0,
+                    '',
+                    '',
+                    'N'
+        FROM        contributor_period a,
+                    question_library b
+        WHERE       a.period = :g_period
+        AND         output_category in('C','G','W')
+        AND         a.contributor_industry = :g_industry
+        AND         a.contributor_industry = b.question_industry
+        AND         b.period = :g_annual_period
+        AND         b.lag IN (0,2,5)
+        AND         b.quest_order = 1;
+    
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error inserting All Headings for new contribs' +
+                        VARCHAR(:g_industry),
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+    ENDIF;
+... end of R211120 removal */
+    /*------------------------------------------------------------------
+    Get list of 01 Questions that have been asked in the span
+    (or in the alternative inquiry's span in case they reclassified)
+
+    Pick ALL questions except those that have returned zero for the
+    entire span.
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Previous Questions for ' + VARCHAR(:g_industry) + ' . . .';
+
+    ret_val = CALLPROC batch_fp_drop_table ( h_table = :h_table1);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_table1
+    AS SELECT    DISTINCT(a.contributor_reference),
+                 a.question
+    FROM         cqpv a,
+                 contributor_period b
+    WHERE        b.period = :g_period
+    AND          b.contributor_industry = :g_industry
+    AND          a.contributor_reference = b.contributor_reference
+    AND          MOD(a.question,10) = 1
+    AND          a.quest_order = 1
+/*  AND          a.acell <> 'Z' ... changed to value Nov 2011 to get all 0s */
+    AND		 a.avalue <> 0
+    AND          a.period IN (:g_a_prev_period1,
+                              :g_a_prev_period2,
+                              :g_a_prev_period3,
+                              :g_q_prev_period1,
+                              :g_q_prev_period2,
+                              :g_q_prev_period3,
+                              :g_q_prev_period4,
+                              :g_q_prev_period5);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_table1 + ' for ' +
+                    VARCHAR(:g_industry),
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Add new_questions that have replaced any old_questions
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Replaced Questions for ' + VARCHAR(:g_industry) + ' . . .';
+
+    INSERT INTO     :h_table1 (
+                    contributor_reference,
+                    question)
+    SELECT DISTINCT a.contributor_reference,
+                    b.new_question
+    FROM            :h_table1 a,
+                    question_history b
+    WHERE           a.question = b.old_question;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error inserting from question_history for ' +
+                    VARCHAR(:g_industry),
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Add member questions that would replace owner questions
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Owner Questions for ' + VARCHAR(:g_industry) + ' . . .';
+
+    INSERT INTO     :h_table1 (
+                    contributor_reference,
+                    question)
+    SELECT DISTINCT a.contributor_reference,
+                    b.question
+    FROM            :h_table1 a,
+                    owner_question b
+    WHERE           a.question = b.owner_question
+    AND             b.period = :g_annual_period;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error inserting from owner_question for ' +
+                    VARCHAR(:g_industry),
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Create list of all possible volumes for the value questions.
+    This is not strictly necessary, but it speeds up selecting from
+    question_library: selecting on question=question is quicker than
+    selecting on question*10/10+1=question
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Creating Volumes for ' + VARCHAR(:g_industry) + ' . . .';
+
+    ret_val = CALLPROC batch_fp_drop_table ( h_table = :h_table2);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_table2
+    AS SELECT    contributor_reference,
+                 question
+    FROM         :h_table1
+    UNION SELECT contributor_reference,
+                 question + 1
+    FROM         :h_table1
+    UNION SELECT contributor_reference,
+                 question + 3
+    FROM         :h_table1
+    UNION SELECT contributor_reference,
+                 question + 4
+    FROM         :h_table1
+    UNION SELECT contributor_reference,
+                 question + 5
+    FROM         :h_table1
+    UNION SELECT contributor_reference,
+                 question + 7
+    FROM         :h_table1
+    UNION SELECT contributor_reference,
+                 question + 8
+    FROM         :h_table1;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating industry for ' +
+                    VARCHAR(:g_industry),
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    MESSAGE 'Modifying Volumes for ' + VARCHAR(:g_industry) + ' . . .';
+
+    MODIFY    :h_table2 TO BTREE
+    UNIQUE ON question,
+              contributor_reference;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error modifying ' + :h_table2 + ' for ' +
+                    VARCHAR(:g_industry),
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Insert live questions into temp_sel_cqpv
+    (This is the select that's quicker looking for 01=01, 02=02, 04=04,
+     etc than it would be looking for question/10*10+1=01).
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Inserting into temp_sel_cqpv for ' +
+            VARCHAR(:g_industry) + ' . . .';
+
+    INSERT INTO temp_sel_cqpv (
+                contributor_reference,
+                quest_order,
+                question,
+                period,
+                contributor_inquiry,
+                contributor_industry,
+                question_industry,
+                acell,
+                avalue,
+                acell_type,
+                aconstruction_type,
+                evalue,
+                fcell,
+                fvalue,
+                fcell_type,
+                fconstruction_type,
+                confirmation_code,
+                confirmation_date,
+                atypical)
+    SELECT      a.contributor_reference,
+                b.quest_order,
+                b.question,
+                :g_period,
+                :g_inquiry,
+                :g_industry,
+                b.question_industry,
+                'N',
+                0,
+                '',
+                0,
+                0,
+                'N',
+                0,
+                '',
+                0,
+                '',
+                '',
+                'N'
+    FROM        :h_table2 a,
+                question_library b
+    WHERE       a.question = b.question
+    AND         b.period = :g_annual_period
+    AND         b.lag IN (0,2,5);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error inserting into temp_sel_cqpv for ' +
+                    VARCHAR(:g_industry),
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+    /*------------------------------------------------------------------
+    Remove the Head Office contributors selected for current period
+    from temp_sel_cqpv.
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Deleting Head Office contributors from temp_sel_cqpv . . .';
+
+
+    DELETE FROM temp_sel_cqpv
+    WHERE       contributor_reference in (
+	 SELECT contributor_reference
+	 FROM   head_office_cqpv
+	 WHERE period = :g_period);
+        
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error deleting from temp_sel_cqpv',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+    /*------------------------------------------------------------------
+    CADS
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msad_fp_cads ();
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    atq
+    ------------------------------------------------------------------*/
+
+    IF :g_inquiry = 14
+    THEN
+        ret_val = CALLPROC msad_fp_atq ();
+
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Insert into sel_cqpv
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Inserting ' + VARCHAR(:g_industry) + ' into sel_cqpv . . .';
+
+    INSERT INTO sel_cqpv
+    SELECT      *
+    FROM        temp_sel_cqpv;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(:h_count_rows),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error inserting ' + VARCHAR(:g_industry) +
+                    ' into cqpv',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+    /*------------------------------------------------------------------
+    Find out how many references there were - and log them
+    ------------------------------------------------------------------*/
+
+    SELECT COUNT(DISTINCT(contributor_reference)) AS h_count_refs
+    FROM   temp_sel_cqpv;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error counting refs for ' + VARCHAR(:g_industry),
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    INSERT INTO error_log
+    VALUES(     'now',
+                'Question Selection ' + VARCHAR(:g_industry) +
+                ': ' + VARCHAR(:h_count_refs) + ' Refs, ' +
+                VARCHAR(:h_count_rows) + ' Rows',
+                :h_frpr_name,
+                0,
+                :g_user_id);
+    COMMIT;
+
+    RETURN 0;
+}

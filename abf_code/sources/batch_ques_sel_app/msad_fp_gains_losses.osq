@@ -1,0 +1,568 @@
+PROCEDURE msad_fp_gains_losses () =
+
+DECLARE h_param_list         = VARCHAR(100) NOT NULL,
+        h_varchar_variable   = VARCHAR(100) NOT NULL,
+        h_integer_variable   = INTEGER1 NOT NULL,
+        h_param1             = VARCHAR(20) NOT NULL,
+        h_param2             = VARCHAR(20) NOT NULL,
+        ret_val              = INTEGER1 NOT NULL,
+        h_span_end           = INTEGER4 NOT NULL,
+        h_prev_period        = INTEGER4 NOT NULL,
+        h_table1             = VARCHAR(24) NOT NULL,
+        h_table2             = VARCHAR(24) NOT NULL,
+        h_table3             = VARCHAR(24) NOT NULL,
+        h_table4             = VARCHAR(24) NOT NULL,
+        h_table5             = VARCHAR(24) NOT NULL,
+        h_view1              = VARCHAR(24) NOT NULL,
+        h_view2              = VARCHAR(24) NOT NULL,
+        h_view3              = VARCHAR(24) NOT NULL,
+        h_frpr_name          = VARCHAR(24) NOT NULL
+
+{
+    h_frpr_name = 'msad_fp_gains_losses';
+    h_table1 = 'temp_gl_refs';
+    h_table2 = 'temp_cqpv_prev';
+    h_table3 = 'temp_cqpv_curr';
+    h_table4 = 'temp_gl';
+    h_table5 = 'temp_gl2';
+    h_view1 = 'temp_gl_view1';
+    h_view2 = 'temp_gl_view2';
+    h_view3 = 'temp_gl_view3';
+
+    SELECT DBMSINFO('username') AS g_user_id;
+    SELECT DBMSINFO('database') AS g_database;
+
+    h_param_list = CALLPROC CommandLineParameters();
+
+    h_varchar_variable = SQUEEZE (h_param_list);
+
+    h_integer_variable = LOCATE (h_varchar_variable, ' ');
+    h_param1         =   LEFT (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = SHIFT (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = LOCATE (h_varchar_variable, ' ');
+    h_param2         =   LEFT (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = SHIFT (h_varchar_variable, - h_integer_variable);
+
+    g_inquiry = INT4(:h_param1);
+    g_period = INT4(:h_param2);
+
+    /*------------------------------------------------------------------
+     Check Inquiry & Period
+     (The period must be the Inquiry's Span End)
+    ------------------------------------------------------------------*/
+
+    IF :g_inquiry <> 14 AND :g_inquiry <> 15
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid Inquiry = ' + VARCHAR(:g_inquiry),
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    SELECT span_end AS h_span_end
+    FROM   inquiry
+    WHERE  inquiry = :g_inquiry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error selecting from inquiry_period',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF h_span_end <> g_period
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Period ' + VARCHAR(:g_period) + ' is not the' +
+                    ' span end (' + VARCHAR(:h_span_end) + ')',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Get previous periods
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msa_fp_prev_periods (
+              inquiry      = :g_inquiry,
+              period       = :g_period,
+              prev_period1 = BYREF(:h_prev_period));
+
+    /*-s----------------------------------------------------------------
+     Create list of Contributors existing for both periods
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Creating List of Contributors . . .';
+
+    ret_val = CALLPROC batch_fp_drop_table ( h_table = :h_table1);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_table1
+    AS SELECT    a.contributor_reference
+    FROM         contributor_period a,
+                 contributor_period b
+    WHERE        a.period = :g_period
+    AND          a.contributor_reference = b.contributor_reference
+    AND          b.period = :h_prev_period;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    MESSAGE 'Modifying Contributors . . .';
+
+    MODIFY    :h_table1 TO BTREE
+    UNIQUE ON contributor_reference;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error modifying ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create temp tables of previous periods cqpv and current periods
+    cqpv as cqpv is now 2.5 million rows and is too big for a NOT IN
+    selection
+    November 199800
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table ( h_table = :h_table2);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    MESSAGE 'Creating Temp cqpv - previous period . . . ';
+
+    CREATE TABLE :h_table2
+    AS SELECT    *                         
+    FROM         cqpv
+    WHERE        period = :h_prev_period
+    AND          contributor_inquiry = :g_inquiry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+    ret_val = CALLPROC batch_fp_drop_table ( h_table = :h_table3);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    MESSAGE 'Creating Temp cqpv - current period . . . ';
+
+    CREATE TABLE :h_table3
+    AS SELECT    *                         
+    FROM         cqpv
+    WHERE        period = :g_period
+    AND          contributor_inquiry = :g_inquiry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_table3,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Modify temp tables                               
+    ----------------------------------------------------------------e-*/
+
+    MODIFY :h_table2 TO BTREE UNIQUE ON
+                     contributor_reference,
+                     quest_order,
+                     question,
+                     period;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error modifying ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+    MODIFY :h_table3 TO BTREE UNIQUE ON
+                     contributor_reference,
+                     quest_order,
+                     question,
+                     period;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error modifying ' + :h_table3,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table ( h_table = :h_table4);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    MESSAGE 'Creating Gains & Losses . . .';
+
+    /*-s----------------------------------------------------------------
+    On Current Period, Not on Previous Period = GAIN
+    ----------------------------------------------------------------e-*/
+
+    CREATE TABLE :h_table4
+    AS SELECT    a.contributor_reference,
+                 a.contributor_industry,
+                 a.question,
+                 'G' AS change,
+                 INT1(0) AS need_count
+    FROM         :h_table3 a,
+                 :h_table1 b
+    WHERE        a.contributor_reference = b.contributor_reference
+    AND          a.period = :g_period
+    AND          a.contributor_inquiry = :g_inquiry
+    AND          a.quest_order = 1
+    AND          a.question NOT IN (
+                 SELECT question
+                 FROM   :h_table2 b
+                 WHERE  a.contributor_reference = b.contributor_reference
+                 AND    a.contributor_inquiry = :g_inquiry
+                 AND    b.period = :h_prev_period)
+    UNION
+
+    /*-s----------------------------------------------------------------
+    Not On Current Period, on Previous Period = LOSS
+    ----------------------------------------------------------------e-*/
+
+    SELECT       a.contributor_reference,
+                 a.contributor_industry,
+                 a.question,
+                 'L' AS change,
+                 INT1(0) AS need_count
+    FROM         :h_table2 a,
+                 :h_table1 b
+    WHERE        a.contributor_reference = b.contributor_reference
+    AND          a.period = :h_prev_period
+    AND          a.contributor_inquiry = :g_inquiry
+    AND          a.quest_order = 1
+    AND          a.question NOT IN (
+                 SELECT question
+                 FROM   :h_table3 b
+                 WHERE  a.contributor_reference = b.contributor_reference
+                 AND    a.contributor_inquiry = :g_inquiry
+                 AND    b.period = :g_period);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_table4,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+  
+    /*-s----------------------------------------------------------------
+    Join with tables passwords and industry_staff to pick up
+    Coordinator names
+    ----------------------------------------------------------------e-*/
+    ret_val = CALLPROC batch_fp_drop_table ( h_table = :h_table5);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    MESSAGE 'Creating table temp_gl2 . . .';
+
+    CREATE TABLE :h_table5
+    AS SELECT a.*, 
+              b.user_name
+    FROM      :h_table4 a,
+              passwords b,
+              industry_staff c
+    WHERE  a.contributor_industry = c.industry
+    AND    c.grade = 'DATA COORDINATOR'
+    AND    c.user_id = b.user_id;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating names on ' + :h_table5,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    The report writer lists gains and losses in parallel columns, so
+    the need_count is set to the maximum number of distinct 
+    (question/10) questions a contributor EITHER gained OR lost.
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Updating Need Counts . . .';
+
+    CREATE VIEW :h_view1
+    AS SELECT   DISTINCT(question/10) AS question,
+                contributor_reference,
+                change
+    FROM        :h_table5;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_view1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    CREATE VIEW :h_view2
+    AS SELECT   contributor_reference,
+                change,
+                COUNT(change) AS need_count
+    FROM        :h_view1
+    GROUP BY    contributor_reference,
+                change;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_view2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    CREATE VIEW :h_view3
+    AS SELECT   contributor_reference,
+                MAX(need_count) AS need_count
+    FROM        :h_view2
+    GROUP BY    contributor_reference;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_view3,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    UPDATE :h_table5 a
+    FROM   :h_view3 b
+    SET    need_count = b.need_count
+    WHERE  a.contributor_reference = b.contributor_reference;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating with need_count',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table ( h_table = :h_view1);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Call the Report Writer
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC msa_cp_callsys (
+              'report ' +
+              :g_database +
+              ' ''(period = ' + VARCHAR(:g_period) +
+              ' prev_period = ' + VARCHAR(:h_prev_period) +
+              ', h_table = "' + :h_table5 + '")''' +
+              ' -f$PRINTOUT/msad_rw_gains_losses.rpt' +
+              ' -i$REPORTS/msad_rw_gains_losses.rw > report.output');
+    
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error calling report writer',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    
+    ret_val = CALLPROC msa_cp_callsys (
+              'lp -drxp -oLANZ+NPN+SIMPLEX+?DRILLING? $PRINTOUT/' + 
+              'msad_rw_gains_losses.rpt >> report.output');
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error printing msad_rw_gains_losses.rpt',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+}

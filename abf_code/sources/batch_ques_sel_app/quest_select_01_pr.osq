@@ -1,0 +1,549 @@
+
+/*----------------------------------------------------------------------
+ Start of Batch Question Selection
+
+ Rewritten to actually complete program, which was left unfinished with
+ instructions to perform the last steps manually. Will also remove code
+ relating to quarterly that is no longer relevant. DF 2012.
+
+----------------------------------------------------------------------*/
+
+PROCEDURE quest_select_01_pr () =
+
+DECLARE h_param_list         = VARCHAR(100) NOT NULL,
+        h_varchar_variable   = VARCHAR(100) NOT NULL,
+        h_integer_variable   = INTEGER1 NOT NULL,
+        h_param1             = VARCHAR(20) NOT NULL,
+        h_param2             = VARCHAR(20) NOT NULL,
+        h_temp_table         = VARCHAR(36) NOT NULL,
+        h_return             = INTEGER1 NOT NULL,
+        h_span_end           = INTEGER4 NOT NULL,
+        h_prev_period1       = INTEGER4 NOT NULL,
+        h_prev_period2       = INTEGER4 NOT NULL,
+        h_prev_period3       = INTEGER4 NOT NULL,
+        h_prev_period4       = INTEGER4 NOT NULL,
+        h_prev_period5       = INTEGER4 NOT NULL,
+        h_frpr_name          = VARCHAR(24) NOT NULL,
+        h_text               = VARCHAR(60) NOT NULL,
+
+        lp_error_check       = PROCEDURE RETURNING INTEGER NOT NULL,
+        lp_drop_table        = PROCEDURE RETURNING INTEGER NOT NULL,
+
+{
+  h_frpr_name = 'quest_select_01_pr';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  h_param_list = CALLPROC CommandLineParameters();
+
+  h_varchar_variable = SQUEEZE (h_param_list);
+
+  h_integer_variable = LOCATE (h_varchar_variable, ' ');
+  h_param1         =   LEFT (h_varchar_variable,h_integer_variable - 1);
+  h_varchar_variable = SHIFT (h_varchar_variable, - h_integer_variable);
+
+  g_period = INT4(:h_param1);
+
+  h_temp_table = 'tt_quest_sel_01';
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_procs (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    h_text = 'ALERT: Unauthorised attempt to run bu user_id ' +:g_user_id +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 9,
+             p_text      = :h_text);
+    EXIT;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+  /*------------------------------------------------------------------
+     Log start of process
+  ------------------------------------------------------------------*/
+
+  h_text = '*SIGNON*';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+
+  h_text = 'STARTING: Process 1 started.';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  /*------------------------------------------------------------------
+     Validate the period called.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[1/14] Validating parameters. . .';
+  SLEEP 1;
+
+  SELECT span_end AS h_span_end
+  FROM   inquiry
+  WHERE  inquiry = 14;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select span end from table inquiry.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  IF h_span_end != g_period
+  THEN
+    h_text = 'ERROR: Period parameter does not match the span end.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Check cycle_point : if not C, then stop
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[2/14] Checking cycle point. . .';
+  SLEEP 1;
+
+  SELECT industry AS g_industry
+  FROM   industry
+  WHERE  industry_cycle_point != 'C'
+  AND    inquiry = 14;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 0);
+
+  IF h_return = 1
+  THEN
+    h_text = 'WARNING: Industry cycle point is not "C". Aborting.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ELSEIF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to select cycle point from industry table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Set previous periods:
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[3/14] Setting previous periods. . .';
+  SLEEP 1;
+
+  g_prev_period1 = :g_period - 100;
+  g_prev_period2 = :g_period - 200;
+  g_prev_period3 = :g_period - 300;
+  
+  /*------------------------------------------------------------------
+     Drop and create working table
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[4/14] Creating main working table. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop working table ' +:h_temp_table + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_temp_table 
+             ( contributor_reference  CHAR(11) NOT NULL,
+               quest_order            INTEGER1 NOT NULL,
+               question               INTEGER4 NOT NULL,
+               period                 INTEGER4 NOT NULL,
+               contributor_inquiry    INTEGER1 NOT NULL,
+               contributor_industry   INTEGER4 NOT NULL,
+               question_industry      INTEGER4 NOT NULL,
+               acell                  CHAR(2)  NOT NULL,
+               avalue                 INTEGER4 NOT NULL,
+               acell_type             CHAR(2)  NOT NULL,
+               aconstruction_type     INTEGER1 NOT NULL,
+               evalue                 INTEGER4 NOT NULL,
+               fcell                  CHAR(2)  NOT NULL,
+               fvalue                 INTEGER4 NOT NULL,
+               fcell_type             CHAR(2)  NOT NULL,
+               fconstruction_type     INTEGER1 NOT NULL,
+               confirmation_code      CHAR(1)  NOT NULL,
+               confirmation_date      DATE     NOT NULL,
+               atypical               CHAR(1)  NOT NULL);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create working table ' +:h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Process industries one at a time.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[5/14] Processing industry loop. . .';
+  SLEEP 1;
+
+  h_text = 'STARTING: Process 2 started.';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+
+  g_count = 0;
+
+  SELECT COUNT( DISTINCT contributor_industry ) AS :g_total
+  FROM   contributor_period
+  WHERE  period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to count distinct industries from industry_period.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+
+  SELECT DISTINCT contributor_industry AS :g_industry
+  FROM   contributor_period
+  WHERE  period = :g_period
+  BEGIN
+    h_return = CALLPROC quest_select_02_pr () ;
+    IF h_return != 0
+    THEN
+      RETURN h_return;
+    ENDIF;
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select loop industries from industry_period.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  h_text = 'COMPLETE: Process 2 completed.';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+
+  /*------------------------------------------------------------------
+     Modify cqpv to HEAP to drop indexes and speed up bulk insert.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[6/14] Preparing cqpv for bulk insert. . .';
+  SLEEP 1;
+
+  MODIFY cqpv TO HEAP; 
+  
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify cqpv to heap structure.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Delete any entries for the period from cqpv.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[7/14] Deleting existing records for this period. . .';
+  SLEEP 1;
+
+  DELETE FROM cqpv
+  WHERE  period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to delete existing cqpv entries for '
+           + 'period ' +VARCHAR(:g_period) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Insert the completed working table into cqpv.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[8/14] Inserting finalised records for this period. . .';
+  SLEEP 1;
+
+  INSERT INTO cqpv
+  SELECT * 
+  FROM :h_temp_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed on final insert from ' +:h_temp_table +' '
+           + ' into cqpv.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Re-modify cqpv to brtee unique on c,qo,q,p.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[9/14] Remodifying cqpv to btree unique. . .';
+  SLEEP 1;
+
+  MODIFY cqpv TO BTREE UNIQUE
+  ON     contributor_reference, quest_order, question, period;     
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify cqpv to btree unique structure.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+    
+  /*------------------------------------------------------------------
+     Re-create first index on cqpv.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[10/14] Recreating first index on cqpv. . .';
+  SLEEP 1;
+
+  CREATE INDEX x1_cqpv
+  ON cqpv (question_industry, period);
+  
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create secondary index X1 on cqpv.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Re-create second index on cqpv.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[11/14] Recreating second index on cqpv. . .';
+  SLEEP 1;
+
+  CREATE INDEX x2_cqpv
+  ON cqpv (contributor_industry, period);
+  
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create secondary index X2 on cqpv.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Update industry cycle point to "Q"
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[12/14] Updating industry cycle point to Q. . .';
+  SLEEP 1;
+
+  UPDATE industry 
+  SET    industry_cycle_point = 'Q'
+  WHERE  inquiry = 14;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update industry cycle point to "Q".';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Tidy up...
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[13/14] Tidying up. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to tidy up table ' +:h_temp_table + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Log end of process
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[14/14] Loging end of process. . .';
+  SLEEP 1;
+
+  h_text = 'COMPLETE: Process 1 completed.';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  h_text = '*SIGNOFF*';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  RETURN 0;
+
+
+}
+
+/**************************** LOCAL PROCEDURES *******************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(36) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name  = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  h_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF h_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+
+

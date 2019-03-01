@@ -1,0 +1,383 @@
+/*-s--------------------------------------------------------------------
+ Start of Batch Question Selection
+ Parameters: Inquiry Period
+
+ Creates sel_cqpv (to be inserted manually into cqpv)
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msad_fp_start () =
+
+DECLARE h_param_list         = VARCHAR(100) NOT NULL,
+        h_varchar_variable   = VARCHAR(100) NOT NULL,
+        h_integer_variable   = INTEGER1 NOT NULL,
+        h_param1             = VARCHAR(20) NOT NULL,
+        h_param2             = VARCHAR(20) NOT NULL,
+        ret_val              = INTEGER1 NOT NULL,
+        h_span_end           = INTEGER4 NOT NULL,
+        h_prev_period1       = INTEGER4 NOT NULL,
+        h_prev_period2       = INTEGER4 NOT NULL,
+        h_prev_period3       = INTEGER4 NOT NULL,
+        h_prev_period5       = INTEGER4 NOT NULL,
+        h_frpr_name          = VARCHAR(24) NOT NULL
+
+{
+    h_frpr_name = 'msad_fp_start';
+
+    SELECT DBMSINFO('username') AS g_user_id;
+    SELECT DBMSINFO('database') AS g_database;
+
+    h_param_list = CALLPROC CommandLineParameters();
+
+    h_varchar_variable = SQUEEZE (h_param_list);
+
+    h_integer_variable = LOCATE (h_varchar_variable, ' ');
+    h_param1         =   LEFT (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = SHIFT (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = LOCATE (h_varchar_variable, ' ');
+    h_param2         =   LEFT (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = SHIFT (h_varchar_variable, - h_integer_variable);
+
+    g_inquiry = INT4(:h_param1);
+    g_period = INT4(:h_param2);
+
+    /*------------------------------------------------------------------
+     Check Inquiry & Period
+     (The period must be the Inquiry's Span End)
+    ------------------------------------------------------------------*/
+
+    IF :g_inquiry <> 14 AND :g_inquiry <> 15
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid Inquiry = ' + VARCHAR(:g_inquiry),
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    SELECT span_end AS h_span_end
+    FROM   inquiry
+    WHERE  inquiry = :g_inquiry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error selecting from inquiry_period',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF h_span_end <> g_period
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Period ' + VARCHAR(:g_period) + ' is not the' +
+                    ' span end (' + VARCHAR(:h_span_end) + ')',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    g_annual_period = :g_period / 100 * 100;
+
+    /*------------------------------------------------------------------
+     Check cycle_point : if not C, then stop
+    ------------------------------------------------------------------*/
+
+    SELECT industry AS g_industry
+    FROM   industry
+    WHERE  industry_cycle_point <> 'C'
+    AND    inquiry = :g_inquiry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Industry Cycle Point <> C',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ELSEIF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error accessing industry',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Get previous periods:
+    Annual: If 200100, use prev_period1 = 200000 and prev_period2 = 199900
+            and prev_period3 = 199800
+
+    Quarterly: If 200109, prev_period1 = 200106 up to prev_period5 = 200006
+
+    Amended August 2001
+    For Annual the number of periods ago that a contributor can have
+    previously been selected for to be classed as a re-entrant has been
+    increased from 1 to 2 eg:
+
+    200100 - Selected = Yes
+    199900 - Selected = No
+    199800 - Selected = No
+    199700 - Selected = Yes
+
+    Now he will be picked up as a re-entrant and have any questions
+    previously asked on the form carried forward.
+
+    ------------------------------------------------------------------*/
+  
+    IF g_inquiry = 14
+    THEN
+        ret_val = CALLPROC msa_fp_prev_periods (
+                  inquiry      = :g_inquiry,
+                  period       = :g_period,
+                  prev_period1 = BYREF(:g_a_prev_period1),
+                  prev_period2 = BYREF(:g_a_prev_period2),
+		  prev_period3 = BYREF(:g_a_prev_period3));
+
+        g_alt_inquiry = 15;
+        g_alt_period = :g_period + 12;
+
+        ret_val = CALLPROC msa_fp_prev_periods (
+                  inquiry      = :g_alt_inquiry,
+                  period       = :g_alt_period,
+                  prev_period1 = BYREF(:g_q_prev_period1),
+                  prev_period2 = BYREF(:g_q_prev_period2),
+                  prev_period3 = BYREF(:g_q_prev_period3),
+                  prev_period4 = BYREF(:g_q_prev_period4),
+                  prev_period5 = BYREF(:g_q_prev_period5));
+
+    ELSE
+        ret_val = CALLPROC msa_fp_prev_periods (
+                  inquiry      = :g_inquiry,
+                  period       = :g_period,
+                  prev_period1 = BYREF(:g_q_prev_period1),
+                  prev_period2 = BYREF(:g_q_prev_period2),
+                  prev_period3 = BYREF(:g_q_prev_period3),
+                  prev_period4 = BYREF(:g_q_prev_period4),
+                  prev_period5 = BYREF(:g_q_prev_period5));
+
+        /*--------------------------------------------------------------
+        For Q-to-A alt_periods: 
+        9503 gives 1994, but 9506, 9509 & 9512 give 1995
+        --------------------------------------------------------------*/
+
+        g_alt_inquiry = 14;
+        g_alt_period = :g_period / 100 * 100;
+
+        IF MOD(g_period,10) = 3
+        THEN
+            g_alt_period = g_alt_period - 100;
+        ENDIF;
+
+        ret_val = CALLPROC msa_fp_prev_periods (
+                  inquiry      = :g_alt_inquiry,
+                  period       = :g_alt_period,
+                  prev_period1 = BYREF(:g_a_prev_period1),
+                  prev_period2 = BYREF(:g_a_prev_period2),
+		  prev_period3 = BYREF(:g_a_prev_period3));
+    ENDIF;
+
+    INSERT INTO error_log
+    VALUES(     'now',
+                'Batch Question Selection: Starts',
+                :h_frpr_name,
+                0,
+                :g_user_id);
+    COMMIT;
+
+    /*------------------------------------------------------------------
+     sel_cqpv
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC batch_fp_drop_table ( h_table = 'sel_cqpv');
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE sel_cqpv (
+        contributor_reference  CHAR (11) NOT NULL,
+        quest_order            INTEGER1 NOT NULL,
+        question               INTEGER4 NOT NULL,
+        period                 INTEGER4 NOT NULL,
+        contributor_inquiry    INTEGER1 NOT NULL,
+        contributor_industry   INTEGER4 NOT NULL,
+        question_industry      INTEGER4 NOT NULL,
+        acell                  CHAR (2) NOT NULL,
+        avalue                 INTEGER4 NOT NULL,
+        acell_type             CHAR (2) NOT NULL,
+        aconstruction_type     INTEGER1 NOT NULL,
+        evalue                 INTEGER4 NOT NULL,
+        fcell                  CHAR (2) NOT NULL,
+        fvalue                 INTEGER4 NOT NULL,
+        fcell_type             CHAR (2) NOT NULL,
+        fconstruction_type     INTEGER1 NOT NULL,
+        confirmation_code      CHAR (1) NOT NULL,
+        confirmation_date      DATE NOT NULL,
+        atypical               CHAR (1) NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating sel_cqpv',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     sel_atq
+    ------------------------------------------------------------------*/
+
+    IF :g_inquiry = 14
+    THEN
+        ret_val = CALLPROC batch_fp_drop_table ( h_table = 'sel_atq');
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+        CREATE TABLE sel_atq (
+            question_industry      INTEGER4 NOT NULL,
+            quest_order            INTEGER1 NOT NULL,
+            question               INTEGER4 NOT NULL,
+            qsi_period             INTEGER4 NOT NULL,
+            asi_period             INTEGER4 NOT NULL,
+            contributor_industry   INTEGER4 NOT NULL,
+            contributor_reference  CHAR (11) NOT NULL,
+            enterprise             CHAR (10) NOT NULL,
+            acell                  CHAR (2) NOT NULL,
+            avalue                 INTEGER4 NOT NULL,
+            acell_type             CHAR (2) NOT NULL,
+            fcell                  CHAR (2) NOT NULL,
+            fvalue                 INTEGER4 NOT NULL,
+            fcell_type             CHAR (2) NOT NULL);
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error creating sel_atq',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     One Industry at a time
+    ------------------------------------------------------------------*/
+
+    SELECT industry AS :g_industry
+    FROM   industry_period
+    WHERE  period = :g_period
+    {
+        ret_val = CALLPROC msad_fp_questions () ;
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+    };
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error in select loop for industries',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    UPDATE industry 
+    SET    industry_cycle_point = 'Q'
+    WHERE  inquiry = :g_inquiry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating industry_cycle_point',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    sel_cqpv consists of all industries' questions.
+
+    What now needs to be done manually is to:
+
+       remove cqpv's indexes
+       delete anything for the new period
+       insert sel_cqpv into cqpv
+       remodify cqpv
+
+    plus: if annual, there will be a sel_atq ready for inserting into
+          asi_to_qsi_link
+    ------------------------------------------------------------------*/
+
+    RETURN 0;
+}

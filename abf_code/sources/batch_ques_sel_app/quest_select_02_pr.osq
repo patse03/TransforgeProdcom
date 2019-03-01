@@ -1,0 +1,645 @@
+/*----------------------------------------------------------------------
+ Selects questions industry by industry.
+
+ Rewritten to match completed program, which was left unfinished with
+ instructions to perform the last steps manually. Also removed code
+ relating to quarterly that is no longer relevant. DF 2012.
+
+----------------------------------------------------------------------*/
+
+PROCEDURE quest_select_02_pr () =
+
+DECLARE h_frpr_name      = VARCHAR(24) NOT NULL,
+        h_main_table     = VARCHAR(36) NOT NULL,
+        h_temp_table     = VARCHAR(36) NOT NULL,
+        h_table_1        = VARCHAR(36) NOT NULL,
+        h_table_2        = VARCHAR(36) NOT NULL,
+        h_text           = VARCHAR(70) NOT NULL,
+        h_count_rows     = INTEGER4 NOT NULL,
+        h_count_refs     = INTEGER4 NOT NULL,
+        h_count_quests   = INTEGER4 NOT NULL,
+        h_return         = INTEGER1 NOT NULL,
+
+        lp_error_check       = PROCEDURE RETURNING INTEGER NOT NULL,
+        lp_drop_table        = PROCEDURE RETURNING INTEGER NOT NULL,
+
+{
+  h_frpr_name  = 'quest_select_02_pr';
+  h_main_table = 'tt_quest_sel_01';
+  h_temp_table = 'tt_quest_select_2_' +VARCHAR(:g_industry);
+  h_table_1    = 'tt_quest_select_2_vals';
+  h_table_2    = 'tt_quest_select_2_vols';
+
+  g_count = g_count + 1;
+
+  /*------------------------------------------------------------------
+    Drop then create industry working table.
+  ------------------------------------------------------------------*/
+  MESSAGE '[' + VARCHAR(:g_count) +'/' + VARCHAR(:g_total) + '] '
+        + 'INDUSTRY ' +VARCHAR(:g_industry) + ': '
+        + 'Creating working table. . .';
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop working table ' +:h_temp_table + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_temp_table 
+             ( contributor_reference  CHAR(11) NOT NULL,
+               quest_order            INTEGER1 NOT NULL,
+               question               INTEGER4 NOT NULL,
+               period                 INTEGER4 NOT NULL,
+               contributor_inquiry    INTEGER1 NOT NULL,
+               contributor_industry   INTEGER4 NOT NULL,
+               question_industry      INTEGER4 NOT NULL,
+               acell                  CHAR(2)  NOT NULL,
+               avalue                 INTEGER4 NOT NULL,
+               acell_type             CHAR(2)  NOT NULL,
+               aconstruction_type     INTEGER1 NOT NULL,
+               evalue                 INTEGER4 NOT NULL,
+               fcell                  CHAR(2)  NOT NULL,
+               fvalue                 INTEGER4 NOT NULL,
+               fcell_type             CHAR(2)  NOT NULL,
+               fconstruction_type     INTEGER1 NOT NULL,
+               confirmation_code      CHAR(1)  NOT NULL,
+               confirmation_date      DATE     NOT NULL,
+               atypical               CHAR(1)  NOT NULL);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create working table ' +:h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Insert standard headings
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[' + VARCHAR(:g_count) +'/' + VARCHAR(:g_total) + '] '
+        + 'INDUSTRY ' +VARCHAR(:g_industry) + ': '
+        + 'Inserting standard headings. . .';
+
+  INSERT INTO :h_temp_table 
+            ( contributor_reference,
+              quest_order,
+              question,
+              period,
+              contributor_inquiry,
+              contributor_industry,
+              question_industry,
+              acell,
+              avalue,
+              acell_type,
+              aconstruction_type,
+              evalue,
+              fcell,
+              fvalue,
+              fcell_type,
+              fconstruction_type,
+              confirmation_code,
+              confirmation_date,
+              atypical)
+    SELECT    a.contributor_reference,
+              b.quest_order,
+              b.question,
+              :g_period,
+              14,
+              a.contributor_industry,
+              b.question_industry,
+              'N',
+              0,
+              '',
+              0,
+              0,
+              'N',
+              0,
+              '',
+              0,
+              '',
+              '',
+              'N'
+    FROM      contributor_period a,
+              question_library b
+    WHERE     a.period = :g_period
+    AND       a.contributor_industry = :g_industry
+    AND       a.contributor_industry = b.question_industry
+    AND       b.period = :g_period
+    AND       b.quest_order IN (8,9,10);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to insert standard headings into ' 
+           + :h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Drop then create h_table_1 with a list of 01 Questions that have
+    been asked in the span. Pick ALL questions except those that have 
+    returned zero for the entire span.
+  ------------------------------------------------------------------*/
+  MESSAGE '[' + VARCHAR(:g_count) +'/' + VARCHAR(:g_total) + '] '
+        + 'INDUSTRY ' +VARCHAR(:g_industry) + ': '
+        + 'Creating vals table. . .';
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop working table ' +:h_temp_table + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table_1
+  AS SELECT    DISTINCT(a.contributor_reference),
+               a.question
+  FROM         cqpv a,
+               contributor_period b
+  WHERE        b.period = :g_period
+  AND          b.contributor_industry = :g_industry
+  AND          a.contributor_reference = b.contributor_reference
+  AND          MOD(a.question,10) = 1
+  AND          a.quest_order = 1
+  AND	       a.avalue != 0
+  AND          a.period IN (:g_prev_period1,
+                            :g_prev_period2,
+                            :g_prev_period3);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create table ' +:h_table_1 +'. '
+           + '(' +VARCHAR(:g_industry) +')';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Add new questions that have replaced any old questions
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[' + VARCHAR(:g_count) +'/' + VARCHAR(:g_total) + '] '
+        + 'INDUSTRY ' +VARCHAR(:g_industry) + ': '
+        + 'Swapping in replacement questions #1 . . .';
+
+  INSERT INTO     :h_table_1 (
+                  contributor_reference,
+                  question)
+  SELECT DISTINCT a.contributor_reference,
+                  b.new_question
+  FROM            :h_table_1 a,
+                  question_history b
+  WHERE           a.question = b.old_question;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to insert new questions into ' +:h_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Add member questions that would replace owner questions
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[' + VARCHAR(:g_count) +'/' + VARCHAR(:g_total) + '] '
+        + 'INDUSTRY ' +VARCHAR(:g_industry) + ': '
+        + 'Swapping in replacement questions #2 . . .';
+
+  INSERT INTO     :h_table_1 (
+                  contributor_reference,
+                  question)
+  SELECT DISTINCT a.contributor_reference,
+                  b.question
+  FROM            :h_table_1 a,
+                  owner_question b
+  WHERE           a.question = b.owner_question
+  AND             b.period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to insert member questions into ' +:h_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Create list of all possible volumes for the value questions.
+    This is not strictly necessary, but it speeds up selecting from
+    question_library: selecting on question=question is quicker than
+    selecting on question*10/10+1=question
+   ------------------------------------------------------------------*/
+
+  MESSAGE '[' + VARCHAR(:g_count) +'/' + VARCHAR(:g_total) + '] '
+        + 'INDUSTRY ' +VARCHAR(:g_industry) + ': '
+        + 'Creating vols table. . .';
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_2);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop working table ' +:h_temp_table + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table_2
+  AS SELECT    contributor_reference,
+               question
+  FROM         :h_table_1
+  UNION SELECT contributor_reference,
+               question + 1
+  FROM         :h_table_1
+  UNION SELECT contributor_reference,
+               question + 3
+  FROM         :h_table_1
+  UNION SELECT contributor_reference,
+               question + 4
+  FROM         :h_table_1
+  UNION SELECT contributor_reference,
+               question + 5
+  FROM         :h_table_1
+  UNION SELECT contributor_reference,
+               question + 7
+  FROM         :h_table_1
+  UNION SELECT contributor_reference,
+               question + 8
+  FROM         :h_table_1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create table ' +:h_table_2 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Modify table.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[' + VARCHAR(:g_count) +'/' + VARCHAR(:g_total) + '] '
+        + 'INDUSTRY ' +VARCHAR(:g_industry) + ': '
+        + 'Modifying vols table. . .';
+
+  MODIFY :h_table_2 TO BTREE UNIQUE 
+      ON question, contributor_reference;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to modify table ' +:h_table_2 +' '
+           + 'for industry ' +VARCHAR(:g_industry) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Insert live questions into the working table
+    (This is the select that's quicker looking for 01=01, 02=02, 04=04,
+     etc than it would be looking for question/10*10+1=01).
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[' + VARCHAR(:g_count) +'/' + VARCHAR(:g_total) + '] '
+        + 'INDUSTRY ' +VARCHAR(:g_industry) + ': '
+        + 'Inserting questions into working table. . .';
+
+  INSERT INTO :h_temp_table 
+            ( contributor_reference,
+              quest_order,
+              question,
+              period,
+              contributor_inquiry,
+              contributor_industry,
+              question_industry,
+              acell,
+              avalue,
+              acell_type,
+              aconstruction_type,
+              evalue,
+              fcell,
+              fvalue,
+              fcell_type,
+              fconstruction_type,
+              confirmation_code,
+              confirmation_date,
+              atypical)
+  SELECT      a.contributor_reference,
+              b.quest_order,
+              b.question,
+              :g_period,
+              14,
+              :g_industry,
+              b.question_industry,
+              'N',
+              0,
+              '',
+              0,
+              0,
+              'N',
+              0,
+              '',
+              0,
+              '',
+              '',
+              'N'
+  FROM        :h_table_2 a,
+              question_library b
+  WHERE       a.question = b.question
+    AND       b.period = :g_period
+    AND       b.lag IN (0,2,5);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed on final insert into table ' +:h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Remove the Head Office contributors selected for current period
+    from working table.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[' + VARCHAR(:g_count) +'/' + VARCHAR(:g_total) + '] '
+        + 'INDUSTRY ' +VARCHAR(:g_industry) + ': '
+        + 'Removing head offices from table. . .';
+
+  DELETE FROM :h_temp_table
+  WHERE  contributor_reference IN 
+      (  SELECT contributor_reference
+         FROM   head_office_cqpv
+         WHERE period = :g_period);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to delete head offices from table ' 
+           + :h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Process this industries CADS
+  ------------------------------------------------------------------*/
+
+    h_return = CALLPROC quest_select_02a_pr ();
+
+    IF h_return != 0
+    THEN
+      /* Error message handled locally */
+      RETURN h_return;
+    ENDIF;
+
+  /*------------------------------------------------------------------
+    Insert into main table
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[' + VARCHAR(:g_count) +'/' + VARCHAR(:g_total) + '] '
+        + 'INDUSTRY ' +VARCHAR(:g_industry) + ': '
+        + 'Inserting industry data into main table. . .';
+
+  INSERT INTO :h_main_table
+  SELECT      *
+  FROM        :h_temp_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed on final insert from ' +:h_temp_table +' '
+           + ' into ' +:h_main_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+
+  /*------------------------------------------------------------------
+    Log the number of references and questions for the industry.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[' + VARCHAR(:g_count) +'/' + VARCHAR(:g_total) + '] '
+        + 'INDUSTRY ' +VARCHAR(:g_industry) + ': '
+        + 'Logging the totals. . .';
+
+  SELECT COUNT(DISTINCT(contributor_reference)) AS h_count_refs
+  FROM   :h_temp_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to count contributors on ' +:h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  SELECT COUNT(question) AS h_count_quests
+  FROM   :h_temp_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to count questions on ' +:h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  h_text = 'INDUSTRY: ' + VARCHAR(:g_industry) + ' consists of ' 
+         + VARCHAR(:h_count_refs) + ' contributors and '
+         + VARCHAR(:h_count_quests) +' questions.';
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = :h_return,
+           p_text      = :h_text);
+
+  /*------------------------------------------------------------------
+    Tidy up... 
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[' + VARCHAR(:g_count) +'/' + VARCHAR(:g_total) + '] '
+        + 'INDUSTRY ' +VARCHAR(:g_industry) + ': '
+        + 'Tidying up. . .';
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to tidy up working table ' +:h_temp_table + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to tidy up working table ' +:h_table_1 + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_2);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to tidy up working table ' +:h_table_2 + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/**************************** LOCAL PROCEDURES ******************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(36) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name  = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  h_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF h_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
