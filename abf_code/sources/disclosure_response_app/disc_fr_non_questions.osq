@@ -1,0 +1,140 @@
+/*----------------------------------------------------------------------
+  Displays Questions for a Contributor Reference and a list of periods
+----------------------------------------------------------------------*/
+
+INITIALIZE (
+  p_contributor_reference = CHAR(11) NOT NULL WITH DEFAULT,
+  p_period1               = INTEGER4 NOT NULL WITH DEFAULT,
+  p_period2               = INTEGER4 NOT NULL WITH DEFAULT,
+  p_period3               = INTEGER4 NOT NULL WITH DEFAULT,
+  p_period4               = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE 
+  h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name       = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_return          = INTEGER1    NOT NULL WITH DEFAULT,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  s_contributor_reference = :p_contributor_reference;
+  s_period = :p_period4;
+  msa_date = 'now';
+  h_frpr_name = 'disc_fr_non_display';
+  h_retries_allowed = 3;
+  SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+  REDISPLAY;
+
+  /*----------------------------------------------------------------------
+         Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+         Populate table field.
+  ----------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    tf =
+
+    SELECT VARCHAR(question) AS question,
+           enterprise,
+           period,
+           despatch_date,
+           receipt_date,
+           resp_type
+    FROM   dsc_response
+    WHERE  contributor_reference = :s_contributor_reference
+      AND  period IN (:p_period1,:p_period2,:p_period3,:p_period4)
+
+    ORDER BY question, period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to load data from dsc_response table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Replace 99999999 with 'Blanket' 
+  ------------------------------------------------------------------*/
+
+  UNLOADTABLE tf
+  BEGIN
+    IF :tf.question = '999999999'
+    THEN
+      tf.question = 'Blanket  ';
+    ENDIF;
+  END;
+
+  REDISPLAY;
+
+}
+
+'End', KEY FRSKEY14 =
+{
+  RETURN 0;
+}
+
+/************************* LOCAL PROCEDURES ******************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

@@ -1,0 +1,116 @@
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        inquiry           = INTEGER1 NOT NULL,
+        industry          = INTEGER4 NOT NULL,
+        h_idbr            = CHAR(11) NOT NULL,
+        h_dummy           = CHAR(11) NOT NULL,
+        h_period          = INTEGER4 NOT NULL
+
+{
+    msa_date = 'now';
+    h_frpr_name = 'msaeb_fr_despatch_list';
+    h_retries_allowed = 3;
+}
+
+FIELD contributor_reference =
+{
+    ret_val = CALLPROC msa_fp_get_ref(
+              h_dummy               = BYREF(:h_dummy),
+              h_idbr                = BYREF(:h_idbr),
+              contributor_reference = :contributor_reference);
+
+    IF ret_val = 9
+    THEN
+        RETURN ret_val;
+
+    ELSEIF ret_val = 1
+    THEN
+        RESUME FIELD contributor_reference;
+    ENDIF;
+
+    RESUME FIELD period;
+}
+
+FIELD period = 
+{
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+    DO
+        h_retries = :h_retries + 1;
+
+        SELECT contributor_industry AS industry,
+               inquiry
+        FROM   contributor_period
+        WHERE  contributor_reference IN (:h_idbr,:h_dummy)
+        AND    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error accessing contributor_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'The contributor was not valid for this period'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    REDISPLAY;
+
+    ret_val = CALLFRAME msaeb_fr_desp_contrib (
+              contributor_reference = :contributor_reference,
+              inquiry               = :inquiry,
+              industry              = :industry,
+              period                = :period);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CLEAR FIELD ALL;
+    msa_date = 'now';
+    RESUME FIELD contributor_reference;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'End', KEY FRSKEY6 = 
+{ 
+    RETURN 0; 
+}

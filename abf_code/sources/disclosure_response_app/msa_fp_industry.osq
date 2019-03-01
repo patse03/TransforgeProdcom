@@ -1,0 +1,316 @@
+/****************************************************************************
+                 Procedure msam_fp_industry
+
+  This procedure creates a temporary table holding either all the industries
+  that a user is responsible for or the one industry that they have asked for.
+
+  p_table_name is created here and passed back to calling frame BYREF.
+
+  CHANGES:
+  
+  Oct 2013 - DF - Added jobshare code to scope 2 industry selection.
+  Oct 2015 - MC - Move check for user_level 4 and ALL to before the call to
+                  msa_fp_set_scope. see min 0??? 
+****************************************************************************/
+
+PROCEDURE msa_fp_industry  
+        ( p_industry   = CHAR(5)     NOT NULL,
+          p_temp_table = CHAR(24)    NOT NULL) =
+
+DECLARE  
+  h_return             = INTEGER4    NOT NULL,
+  h_return_2           = INTEGER4    NOT NULL,
+  h_retries            = INTEGER1    NOT NULL,
+  h_retries_allowed    = INTEGER1    NOT NULL,
+  h_retry_or_not       = CHAR(5)     NOT NULL,
+  h_frpr_name          = VARCHAR(25) NOT NULL,
+  h_alloc_table        = VARCHAR(24) NOT NULL,
+  h_dummy_id           = VARCHAR(10) NOT NULL,
+  h_scope              = INTEGER1    NOT NULL,
+
+  lp_error_check        = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_full_error_check   = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_remove_temp_tables = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_retries_allowed = 3;
+  h_frpr_name = 'msam_fp_industry';
+
+  p_temp_table  = 'tt_industries_' + :g_user_id;
+  h_alloc_table = 'tt_allocation_' + :g_user_id;
+
+  /*----------------------------------------------------------------------
+      Drop temp tables.
+  ----------------------------------------------------------------------*/
+
+  h_return = CALLPROC lp_remove_temp_tables ();
+
+  IF h_return != 0
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  /*---------------------------------------------------------------------
+     Determine scope available to user.
+
+     Scope: 0 = Unkown - No access
+            1 = AO - Own allocation
+            2 = EO - Teams allocation
+            3 = HEO/DEV - All.
+  ----------------------------------------------------------------------*/  
+
+  /*------------------------------------------------------------------------
+      If user_level = 4, give access to "ALL" if selected by changing
+      scope to level 3.
+  ------------------------------------------------------------------------*/
+
+  IF :g_user_level = 4 AND :p_industry = 'ALL'
+  THEN
+    h_scope = 3;
+  
+  ELSE
+    h_scope = 0;
+
+    h_return = CALLPROC msa_fp_set_scope (p_scope = BYREF(:h_scope));
+
+    IF h_return != 0
+    THEN
+      RETURN :h_return;
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+      If scope = 0, abort gracefully. Error message handled in previous
+      procedure call.
+  ------------------------------------------------------------------------*/
+
+  IF h_scope = 0
+  THEN
+    RETURN 1;
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+      Create allocation table based on scope and user id; 
+  ------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    IF h_scope = 3  
+    THEN 
+      CREATE TABLE :h_alloc_table 
+      AS 
+      SELECT DISTINCT industry
+      FROM   industry_analysts;
+
+    ELSEIF h_scope = 2
+    THEN
+      CREATE TABLE :h_alloc_table 
+      AS 
+      SELECT DISTINCT a.industry
+      FROM   industry_analysts a 
+      WHERE  a.user_id IN 
+          (  SELECT b.analyst_id 
+             FROM   analyst_coordinator_manager b
+             WHERE  b.coordinator_id = :g_user_id
+                OR  b.coordinator_id = 
+                 (  SELECT c.id_two
+                    FROM   job_share c
+                    WHERE  c.id_one = :g_user_id));
+
+    ELSE /* Scope = 1 */
+      CREATE TABLE :h_alloc_table 
+      AS 
+      SELECT DISTINCT industry
+      FROM   industry_analysts a 
+      WHERE  user_id = :g_user_id;
+
+    ENDIF;
+     
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to create temporary allocation table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+     If ALL selected, simply mirror allocation table.
+  ------------------------------------------------------------------------*/
+
+  IF p_industry = 'ALL'
+  OR p_industry = 'GROUP'
+  THEN
+    CREATE TABLE :p_temp_table 
+    AS 
+    SELECT *
+    FROM   :h_alloc_table;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+  
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to create temporary industries table. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      h_return_2 = CALLPROC lp_remove_temp_tables ();
+      RETURN 9;
+    ENDIF;
+
+    MODIFY :p_temp_table TO BTREE UNIQUE ON industry;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+  
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to modify temporary industries table structure. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      h_return_2 = CALLPROC lp_remove_temp_tables ();
+      RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+
+  ENDIF; /* End of p_industry = ALL condition */ 
+
+  /*------------------------------------------------------------------------
+     If industry selected and it exists on allocation table, then
+     that provides the only row for the industry table.
+  ------------------------------------------------------------------------*/
+
+  CREATE TABLE :p_temp_table 
+  AS 
+  SELECT industry
+  FROM   :h_alloc_table
+  WHERE  industry = :p_industry;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+  
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to modify temporary industries table structure. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    h_return_2 = CALLPROC lp_remove_temp_tables ();
+    RETURN 9;
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'WARNING: Industry ' +VARCHAR(:p_industry) +' ' 
+          + 'is not part of your allocation. '
+          + 'If you think this is incorrect, please contact the control '
+          + 'team to clarify your allocation.'
+    WITH STYLE = POPUP;
+    h_return_2 = CALLPROC lp_remove_temp_tables ();
+    RETURN 1;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+
+/*=======================================================================
+      Drop temp tables.
+=======================================================================*/
+
+PROCEDURE lp_remove_temp_tables () =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC msa_fp_drop_table (p_table = :p_temp_table);
+
+  IF lp_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to drop temporary industry table. '
+          + 'Error code ' +VARCHAR(:lp_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN :lp_return;
+  ENDIF;
+
+  lp_return = CALLPROC msa_fp_drop_table (p_table = :h_alloc_table);
+
+  IF lp_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to drop temporary allocation table. '
+          + 'Error code ' +VARCHAR(:lp_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN :lp_return;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

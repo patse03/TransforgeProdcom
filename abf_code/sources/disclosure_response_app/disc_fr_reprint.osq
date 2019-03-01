@@ -1,0 +1,471 @@
+/*----------------------------------------------------------------------
+Reprints a disclosure form:
+
+Get the data from dsc_printing (where it was inserted by the normal run
+of batch_disclosure_app).
+----------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE 
+  h_retries_allowed      = INTEGER1 NOT NULL,
+  h_retries              = INTEGER1 NOT NULL,
+  h_retry_or_not         = CHAR(5) NOT NULL,
+  h_frpr_name            = VARCHAR(24) NOT NULL,
+  h_yesno                = CHAR(1) NOT NULL,
+  h_dummy                = CHAR(1) NOT NULL,
+  h_contributor_industry = INTEGER4 NOT NULL,
+  h_table                = VARCHAR(24) NOT NULL,
+  h_receipt_date         = DATE NOT NULL,
+  h_return                = INTEGER1 NOT NULL,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITh DEFAULT,
+
+{
+  h_frpr_name = 'disc_fr_reprint';
+  h_retries_allowed = 3;
+  msa_date = 'now';
+  h_table = 'tt_dsc_reprint';
+
+  
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+}
+
+FIELD s_contributor_reference =
+{
+  /*----------------------------------------------------------------------
+       Validating contributor reference.
+  ----------------------------------------------------------------------*/
+  
+  MESSAGE 'Checking Reference . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT add_name1 AS s_add_name1
+    FROM   contributor
+    WHERE  contributor_reference = :s_contributor_reference;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This contributor does not exist on the ProdCom system. ' 
+          + 'Please try again or exit the screen.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_contributor_reference;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to validate the contributor reference. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Find latest annual period to use as default display.
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT MAX(period) AS s_period
+    FROM   inquiry_period
+    WHERE  inquiry = 14;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select current annual period. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  REDISPLAY;
+
+  RESUME FIELD s_period;
+}
+
+FIELD s_period =
+{
+
+  /*------------------------------------------------------------------
+    Check existence on contributor_period, and find out the
+    contributor_industry in order to get the analysts names later on.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Checking Period . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT contributor_industry AS h_contributor_industry
+    FROM   contributor_period
+    WHERE  contributor_reference = :s_contributor_reference
+      AND  period = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This contributor was not selected for this period. '
+          + 'Please try again or exit the screen.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_period;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to validate the contributor period. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Look on disc_despatch:
+    There must be an entry for this Reference / Period.
+    The Receipt Date should be blank.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Checking for Disclosure . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT receipt_date AS h_receipt_date
+    FROM   dsc_response
+    WHERE  contributor_reference = :s_contributor_reference
+      AND  period = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: No diclosure form was printed for this contributor '
+          + 'in ' +VARCHAR(:s_period) +'. Please try again or exit the screen.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_period;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select data from dsc_response table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    If the disclosure form has already been received, prompt if a
+    reprint is still wanted.
+  ------------------------------------------------------------------*/
+
+  IF h_receipt_date != ''
+  THEN
+    h_yesno = '';
+    WHILE h_yesno != 'y' AND h_yesno != 'n'
+    DO
+      h_yesno = PROMPT 'NOTE: The disclosure response for this' +
+                       ' Contributor and this Period was' +
+                       ' received on ' +
+                         VARCHAR(h_receipt_date) + '.' + X'0D0D' +
+                         'Do you really wish to reprint the' +
+                         ' disclosure form? [Y/N] : ' 
+                WITH STYLE = POPUP;
+      h_yesno = LOWERCASE(:h_yesno);
+    ENDWHILE;
+
+    IF h_yesno = 'n'
+    THEN
+      RESUME;
+    ENDIF;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Create table of disclosure + question + analyst data from
+    disc_printing.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating Disclosure Questions . . .';
+
+  h_return = CALLPROC msa_fp_drop_table (p_table = :h_table);
+
+  IF h_return = 9
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    CREATE TABLE :h_table
+    AS 
+    SELECT a.contributor_reference,
+           a.question,
+           a.period,
+           a.quest_order,
+           a.need_count,
+           a.unit_1,
+           a.text_line1,
+           a.text_line2,
+           a.text_line3,
+           a.text_line4,
+           a.text_line5,
+           a.text_line6,
+           a.text_line7,
+           a.text_line8,
+           a.text_line9,
+           a.text_line10,
+           a.contributor_industry,
+           a.legal_status,
+           a.region,
+           b.name AS analyst,
+           b.ext
+    FROM   dsc_printing a,
+           industry_analysts b
+    WHERE  a.contributor_reference = :s_contributor_reference
+      AND  a.period = :s_period
+      AND  a.contributor_industry = b.industry
+      AND  a.contributor_reference >= b.low_ref
+      AND  a.contributor_reference <= b.high_ref;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: Either no disclosure printing data is available for this '
+          + 'contributor for ' +VARCHAR(:s_period) +' or the industry is no '
+          + 'longer in an allocation. No disclosure form can be generated.' 
+    WITH STYLE = POPUP;
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to create temporary working table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+ /*------------------------------------------------------------------
+    Checks if unprocessed entry exists on disclosure_reprints table.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Checking disclosure reprints table. . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT DISTINCT spc AS h_dummy
+    FROM   dsc_reprint_orders
+    WHERE  contributor_reference = :s_contributor_reference
+      AND  spc = 'N'; 
+    
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 0);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+    
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'NOTE: A request to reprint the disclosure letter for this '
+          + 'contributor already exists. No further action will be taken.'
+    WITH STYLE = POPUP;
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to check for existing reprint request. '
+          + 'Error code ' +VARCHAR(:h_return) +'. ' 
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Inserts data into disclosure_reprints table.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Inserting reprint into disclosure reprints table. . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+    
+    INSERT INTO dsc_reprint_orders
+    SELECT :msa_date,
+           :g_user_id,
+           'N',
+           contributor_reference,
+           question,
+           unit_1,
+           need_count,
+           text_line1,
+           text_line2,
+           text_line3,
+           text_line4,
+           text_line5,
+           text_line6,
+           text_line7,
+           text_line8,
+           text_line9,
+           text_line10,
+           analyst,
+           ext
+    FROM   :h_table;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0 
+  THEN
+    MESSAGE 'ERROR: Failed to insert into dsc_reprint_orders. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  MESSAGE 'NOTE: Reprint ordered successfully and will be printed overnight.'
+  WITH STYLE = POPUP;
+
+  CLEAR FIELD ALL;
+  msa_date = 'now';
+  RESUME FIELD s_contributor_reference;
+
+}
+
+/************************* KEY ACTIVATIONS ********************************/
+
+'Clear', KEY FRSKEY12 =
+{
+    CLEAR FIELD ALL;
+    msa_date = 'now';
+    RESUME FIELD s_contributor_reference;
+}
+
+'End', KEY FRSKEY14 =
+{
+    RETURN 0;
+}
+
+/*************************** LOCAL PROCEDURES ******************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+                  h_num_row_ck = :p_num_row_ck,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

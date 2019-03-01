@@ -1,0 +1,213 @@
+INITIALIZE ()=
+
+DECLARE 
+  h_retries_allowed = INTEGER1    NOT NULL,
+  h_retries         = INTEGER1    NOT NULL,
+  h_retry_or_not    = CHAR(5)     NOT NULL,
+  h_frpr_name       = VARCHAR(24) NOT NULL,
+  h_return          = INTEGER1    NOT NULL,
+  h_idbr            = CHAR(11)    NOT NULL,
+  h_dummy           = CHAR(11)    NOT NULL,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name = 'disc_fr_despatch_list';
+  h_retries_allowed = 3;
+  msa_date = 'now';
+  SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+  /*----------------------------------------------------------------------
+         Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+ 
+}
+
+FIELD s_industry =
+{
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT industry AS s_industry
+    FROM   industry
+    WHERE  industry = :s_industry;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This industry does not exist. Please try again.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_industry;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Faild whilst validating industry on industry table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  RESUME FIELD s_period;
+
+}
+
+FIELD s_period =
+{
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT period AS s_period 
+    FROM   industry_period
+    WHERE  industry = :s_industry
+      AND  period   = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This period is not valid for this industry. '
+          + 'Please try again.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_period;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Faild whilst validating period on industry_period table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  MESSAGE 'Selecting Data . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    tf =
+
+    SELECT a.contributor_reference,
+           b.add_name1,
+           a.resp_type,
+           a.question,
+           a.receipt_date
+    FROM   dsc_response a,
+           contributor b
+    WHERE  a.industry = :s_industry
+      AND  a.period = :s_period
+      AND  a.contributor_reference = b.contributor_reference
+
+    ORDER BY contributor_reference,
+             question;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: Disclosure letters have not been despatched for '                   + 'this period yet.'
+    WITH STYLE = POPUP;
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to load disclosure depatch list. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  msa_date = 'now';
+  RESUME FIELD tf;
+
+}
+
+'Clear', KEY FRSKEY12 =
+{
+    CLEAR FIELD ALL;
+    msa_date = 'now';
+    RESUME FIELD s_industry;
+}
+
+'End', KEY FRSKEY14 =
+{
+   RETURN 0;
+}
+
+/************************* LOCAL PROCEDURES ******************************/
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

@@ -1,0 +1,536 @@
+/*----------------------------------------------------------------------
+
+    This frame is used to register the response to a
+    request to allow publication of the detail of
+    disclosive questions. Valid responses are:
+
+       A - Permission is granted to all questions
+       D - Permission is denied to all questions
+       S - Permission is restricted to specific questions
+
+----------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE 
+  h_retries_allowed        = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries                = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not           = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name              = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_return                 = INTEGER2    NOT NULL WITH DEFAULT,
+  h_return_2               = INTEGER2    NOT NULL WITH DEFAULT,
+  h_idbr                   = CHAR(11)    NOT NULL WITH DEFAULT,
+  h_dummy                  = CHAR(11)    NOT NULL WITH DEFAULT,
+  h_add_name1              = CHAR(35)    NOT NULL WITH DEFAULT,
+  h_prompt                 = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_industry               = INTEGER4    NOT NULL WITH DEFAULT,
+  h_question_industry      = INTEGER4    NOT NULL WITH DEFAULT,
+  h_question               = INTEGER4    NOT NULL WITH DEFAULT,
+  h_inquiry                = INTEGER1    NOT NULL WITH DEFAULT,
+  h_enterprise             = CHAR(10)    NOT NULL WITH DEFAULT,
+  h_despatch_date          = VARCHAR(11) NOT NULL WITH DEFAULT,
+  h_receipt_date           = VARCHAR(11) NOT NULL WITH DEFAULT,
+  h_disc_type              = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_resp_type              = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_yesno                  = CHAR(1)     NOT NULL WITH DEFAULT,       
+
+  lp_check_contributor     = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_full_error_check      = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+    msa_date = 'now';
+    h_retries_allowed = 3;
+    h_frpr_name = 'disc_fr_update';
+
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+}
+
+FIELD s_contributor_reference =
+{
+
+  /*----------------------------------------------------------------------
+       Validating contributor reference.
+  ----------------------------------------------------------------------*/
+  
+  MESSAGE 'Checking Reference . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT add_name1 AS s_company_name
+    FROM   contributor
+    WHERE  contributor_reference = :s_contributor_reference;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This contributor does not exist on the ProdCom system. ' 
+          + 'Please try again or exit the screen.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_contributor_reference;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to validate the contributor reference. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Find latest annual period to use as default display.
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT MAX(period) AS s_period
+    FROM   inquiry_period
+    WHERE  inquiry = 14;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select current annual period. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  REDISPLAY;
+
+  RESUME FIELD s_period;
+
+}
+
+FIELD s_period =
+{
+
+  h_return = CALLPROC lp_check_contributor ();
+
+  /* NB: Error messages handled in local procedure. */
+  
+  IF h_return = 1
+  THEN
+    RESUME FIELD s_contributor_reference;
+  ELSEIF h_return > 1
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+  REDISPLAY;
+
+  RESUME FIELD s_response;
+
+}
+
+FIELD 's_response' =
+{
+  IF  s_response != 'A' 
+  AND s_response != 'D'
+  AND s_response != 'S' 
+  THEN
+    MESSAGE 'WARNING: Response must be "A", "D" or "S".'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_response;
+  ENDIF;
+
+  /*------------------------------------------------------------------------ 
+       Deals with specific question permissions.
+  ------------------------------------------------------------------------*/ 
+
+  IF :s_response = 'S'
+  THEN
+
+    h_return = CALLFRAME disc_fr_update_question 
+             ( p_contributor_reference = :s_contributor_reference,
+               p_period                = :s_period,
+               p_enterprise            = :h_enterprise,
+               p_industry              = :h_industry,
+               p_disc_industry         = :h_question_industry,
+               p_despatch_date         = :h_despatch_date,
+               p_company_name          = :s_company_name);
+
+
+
+    IF h_return = 1
+    THEN
+      MESSAGE 'WARNING: Disclosure response details were not updated.'
+      WITH STYLE = POPUP;
+      RESUME FIELD s_contributor_reference;
+
+    ELSEIF h_return > 1
+    THEN
+      MESSAGE 'ERROR: Procedure to update response details failed. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+    MESSAGE 'NOTE: Disclosure response details recorded successfully.'
+    WITH STYLE = POPUP;
+    CLEAR FIELD ALL;
+    msa_date = 'now';
+    REDISPLAY;
+    RESUME FIELD s_contributor_reference;
+
+  /*------------------------------------------------------------------------ 
+       Deals with Blanket question permissions.
+  ------------------------------------------------------------------------*/ 
+
+  ELSE /* response = A or D */ 
+
+    /*----------------------------------------------------------------
+      Update or insert the blanket permission on the dummy 'blanket'
+      question number.
+    ----------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      UPDATE dsc_response
+      SET    resp_type             = :s_response,
+             receipt_date          = date('today'),
+             company_name          = :s_company_name
+      WHERE  contributor_reference = :s_contributor_reference
+        AND  period                = :s_period
+        AND  question              = 999999999;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 1
+    THEN
+
+      h_retry_or_not      = 'RETRY';
+      h_retries           = 0;
+
+      WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+      DO
+
+        h_retries = :h_retries + 1;
+
+        INSERT INTO dsc_response
+        VALUES (    :s_contributor_reference,
+                    :h_industry,
+                    :h_question_industry,
+                    999999999,
+                    :s_period,
+                    :h_enterprise,
+                    :h_despatch_date,
+                    date('today'),
+                    '',
+                    :s_response,
+                    :s_company_name);
+
+        h_return_2 = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+        IF h_return_2 != 7
+        THEN
+          h_retry_or_not = '';
+        ENDIF;
+
+      ENDWHILE;
+
+      IF h_return_2 != 0
+      THEN
+        MESSAGE 'ERROR: Failed to insert blanket question into response table. '
+              + 'Error code ' +VARCHAR(:h_return_2) + '. '
+              + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+        RETURN 9;
+      ENDIF;
+
+    ELSEIF h_return > 1
+    THEN
+      MESSAGE 'ERROR: Failed to update blanket question on response table. '
+            + 'Error code ' +VARCHAR(:h_return) + '. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+    
+    /*------------------------------------------------------------
+      Update all questions for that contributor to D or A
+    ------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      UPDATE dsc_response
+      SET    resp_type             = :s_response,
+             receipt_date          = date('today'),
+             company_name          = :s_company_name
+      WHERE  contributor_reference = :s_contributor_reference
+        AND    period              = :s_period;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to update disclosure questions '
+            + 'for contributor ' +:s_contributor_reference +' '
+            + 'in period ' +VARCHAR(:s_period) +'. '
+            + 'Error code ' +VARCHAR(:h_return) + '. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+    MESSAGE 'NOTE: Disclosure response details recorded successfully.'
+    WITH STYLE = POPUP;
+    CLEAR FIELD ALL;
+    msa_date = 'now';
+    REDISPLAY;
+    RESUME FIELD s_contributor_reference;
+
+  ENDIF;
+
+}
+
+/***************************** KEY ACTIVATIONS *****************************/
+
+'RemovePermission', KEY FRSKEY4 =
+{
+  /*------------------------------------------------------------------------
+     Check it's a valid contributor & period before trying to remove
+  ------------------------------------------------------------------------*/
+
+  h_return = CALLPROC lp_check_contributor ();
+
+  /* NB: Error messages handled in local procedure. */
+  
+  IF h_return = 1
+  THEN
+    RESUME FIELD s_contributor_reference;
+  ELSEIF h_return > 1
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+  h_prompt = '';
+  WHILE :h_prompt != 'Y' AND :h_prompt != 'N'
+  DO
+    h_prompt = PROMPT 'Really remove permissions for this contributor? [Y/N] : '
+               WITH STYLE = POPUP;
+    h_prompt = UPPER(:h_prompt);
+  ENDWHILE;
+
+  IF :h_prompt = 'N'
+  THEN
+    RESUME FIELD s_contributor_reference;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Remove sets the permissions and receipt_date to blank.
+     (Do not delete them, they are still disclosive even if
+      no permissions are present.)
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE dsc_response
+    SET    resp_type = '',
+           receipt_date = ''
+    WHERE  contributor_reference = :s_contributor_reference
+      AND  period                = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to remove disclosure questions '
+          + 'for contributor ' +:s_contributor_reference +' '
+          + 'in period ' +VARCHAR(:s_period) +'. '
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  MESSAGE 'NOTE: Disclosure response details removed successfully.'
+  WITH STYLE = POPUP;
+
+  CLEAR FIELD ALL;
+  msa_date = 'now';
+  REDISPLAY;
+  RESUME FIELD s_contributor_reference;
+
+}
+
+'Clear', KEY FRSKEY12 =
+{
+  CLEAR FIELD ALL;
+  msa_date = 'now';
+  RESUME FIELD s_contributor_reference;
+}
+
+'End', KEY FRSKEY14 =
+{
+   RETURN 0;
+}
+
+/**************************** LOCAL PROCEDURES *****************************/
+
+/*========================================================================
+     Local procedure to check that contributor and period exist on the 
+     dsc_response table to prevent errors later.
+========================================================================*/
+
+PROCEDURE lp_check_contributor () =
+
+{
+  MESSAGE 'Checking Contributor . . .';
+  msa_date = 'now';
+
+  /*----------------------------------------------------------------
+      Check entry on disclosure table
+  ----------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT industry               AS h_industry,
+           disc_question_industry AS h_question_industry,
+           question               AS h_question,
+           enterprise             AS h_enterprise,
+           despatch_date          AS h_despatch_date,
+           receipt_date           AS h_receipt_date,
+           disc_type              AS h_disc_type,
+           resp_type              AS h_resp_type
+    FROM   dsc_response
+    WHERE  contributor_reference = :s_contributor_reference
+      AND  period                = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: No diclosure form was printed for this contributor '
+          + 'in ' +VARCHAR(:s_period) +'. Please try again or exit the screen.'
+    WITH STYLE = POPUP;
+    RETURN 1;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select data from dsc_response table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+}
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

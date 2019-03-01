@@ -1,0 +1,875 @@
+/*----------------------------------------------------------------------
+                           disc_fr_response
+----------------------------------------------------------------------*/
+
+INITIALIZE =
+
+DECLARE 
+  h_retries_allowed       = INTEGER1 NOT NULL,
+  h_retries               = INTEGER1 NOT NULL,
+  h_retry_or_not          = CHAR(5) NOT NULL,
+  h_frpr_name             = VARCHAR(24) NOT NULL,
+  h_return                = INTEGER1 NOT NULL,
+  h_blanket               = CHAR(1) NOT NULL,
+  h_rsp_table             = VARCHAR(24) NOT NULL,
+  h_ind_table             = VARCHAR(24) NOT NULL,
+  h_dsc_table             = VARCHAR(24) NOT NULL,
+  h_tmp_table             = VARCHAR(24) NOT NULL,
+  h_rows                  = INTEGER4 NOT NULL,
+  h_period                = INTEGER4 NOT NULL,
+  h_dummy_period          = INTEGER4 NOT NULL,
+  h_first_period          = INTEGER4 NOT NULL,
+  h_industry              = INTEGER4 NOT NULL,
+  h_dummy_ind             = INTEGER4 NOT NULL,
+  h_despatched            = INTEGER4 NOT NULL,
+  h_allowed               = INTEGER4 NOT NULL,
+  h_denied                = INTEGER4 NOT NULL,
+  h_limited               = INTEGER4 NOT NULL,
+  h_responded             = INTEGER4 NOT NULL,
+  h_percentage            = FLOAT4 NOT NULL,
+  h_outstanding           = INTEGER4 NOT NULL,
+
+  lp_error_check      = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  msa_date = 'now';
+  h_frpr_name = 'disc_fr_response';
+  h_retries_allowed = 3;
+  h_rows = 0;
+
+  h_rsp_table = 'tt_dsc_response_rates';
+  h_dsc_table = 'tt_dsc_response_data';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+  SET_FORMS FIELD '' (MODE(tf)  = 'READ',
+                      MODE(tf2) = 'READ');
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+  /*----------------------------------------------------------------------
+         Drop temp tables ready for use.
+  ----------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_drop_table (p_table = :h_rsp_table);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to drop temporary response data table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN :h_return;
+  ENDIF;
+
+  h_return = CALLPROC msa_fp_drop_table (p_table = :h_dsc_table);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to drop temporary disclosure response table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN :h_return;
+  ENDIF;
+
+  RESUME FIELD s_industry;
+
+}
+
+FIELD s_industry =
+{
+
+  IF  s_industry != 'ALL'
+  AND s_industry != 'GROUP'
+  AND :s_industry NOT LIKE '\[0-9\]\[0-9\]\[0-9\]\[0-9\]\[0-9\]' ESCAPE '\'
+  THEN
+    MESSAGE 'WARNING: This field must contain "ALL", "GROUP", or a '
+          + 'valid ProdCom industry that you have access to. '
+          + 'Please check and try again.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_industry;
+  ENDIF;
+
+  IF s_industry != 'ALL'
+  AND s_industry != 'GROUP'
+  THEN
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      SELECT DISTINCT industry AS h_dummy_ind
+      FROM   industry_analysts
+      WHERE  industry = :s_industry;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 1
+    THEN
+      MESSAGE 'WARNING: That is not a valid ProdCom industry code. '
+            + 'Please try again or exit the screen. '
+      WITH STYLE = POPUP;
+      RESUME FIELD s_industry;
+    ELSEIF h_return > 1
+    THEN
+      MESSAGE 'ERROR: Failed to validate industry code. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Create the industry table using shared procedure.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating Table of Industries . . .';
+
+  h_return = CALLPROC msa_fp_industry
+           ( p_industry   = :s_industry,
+             p_temp_table = BYREF(h_ind_table));
+
+  IF h_return = 9
+  THEN
+    RETURN 9;
+  ELSEIF h_return != 0
+  THEN
+    RESUME FIELD s_industry;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Find latest annual period to use as default display.
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT MAX(period) AS h_period
+    FROM   inquiry_period
+    WHERE  inquiry = 14;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select current annual period. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  s_period = :h_period;
+
+  REDISPLAY;
+
+  RESUME FIELD s_period;
+
+}
+
+FIELD s_period =
+{
+
+  CLEAR FIELD tf;
+
+  REDISPLAY;
+
+  /*------------------------------------------------------------------
+      Find the earliest period that we have disclosure data for.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Checking Period . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT MIN(period) AS h_first_period
+    FROM  dsc_response;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to find earliest disclosure data period. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Check that we have disclosure data for the display periods.
+  ------------------------------------------------------------------*/
+
+  IF MOD(:s_period,100) != 00
+  THEN
+    MESSAGE 'WARNING: Period must be an annual period. Taking a guess... '
+    WITH STYLE = POPUP;
+    s_period = ((:s_period/100)*100);
+    REDISPLAY;
+    RESUME FIELD s_period;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT period AS h_dummy_period
+    FROM   inquiry_period
+    WHERE  inquiry = 14
+      AND  period >= :h_first_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: There are no disclosure records that far back. '
+          + 'Please try a later ProdCom period or exit the screen. '
+    WITH STYLE = POPUP;
+    RESUME FIELD s_industry;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to validate disclosure data period. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Create temp table with this years disclosure despatches on.
+      (simpler sql later and massive performance boost.)
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    CREATE TABLE :h_dsc_table
+    AS 
+
+    SELECT *
+    FROM dsc_response
+    WHERE period = :s_period 
+
+    WITH  KEY       = (industry, contributor_reference, question),
+          STRUCTURE = HASH;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to create temporary disclosure response table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Create working table of users industries that have despatches.
+  ------------------------------------------------------------------*/
+
+  CREATE TABLE :h_rsp_table
+  AS 
+
+  SELECT DISTINCT a.industry  AS industry,
+         INT4(0)              AS despatched,
+         INT4(0)              AS allowed,
+         INT4(0)              AS denied,
+         INT4(0)              AS limited,
+         INT4(0)              AS responded,
+         FLOAT4(0)            AS resp_rate,
+         INT4(0)              AS non_resp
+  FROM   :h_dsc_table a
+  WHERE  a.industry IN
+      (  SELECT b.industry
+         FROM   :h_ind_table b
+         WHERE  b.industry = a.industry )
+
+  WITH  KEY       = (industry),
+        STRUCTURE = HASH;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: There were no disclosure despatches for the '
+          + 'selected parameters. Please try again or exit the screen.'
+    WITH STYLE = POPUP;
+    h_rows = 0;
+    msa_date = 'now';
+    h_return = CALLPROC msa_fp_drop_table ( h_table = :h_rsp_table);
+    h_return = CALLPROC msa_fp_drop_table ( h_table = :h_ind_table);
+    h_return = CALLPROC msa_fp_drop_table ( h_table = :h_dsc_table);
+    h_return = CALLPROC msa_fp_drop_table ( h_table = :h_tmp_table);
+    RESUME FIELD s_industry;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to create temporary response data table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*-------------------------------------------------------------------
+       Calculate counts for each industry by contributor:
+       If it has no 999999999 question, it's limited
+       If it has a 999999999 question and A, it's allowed
+       If it has a 999999999 question and D, it's denied
+  -------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+    h_rows = 0;
+
+    SELECT   industry AS h_industry
+    FROM     :h_rsp_table
+    ORDER BY industry
+    BEGIN
+
+      MESSAGE 'Processing Industry ' + VARCHAR(:h_industry) + ' . . .';
+
+      h_rows = :h_rows + 1;
+
+      h_despatched  = 0;
+      h_allowed     = 0;
+      h_denied      = 0;
+      h_limited     = 0;
+      h_responded   = 0;
+      h_percentage  = 0;
+      h_outstanding = 0;
+
+      h_tmp_table = 'tt_dsc_blankets_' +VARCHAR(:h_industry)
+                  + '_' +VARCHAR(:s_period);
+
+      /*...............................................................
+          Drop and create table to hold blanket rersponse contribs.
+      ...............................................................*/
+
+      h_return = CALLPROC msa_fp_drop_table (p_table = :h_tmp_table);
+
+      IF h_return != 0
+      THEN
+        MESSAGE 'ERROR: Failed to drop temporary working table '
+              + 'for industry ' +VARCHAR(:h_industry) +'. '
+              + 'Error code ' +VARCHAR(:h_return) +'. '
+              + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+        RETURN :h_return;
+      ENDIF;
+
+      CREATE TABLE :h_tmp_table
+      AS
+      SELECT DISTINCT contributor_reference
+      FROM   :h_dsc_table
+      WHERE  industry = :h_industry
+      AND    question = '999999999'
+
+      WITH  KEY       = (contributor_reference),
+            STRUCTURE = HASH;
+
+      h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return > 1
+      THEN
+        MESSAGE 'ERROR: Failed to create temporary blanket response table '
+              + 'for industry ' +VARCHAR(:h_industry) +'. '
+              + 'Error code ' +VARCHAR(:h_return) +'. '
+              + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+        RETURN 9;
+      ENDIF;
+
+      /*................................................................
+         Count disclosure despatches for this industry.
+      ................................................................*/
+
+      SELECT COUNT (DISTINCT contributor_reference) AS h_despatched
+      FROM   :h_dsc_table 
+      WHERE  industry  = :h_industry;
+
+      h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return != 0
+      THEN
+        MESSAGE 'ERROR: Failed to count disclosure despatches '
+              + 'for industry ' +VARCHAR(:h_industry) +'. '
+              + 'Error code ' +VARCHAR(:h_return) +'. '
+              + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+        RETURN 9;
+      ENDIF;
+
+      /*................................................................
+         Count blanket allowed responses for this industry.
+      ................................................................*/
+
+      SELECT COUNT (DISTINCT a.contributor_reference) AS h_allowed
+      FROM   :h_dsc_table a
+      WHERE  a.industry  = :h_industry
+        AND  a.resp_type = 'A'
+        AND  a.contributor_reference IN
+          (  SELECT b.contributor_reference
+             FROM   :h_tmp_table b
+             WHERE  b.contributor_reference = a.contributor_reference);
+
+      h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return > 1
+      THEN
+        MESSAGE 'ERROR: Failed to count allowed response '
+              + 'for industry ' +VARCHAR(:h_industry) +'. '
+              + 'Error code ' +VARCHAR(:h_return) +'. '
+              + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+        RETURN 9;
+      ENDIF;
+
+      /*................................................................
+         Count blanket denied responses for this industry.
+      ................................................................*/
+
+      SELECT COUNT (DISTINCT a.contributor_reference) AS h_denied
+      FROM   :h_dsc_table a
+      WHERE  a.industry  = :h_industry
+        AND  a.resp_type = 'D'
+        AND  a.contributor_reference IN
+          (  SELECT b.contributor_reference
+             FROM   :h_tmp_table b
+             WHERE  b.contributor_reference = a.contributor_reference);
+
+      h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return > 1
+      THEN
+        MESSAGE 'ERROR: Failed to count allowed response '
+              + 'for industry ' +VARCHAR(:h_industry) +'. '
+              + 'Error code ' +VARCHAR(:h_return) +'. '
+              + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+        RETURN 9;
+      ENDIF;
+
+      /*................................................................
+         Count limited responses for this industry.
+      ................................................................*/
+
+      SELECT COUNT (DISTINCT a.contributor_reference) AS h_limited
+      FROM   :h_dsc_table a
+      WHERE  a.industry   = :h_industry
+        AND  a.resp_type != ''
+        AND  a.contributor_reference NOT IN
+          (  SELECT b.contributor_reference
+             FROM   :h_tmp_table b
+             WHERE  b.contributor_reference = a.contributor_reference);
+
+      h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return > 1
+      THEN
+        MESSAGE 'ERROR: Failed to count limited response '
+              + 'for industry ' +VARCHAR(:h_industry) +'. '
+              + 'Error code ' +VARCHAR(:h_return) +'. '
+              + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+        RETURN 9;
+      ENDIF;
+
+      /*................................................................
+         Calculate total responses, response rate, non responders.
+      ................................................................*/
+
+      h_responded = :h_allowed + :h_denied + :h_limited;
+
+      h_outstanding = :h_despatched - :h_responded;
+      
+      h_percentage = FLOAT4(:h_responded) / FLOAT4(:h_despatched) * 100;
+
+      /*................................................................
+         Update industry data into temp response table.
+      ................................................................*/
+
+      UPDATE :h_rsp_table
+      SET    despatched = :h_despatched,
+             allowed    = :h_allowed,
+             denied     = :h_denied,
+             limited    = :h_limited,
+             responded  = :h_responded,
+             resp_rate  = :h_percentage,
+             non_resp   = :h_outstanding 
+      WHERE  industry   = :h_industry;
+
+      h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return != 0
+      THEN
+        MESSAGE 'ERROR: Failed to update temporary response table '
+              + 'for industry ' +VARCHAR(:h_industry) +'. '
+              + 'Error code ' +VARCHAR(:h_return) +'. '
+              + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+        RETURN 9;
+      ENDIF;
+
+      /*...............................................................
+          Drop table that held blanket rersponse contribs.
+      ...............................................................*/
+
+      h_return = CALLPROC msa_fp_drop_table (p_table = :h_tmp_table);
+
+      IF h_return != 0
+      THEN
+        MESSAGE 'ERROR: Failed to remove temporary working table '
+              + 'for industry ' +VARCHAR(:h_industry) +'. '
+              + 'Error code ' +VARCHAR(:h_return) +'. '
+              + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+        RETURN :h_return;
+      ENDIF;
+
+    END;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select for industry statistics loop. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*-------------------------------------------------------------------
+       Display data on first table field.
+  -------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+    h_retries = :h_retries + 1;
+
+    tf = 
+
+    SELECT   industry,
+             despatched,
+             allowed,
+             denied,
+             limited,
+             responded,
+             resp_rate,
+             non_resp
+    FROM     :h_rsp_table
+    ORDER BY industry;		  
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to display data in first table field. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  REDISPLAY;
+
+  /*-------------------------------------------------------------------
+       Calculate totals for display in second table field.
+  -------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    tf2 = 
+
+    SELECT 'TOTAL'         AS title,
+           SUM(despatched) AS tot_despatched,
+           SUM(allowed)    AS tot_allowed,
+           SUM(denied)     AS tot_denied,
+           SUM(limited)    AS tot_limited,
+           SUM(responded)  AS tot_responded,
+           FLOAT4(0)       AS tot_resp_rate,
+           SUM(non_resp)   AS tot_non_resp
+    FROM   :h_rsp_table;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to display data in second table field. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  REDISPLAY;
+
+  /*-------------------------------------------------------------------
+       Calculate overall disclosure response rate
+  -------------------------------------------------------------------*/
+
+  UNLOADTABLE tf2
+  BEGIN
+    IF :tf2.tot_despatched != 0
+    THEN
+       tf2.tot_resp_rate = 
+       FLOAT4(tf2.tot_responded) / :tf2.tot_despatched * 100;
+    ELSE
+       tf2.tot_resp_rate = 0
+    ENDIF;
+  END;
+
+  REDISPLAY;
+
+  RESUME FIELD tf;
+
+}
+
+/************************* KEY ACTIVATIONS ********************************/
+
+
+
+'Print', KEY FRSKEY4 =
+{
+  msa_date = 'now';
+
+  IF :h_rows = 0
+  THEN
+    MESSAGE 'WARNING: There is no data to print.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  MESSAGE 'Preparing Report . . .';
+
+  h_return = CALLPROC msa_cp_callsys 
+           ( 'report ' 
+           + :g_database 
+           + ' ''(user_name = "' + :g_user_name + '"' 
+           + ',h_table = "' + :h_rsp_table + '"' 
+           + ',inquiry = 14'
+           + ',period = ' + VARCHAR(:s_period) 
+           + ')'' -i$REPORTS/disc_rw_response.rw' 
+           + ' > report.output 2> report.output');
+
+  IF h_return != 0
+  THEN
+
+    MESSAGE 'ERROR: Failed to produce report. ' 
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN :h_return;
+
+  ELSE 
+
+    /*--------------------------------------------------------------
+       Remove last line - so a blank end page is not printed
+    --------------------------------------------------------------*/
+
+    h_return = CALLPROC msa_cp_callsys 
+             ( 'lines=`wc -l < disc_rw_response.rpt`;' 
+             + 'lines=`expr ${lines} - 1`;' 
+             + 'head -${lines} disc_rw_response.rpt | ' 
+             + 'lp -o12p -d' + :g_printer 
+             + ' >> report.output 2>> report.output');
+
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to send report to printer ' + :g_printer +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN :h_return;
+    ELSE
+      MESSAGE 'NOTE: Report successfully sent to printer ' +:g_printer + '.'
+      WITH STYLE = POPUP;
+    ENDIF;
+
+  ENDIF;
+
+}
+
+'Clear', KEY FRSKEY12 =
+{
+  CLEAR FIELD ALL;
+  h_rows = 0;
+  msa_date = 'now';
+  h_return = CALLPROC msa_fp_drop_table ( h_table = :h_rsp_table);
+  h_return = CALLPROC msa_fp_drop_table ( h_table = :h_ind_table);
+  h_return = CALLPROC msa_fp_drop_table ( h_table = :h_dsc_table);
+  h_return = CALLPROC msa_fp_drop_table ( h_table = :h_tmp_table);
+  RESUME FIELD s_industry;
+}
+
+'End',KEY FRSKEY14 =
+{
+  MESSAGE 'Exiting Screen . . .';
+  h_return = CALLPROC msa_fp_drop_table ( h_table = :h_rsp_table);
+  h_return = CALLPROC msa_fp_drop_table ( h_table = :h_ind_table);
+  h_return = CALLPROC msa_fp_drop_table ( h_table = :h_dsc_table);
+  h_return = CALLPROC msa_fp_drop_table ( h_table = :h_tmp_table);
+  RETURN 0;
+}
+
+/****************************** LOCAL PROCEDURES *****************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise perosnal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

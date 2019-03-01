@@ -1,0 +1,206 @@
+
+  /*---------------------------------------------------------------------
+     Determine scope of user id, which is used to detemine what industries
+     they are authorised to view etc.
+
+     Scope: 1 = AO - Own allocation
+            2 = EO - Teams allocation
+            3 = HEO/DEV - All.
+   ----------------------------------------------------------------------*/  
+
+PROCEDURE msa_fp_set_scope
+        (p_scope    = INTEGER1    NOT NULL WITH DEFAULT)=        
+
+DECLARE  
+  h_return          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name       = VARCHAR(25) NOT NULL WITH DEFAULT,
+  h_dummy_id        = VARCHAR(10) NOT NULL WITH DEFAULT,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL,
+
+
+{
+  h_retries_allowed = 3;
+  h_frpr_name = 'msam_fp_set_scope';
+
+  p_scope = 0;
+
+  /*......................................................................
+     Scope 1: Exists as analyst on analyst_coordinator_manager table.
+  ......................................................................*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT  DISTINCT analyst_id AS h_dummy_id
+    FROM   analyst_coordinator_manager
+    WHERE  analyst_id = :g_user_id
+    BEGIN
+      p_scope = 1;
+    END;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck= 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return > 7
+  THEN
+    MESSAGE 'ERROR: Failed to select scope 1 from the '
+          + 'analyst_coordinator_manager table.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+ 
+  /*......................................................................
+     Scope 2: Exists as coordinator on analyst_coordinator_manager table.
+  ......................................................................*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT  DISTINCT coordinator_id AS h_dummy_id
+    FROM   analyst_coordinator_manager
+    WHERE  coordinator_id = :g_user_id
+    BEGIN
+      p_scope = 2;
+    END;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck= 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return > 7
+  THEN
+    MESSAGE 'ERROR: Failed to select scope 2 from the '
+          + 'analyst_coordinator_manager table.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+  /*......................................................................
+     Scope 3: Exists as manager on analyst_coordinator_manager table
+              or is a dev id.
+  ......................................................................*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT  DISTINCT manager_id AS h_dummy_id
+    FROM   analyst_coordinator_manager
+    WHERE  manager_id = :g_user_id
+    BEGIN
+      p_scope = 3;
+    END;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck= 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return > 7
+  THEN
+    MESSAGE 'ERROR: Failed to select scope 3 from the '
+          + 'analyst_coordinator_manager table.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+  IF  :g_user_id = 'produser'
+  OR  :g_user_id = 'prodlive'
+  OR  :g_user_id = 'produat'
+  OR  :g_user_id = 'proddev'
+  THEN
+    p_scope = 3;
+  ENDIF; 
+
+
+  /*---------------------------------------------------------------------
+      Still scope zero? Sorry, nothing will be shown for you.
+   ----------------------------------------------------------------------*/  
+
+  IF p_scope = 0
+  THEN
+    MESSAGE 'WARNING: You do not have access to this data. Please '
+          + 'contact the business area control team to ensure you '
+          + 'are listed in the team roster and have an allocation.'
+    WITH STYLE = POPUP;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/************************** LOCAL PROCEDURES *********************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+                  h_num_row_ck = :p_num_row_ck,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

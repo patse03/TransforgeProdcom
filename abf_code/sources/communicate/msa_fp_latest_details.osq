@@ -1,0 +1,93 @@
+/*----------------------------------------------------------------------
+ Finds details for a Contributor for the most recent period it was
+ SELECTED for (which may not be the latest LIVE period).
+ Returns 1 if contributor was never selected.
+----------------------------------------------------------------------*/
+
+PROCEDURE msa_fp_latest_details (
+
+        contributor_reference = CHAR(11) NOT NULL,
+        enterprise            = CHAR(10) NOT NULL,
+        contributor_industry  = INTEGER4 NOT NULL,
+        region                = CHAR(2) NOT NULL,
+        output_category       = CHAR(1) NOT NULL,
+        inquiry               = INTEGER1 NOT NULL,
+        keyresp               = INTEGER1 NOT NULL,
+        legal_status          = INTEGER1 NOT NULL,
+        currency              = CHAR(1) NOT NULL,
+        period                = INTEGER4 NOT NULL) =
+
+DECLARE h_retries_allowed     = INTEGER1 NOT NULL,
+        h_retries             = INTEGER1 NOT NULL,
+        h_retry_or_not        = CHAR(5) NOT NULL,
+        h_frpr_name           = VARCHAR(24) NOT NULL,
+        h_dummy               = CHAR(11) NOT NULL,
+        h_idbr                = CHAR(11) NOT NULL,
+        h_return               = INTEGER1 NOT NULL
+
+{
+  h_frpr_name = 'msa_fp_latest_details';
+  h_retries_allowed = 3;
+
+  /*------------------------------------------------------------------
+    Because you're selecting into simple fields (not table fields), you
+    only get the LATEST SELECTED period's details back, even though
+    more than one row may be found.
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT   region,
+             output_category,
+             contributor_industry,
+             inquiry,
+             period,
+             enterprise,
+             keyresp,
+             legal_status,
+             currency
+    FROM     contributor_period
+    WHERE    contributor_reference = :contributor_reference
+    ORDER BY period DESC;
+
+    h_return = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+    IF h_return <> 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return > 9
+  THEN
+    MESSAGE 'ERROR: Failed to access contributor_period. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN
+    RETURN 1;
+  ENDIF;
+
+  RETURN 0;
+
+}

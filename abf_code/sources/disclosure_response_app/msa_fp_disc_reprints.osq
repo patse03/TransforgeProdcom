@@ -1,0 +1,542 @@
+/******************************************************************************
+ 
+  Description: Exports disclosure reprint requests generated during the day   
+               to SPC in a specific file format for printing the next morning.
+               It must be scheduled to run before midnight, or the code will 
+               need altering to pick up the previous day only.
+
+  Author:      Dom Ford	
+
+  Date:        April 2012
+
+  Scheduled:   Daily 23:15
+
+  Revisions: ( mmm_yyyy - ii: text )
+
+  Apr 2012 - DF: Initial testing and tweaks.
+  Oct 2017 - PTC: Change dsc_reprin_orders to dsc_reprint_orders.
+
+******************************************************************************/
+
+PROCEDURE msa_fp_disc_reprints ()=
+
+DECLARE h_frpr_name       = VARCHAR(24) NOT NULL WITH DEFAULT,
+        h_return          = INTEGER1    NOT NULL WITH DEFAULT,
+        h_period          = INTEGER4    NOT NULL WITH DEFAULT,
+        h_count           = INTEGER4    NOT NULL WITH DEFAULT,
+        h_text            = VARCHAR(60) NOT NULL WITH DEFAULT,
+        h_file1           = VARCHAR(70) NOT NULL WITH DEFAULT,
+        h_file2           = VARCHAR(70) NOT NULL WITH DEFAULT,
+        h_table_1         = VARCHAR(32) NOT NULL WITH DEFAULT,
+        h_table_2         = VARCHAR(32) NOT NULL WITH DEFAULT,
+        h_day             = CHAR(2)     NOT NULL WITH DEFAULT,
+        h_month           = CHAR(2)     NOT NULL WITH DEFAULT,
+        h_year            = CHAR(4)     NOT NULL WITH DEFAULT,
+        h_datestamp       = CHAR(8)     NOT NULL WITH DEFAULT,
+
+        lp_error_check    = PROCEDURE RETURNING INTEGER,
+        lp_drop_table     = PROCEDURE RETURNING INTEGER,
+
+{
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  h_frpr_name = 'msa_fp_disc_reprints';
+
+  h_table_1 = 'tt_daily_disc_reprints_1';
+  h_table_2 = 'tt_daily_disc_reprints_2';
+  
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_procs (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+  /*-------------------------------------------------------------------------
+       Set datestamp for output files.
+  --------------------------------------------------------------------------*/
+  
+  h_day = CHAR(date_part('day','today'));
+  IF LENGTH (h_day) = 1 THEN h_day = '0'+:h_day; ENDIF;
+
+  h_month = CHAR(date_part('month','today'));
+  IF LENGTH (h_month) = 1 THEN h_month = '0'+:h_month; ENDIF;
+
+  h_year = CHAR(date_part('year','today'));
+
+  h_datestamp = :h_year + :h_month + :h_day;
+
+  /*-------------------------------------------------------------------------
+       Select current log no.
+  --------------------------------------------------------------------------*/
+
+  SELECT MAX(log_no) AS g_log_no
+  FROM   dsc_process_log;
+  
+  h_return = CALLPROC lp_error_check (p_num_row_check = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select max log no from dsc_process_log.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT; 
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+       Noting daily process running.
+  --------------------------------------------------------------------------*/
+
+    h_text = '--------------------------------------------------------------';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+    h_text = 'STARTING: Daily disclosure reprints process starting.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  /*-------------------------------------------------------------------------
+       Select reminder period
+  --------------------------------------------------------------------------*/
+
+  SELECT MAX(period) AS h_period
+  FROM   dsc_response;
+  
+  h_return = CALLPROC lp_error_check (p_num_row_check = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select max period from dsc_response.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT; 
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+       Set composite filenames
+  --------------------------------------------------------------------------*/
+
+  IF g_database = 'prodlivedb'
+  THEN
+    h_file1 = '/prodcom/live5/files/forms/disclosure014items_' 
+            + varchar(:h_datestamp);
+    h_file2 = '/prodcom/live5/files/forms/disclosure014_' 
+            + varchar(:h_datestamp);
+  ELSE
+    h_file1 = '/admin/scratch/TEST_disclosure014items_' 
+            + varchar(:h_datestamp);
+    h_file2 = '/admin/scratch/TEST_disclosure014_' 
+            + varchar(:h_datestamp);
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+       Drop temp table if it exists.
+  --------------------------------------------------------------------------*/
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to drop ' +:h_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ENDIF;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_2);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop ' +:h_table_2 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+       Create temp table of questions for non-printed requests.
+  --------------------------------------------------------------------------*/
+
+  CREATE TABLE :h_table_1
+  AS
+  SELECT a.contributor_reference,
+         VARCHAR(a.question) AS question,
+         a.unit_1,
+         a.need_count,
+         a.text_line1,
+         a.text_line2,
+         a.text_line3,
+         a.text_line4,
+         a.text_line5,
+         a.text_line6,
+         a.text_line7,
+         a.text_line8,
+         a.text_line9,
+         a.text_line10
+  FROM   dsc_reprint_orders a,
+         dsc_printing b
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  b.period = :h_period
+    AND  a.spc = 'N';
+
+  h_return = CALLPROC lp_error_check (p_num_row_check = 1);
+
+  IF h_return = 1
+  THEN
+
+    h_text = 'NOTE: No orders to process today.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      =  0,
+             p_text      = :h_text);
+
+    h_text = 'COMPLETE: Daily disclosure reprints process completed OK.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+    EXIT;
+
+  ELSEIF h_return > 1
+  THEN
+
+    h_text = 'ERROR: Failed to create ' +:h_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+
+    EXIT;
+
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+       Create temp table of addresses for non-printed requests.
+  --------------------------------------------------------------------------*/
+
+  CREATE TABLE :h_table_2
+  AS
+  SELECT DISTINCT a.contributor_reference,
+                  VARCHAR(c.contributor_industry) as contributor_industry,
+                  b.addressee,
+                  b.add_name1,
+                  b.add_name2,
+                  b.add_name3,
+                  b.add_tradstyle1,
+                  b.add_tradstyle2,
+                  b.add_tradstyle3,
+                  b.add_line1,
+                  b.add_line2,
+                  b.add_line3,
+                  b.add_line4,
+                  b.add_line5,
+                  b.add_postcode,
+                  d.name1,
+                  d.ext1,
+                  c.region,   /*needed to set formtype */
+                  VARCHAR(c.legal_status) AS legal_status,
+                  '0001' as formtype,
+                  ' ' as welsh
+  FROM           :h_table_1 a,
+                 contributor b,
+                 dsc_printing c,
+                 dsc_reprint_orders d 
+  WHERE          c.period                = :h_period
+    AND          a.contributor_reference = b.contributor_reference
+    AND          b.contributor_reference = c.contributor_reference
+    AND          c.contributor_reference = d.contributor_reference
+    AND          a.question              = c.question
+    AND          c.question              = d.question
+    AND          d.spc                   = 'N';
+
+  h_return = CALLPROC lp_error_check (p_num_row_check = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_table_2 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ELSE
+    h_text = 'NOTE: ' +VARCHAR(:h_count) +' reprints ordered today.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+       Set formtype if NI form.
+  --------------------------------------------------------------------------*/
+
+  UPDATE :h_table_2
+  SET    formtype = '0002'
+  WHERE  region = 'YY';
+
+  h_return = CALLPROC lp_error_check (p_num_row_check = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update formtype on ' +:h_table_2 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+       Set welsh language marker
+  --------------------------------------------------------------------------*/
+
+  UPDATE :h_table_2 a
+  FROM   welsh_forms b
+  SET welsh = 'W'
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  b.period = :h_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_check = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update welsh marker on ' +:h_table_2 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+       Use temp table to create data file 1 in SPCs area.
+  --------------------------------------------------------------------------*/
+
+ COPY TABLE :h_table_1 
+          ( contributor_reference = c(0)'^',
+            question              = c(0)'^',
+            unit_1                = c(0)'^',
+            need_count            = c(0)'^',
+            text_line1            = c(0)'^',
+            text_line2            = c(0)'^',
+            text_line3            = c(0)'^',
+            text_line4            = c(0)'^',
+            text_line5            = c(0)'^',
+            text_line6            = c(0)'^',
+            text_line7            = c(0)'^',
+            text_line8            = c(0)'^',
+            text_line9            = c(0)'^',
+            text_line10           = c0nl)
+  INTO :h_file1;
+  
+  h_return = CALLPROC lp_error_check (p_num_row_check = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create first data file in SPC area.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT; 
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+       Use temp table to create data file 2 in SPCs area.
+  --------------------------------------------------------------------------*/
+
+ COPY TABLE :h_table_2 
+          ( contributor_reference = c(0)'^',
+            contributor_industry  = c(0)'^',
+            addressee             = c(0)'^',
+            add_name1             = c(0)'^',
+            add_name2             = c(0)'^',
+            add_name3             = c(0)'^',
+            add_tradstyle1        = c(0)'^',
+            add_tradstyle2        = c(0)'^',
+            add_tradstyle3        = c(0)'^',
+            add_line1             = c(0)'^',
+            add_line2             = c(0)'^',
+            add_line3             = c(0)'^',
+            add_line4             = c(0)'^',
+            add_line5             = c(0)'^',
+            add_postcode          = c(0)'^',
+            name1                 = c(0)'^',
+            ext1                  = c(0)'^',
+            region                = c(0)'^',
+            legal_status          = c(0)'^',
+            formtype              = c(0)'^',
+            welsh                 = c0nl)
+  INTO :h_file2;
+  
+  h_return = CALLPROC lp_error_check (p_num_row_check = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create second data file in SPC area.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT; 
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+       Set SPC markers to 'Y'.
+  --------------------------------------------------------------------------*/
+
+  MESSAGE 'Setting SPC markers to Y. . .';
+
+  UPDATE dsc_reprint_orders 
+  SET    spc = 'Y';
+
+  h_return = CALLPROC lp_error_check (p_num_row_check = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to set SPC markers to Y.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+       Tidy up temp tables.
+  --------------------------------------------------------------------------*/
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to remove ' +:h_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ENDIF;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_2);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to remove ' +:h_table_2 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+       Noting daily process complete.
+  --------------------------------------------------------------------------*/
+
+  h_text = 'COMPLETE: Daily disclosure reprints process completed OK.';
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = :h_text);
+
+EXIT;
+
+}
+
+/************************** LOCAL PROCEDURES ********************************/
+
+
+/*===========================================================================
+	      Local procedure for basic error checking.
+============================================================================*/
+
+PROCEDURE lp_error_check
+	  (p_num_row_check  = INTEGER4 NOT NULL WITH DEFAULT)=
+
+DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+
+BEGIN
+
+lp_return = CALLPROC batch_check_inq_ing 
+          ( h_num_row_ck      = :p_num_row_check,
+            h_num_row         = BYREF(:h_count),
+ 	    h_commit          = 'Y',
+	    h_rollback        = 'N',
+            h_frpr_name       = 'h_frpr_name');
+
+RETURN :lp_return;
+
+END
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = VARCHAR(36) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = VARCHAR(36) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name =  :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_check = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_check = 0);
+
+  IF lp_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+

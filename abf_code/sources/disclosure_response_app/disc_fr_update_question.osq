@@ -1,0 +1,334 @@
+/*---------------------------------------------------------------------
+    This frame is used to indicate those questions where
+    disclosure permission has been granted by a contributor
+    as a result of receiving a disclosure letter.
+
+    The disclosive questions for which permission has been
+    appear in the table field. The user enters 'Y' next to
+    each question that permission has been given.
+
+    Any blanket permission already in existence is then deleted
+    from enterprise_period and individual rows are added for
+    the permitted questions. A row is created for the current
+    period and the next three (quarterly).
+---------------------------------------------------------------------*/
+
+INITIALIZE ( 
+
+        p_contributor_reference = CHAR(11) NOT NULL WITH DEFAULT,
+        p_period                = INTEGER4 NOT NULL WITH DEFAULT,
+        p_enterprise            = CHAR(10) NOT NULL WITH DEFAULT,
+        p_industry              = INTEGER4 NOT NULL WITH DEFAULT,
+        p_disc_industry         = INTEGER4 NOT NULL WITH DEFAULT,
+        p_despatch_date         = DATE     NOT NULL WITH DEFAULT,
+        p_company_name          = CHAR(35) NOT NULL WITH DEFAULT) =
+
+DECLARE h_return              = INTEGER      NOT NULL WITH DEFAULT,
+        h_return_2            = INTEGER      NOT NULL WITH DEFAULT,
+        h_retries             = INTEGER1     NOT NULL WITH DEFAULT,
+        h_retries_allowed     = INTEGER1     NOT NULL WITH DEFAULT,
+        h_retry_or_not        = CHAR(5)      NOT NULL WITH DEFAULT,
+        h_frpr_name           = VARCHAR(24)  NOT NULL WITH DEFAULT,
+        h_resp_type           = CHAR(1)      NOT NULL WITH DEFAULT,
+        h_prompt              = VARCHAR(200) NOT NULL WITH DEFAULT,
+        h_yesno               = CHAR(1)      NOT NULL WITH DEFAULT,
+        h_record              = INTEGER2     NOT NULL WITH DEFAULT,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name = 'disc_fr_update_question';
+  h_retries_allowed = 3;
+
+  INITTABLE tf UPDATE;
+
+  /*-----------------------------------------------------------------------
+      Check for an existing blanket response, and if it exists
+      ask to delete, as specific responses cannot exist if a blanket
+      response is in place.
+  -----------------------------------------------------------------------*/
+
+  h_retry_or_not = 'RETRY';
+  h_retries = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT resp_type AS h_resp_type
+    FROM   dsc_response
+    WHERE  contributor_reference = :p_contributor_reference
+      AND  period = :p_period
+      AND  question = 999999999;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 0);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+
+    IF :h_resp_type = 'A'
+    THEN
+      h_prompt = 'A Blanket Permission';
+    ELSEIF :h_resp_type = 'D'
+    THEN
+      h_prompt = 'A Blanket Denial';
+    ELSE
+      h_prompt = 'A Blanket Entry';
+    ENDIF;
+
+    h_prompt = 'WARNING: ' +:h_prompt + ' already exists for this '
+             + 'contributor. Do you wish to overwrite this with '
+             + 'specific permissions? [Y/N] : ';
+
+    h_yesno = '';
+    WHILE :h_yesno != 'Y' AND :h_yesno != 'N'
+    DO
+      h_yesno = PROMPT :h_prompt WITH STYLE = POPUP;
+      h_yesno = UPPER(:h_yesno);
+    ENDWHILE;
+
+    IF :h_yesno = 'N'
+    THEN
+      RETURN 1;
+    ENDIF; 
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      DELETE FROM dsc_response
+      WHERE  contributor_reference = :p_contributor_reference
+        AND  period                = :p_period
+        AND  question              = 999999999;
+
+      h_return_2 = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return_2 != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return_2 != 0
+    THEN
+      MESSAGE 'ERROR: Failed to delete blanket response '
+            + 'for contributor ' +:p_contributor_reference + ' '
+            + 'in period ' +VARCHAR(:p_period) +'. '
+            + 'Error code ' +VARCHAR(:h_return_2) + '. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+  ELSEIF h_return > 1 
+  THEN
+    MESSAGE 'ERROR: Failed to check if blanket response exists '
+          + 'for contributor ' +:p_contributor_reference + ' '
+          + 'in period ' +VARCHAR(:p_period) +'. '
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+  /*---------------------------------------------------------------
+      Populate table with disclosure questions
+  ---------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    tf =  
+    
+    SELECT DISTINCT question AS disc_question
+    FROM   dsc_response
+    WHERE  contributor_reference = :p_contributor_reference
+      AND  period                = :p_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to load disclosure questions for screen display. '
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  RESUME FIELD tf;
+
+}
+
+'Update', KEY FRSKEY4 =
+{
+
+  /*---------------------------------------------------------------
+      Validate markers.
+  ---------------------------------------------------------------*/
+
+  UNLOADTABLE tf (h_record = _record)
+  BEGIN
+    IF :tf.disc_marker != 'A' AND :tf.disc_marker != 'D'
+    THEN
+      MESSAGE 'WARNING: Permission should be either "A" or "D"'
+      WITH STYLE = POPUP;
+      SCROLL tf TO h_record;
+      RESUME FIELD tf.disc_marker;
+    ENDIF;
+  END;
+
+  /*---------------------------------------------------------------
+      Update table.
+  ---------------------------------------------------------------*/
+
+  UNLOADTABLE tf
+  BEGIN
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      UPDATE dsc_response
+      SET    resp_type    = :tf.disc_marker,
+             receipt_date = date('today'),
+             company_name = :p_company_name
+      WHERE  contributor_reference = :p_contributor_reference
+        AND  period                = :p_period
+        AND  question              = :tf.disc_question;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 1
+    THEN
+
+      /*---------------------------------------------------------------
+         If question doesnt exist on dsc_response, insert it.
+         (This is presumably a RAP function. Check if still needed.)
+      ---------------------------------------------------------------*/
+
+      h_retry_or_not      = 'RETRY';
+      h_retries           = 0;
+
+      WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+      DO
+
+        h_retries = :h_retries + 1;
+
+        INSERT INTO dsc_response
+        VALUES (    :p_contributor_reference,
+                    :p_industry,
+                    :p_disc_industry,
+                    :tf.disc_question,
+                    :p_period,
+                    :p_enterprise,
+                    :p_despatch_date,
+                    date('today'),
+                    '',
+                    :tf.disc_marker,
+                    :p_company_name);
+
+        h_return_2 = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+        IF h_return_2 != 7
+        THEN
+          h_retry_or_not = '';
+        ENDIF;
+
+      ENDWHILE;
+
+      IF h_return_2 != 0
+      THEN
+        MESSAGE 'ERROR: Failed to insert extra question ' 
+              + VARCHAR(:tf.disc_question) + ' into response table. '
+              + 'Error code ' +VARCHAR(:h_return_2) + '. '
+              + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+        RETURN 9;
+      ENDIF;
+
+    ELSEIF h_return > 1
+    THEN
+      MESSAGE 'ERROR: Failed to update question '
+              + VARCHAR(:tf.disc_question) + ' on response table. '
+            + 'Error code ' +VARCHAR(:h_return) + '. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+
+    ENDIF;
+
+  END;
+
+  RETURN 0;
+
+}
+
+'End', KEY FRSKEY14 =
+{
+   RETURN 1;
+}
+
+/***************************** LOCAL PROCEDURES **************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
