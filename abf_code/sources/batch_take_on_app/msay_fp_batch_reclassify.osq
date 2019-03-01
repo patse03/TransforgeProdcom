@@ -1,0 +1,315 @@
+/*-S--------------------------------------------------------------------
+Standalone batch_reclassification program.
+
+This takes one parameter, a table name which must be
+"batch_reclass_input", which contains the contributor_reference/period
+of all contributors to be tested for reclassification:
+
+    Making the caller supply the table_name should stop this being
+    run accidentally.
+ 
+$IMAGES/batch_take_on_app -numeric_overflow=ignore msay_fp_batch_reclassify -dproduserdb -a batch_reclass_input 
+
+It calls BTO's msay_fp_one_off_reclassify which deletes the refs/periods from
+reclass_contrib and re-inserts any reclassifying refs/periods back into
+it.
+
+SIC2003
+Change name of table on prodlivedb - do not use real reclass-contrib for running
+program with new SICs to find out which industry contributors should be
+classified to.
+
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msay_fp_batch_reclassify () =
+
+DECLARE h_param_list          = VARCHAR(100) NOT NULL,
+        h_varchar_variable    = VARCHAR(100) NOT NULL,
+        h_integer_variable    = INTEGER1 NOT NULL,
+        h_param1              = VARCHAR(20) NOT NULL,
+        h_table               = VARCHAR(20) NOT NULL,
+        ret_val               = INTEGER1 NOT NULL,
+        contributor_industry  = INTEGER4 NOT NULL,
+        h_proposed_subclass   = INTEGER4 NOT NULL,
+        alt_industry          = INTEGER4 NOT NULL,
+        contributor_reference = CHAR(11) NOT NULL,
+        period                = INTEGER4 NOT NULL,
+        inquiry               = INTEGER1 NOT NULL,
+
+	current_ind_perc      = INTEGER4 NOT NULL,
+	proposed_ind_perc      = INTEGER4 NOT NULL,
+
+        h_counter             = INTEGER4 NOT NULL,
+        h_reclassified        = CHAR(1) NOT NULL,
+        h_out_of_scope        = CHAR(1) NOT NULL,
+        h_frpr_name           = VARCHAR(24) NOT NULL
+
+{
+    SELECT DBMSINFO('username') AS g_user_id;
+    h_table = 'temp_reclass_inds';
+
+    h_frpr_name = 'msay_fp_batch_reclassify';
+
+    h_param_list = CALLPROC CommandLineParameters();
+
+    h_varchar_variable = squeeze (h_param_list);
+
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param1         =   left (h_varchar_variable,h_integer_variable - 1);
+    /*------------------------------------------------------------------
+    Check table name
+    ------------------------------------------------------------------*/
+
+    h_table = LOWERCASE(:h_param1);
+
+    IF h_table <> 'batch_reclass_input'
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Batch Reclass: Invalid TableName = "' + 
+                    :h_table + '"',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    MODIFY    :h_table TO BTREE
+    UNIQUE ON contributor_reference,
+              period;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Batch Reclass: Error modifying ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Go
+    ------------------------------------------------------------------*/
+
+    h_counter = 0;
+
+    SELECT a.contributor_reference,
+           a.period,
+           a.contributor_industry,
+           a.alt_industry,
+           a.alt_industry AS h_proposed_subclass,
+           a.inquiry
+    FROM   contributor_period a,
+           :h_table b
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.period = b.period
+    {
+
+        h_counter = h_counter + 1;
+
+        MESSAGE 'Reclassifying ' + VARCHAR(:contributor_reference) +
+                ' ' + VARCHAR(:period) + ' - No. ' + VARCHAR(:h_counter) + ' . . .';
+
+        ret_val = CALLPROC msay_fp_one_off_reclassify (
+                  contributor_reference = :contributor_reference,
+                  period                = :period,
+                  contributor_inquiry   = :inquiry,
+                  contributor_industry  = :contributor_industry,
+                  alt_industry          = :alt_industry,
+
+                  total_sales = byref(:current_ind_perc),
+                  prin_prod = byref(:proposed_ind_perc),
+
+                  h_subclass            = BYREF(:h_proposed_subclass),
+                  out_of_scope          = BYREF(:h_out_of_scope),
+                  reclassified          = BYREF(:h_reclassified));
+
+
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        Reclassification is normally done manually online, but here it
+        has to be done automatically.
+        commented out for 21213/9 exercise for Wendy
+        inserted total_turnover into column current_ind_perc and total
+	prin_prod into proposed_ind_perc
+
+        IF h_reclassified = 'y'
+        THEN
+
+            INSERT INTO reclass_contrib (
+                        contributor_reference,
+                        period,
+			inquiry,
+                        current_ind,
+                        current_ind_perc,
+                        proposed_ind,
+                        proposed_ind_perc,
+                        action_date,
+                        action,
+                        user_id)
+            VALUES (    :contributor_reference,
+                        :period,
+			:inquiry,
+                        :alt_industry,
+                        -1,
+                        :h_proposed_subclass,
+                        -1,
+                        'now',
+                        'ACCEPTED',
+                        :g_user_id);
+        --------------------------------------------------------------*/
+
+        IF h_reclassified = 'y'
+        THEN
+
+            INSERT INTO reclass_contrib (
+                        contributor_reference,
+                        period,
+			inquiry,
+                        current_ind,
+                        current_ind_perc,
+                        proposed_ind,
+                        proposed_ind_perc,
+                        action_date,
+                        action,
+                        user_id)
+            VALUES (    :contributor_reference,
+                        :period,
+			:inquiry,
+                        :alt_industry,
+                        current_ind_perc,
+                        :h_proposed_subclass,
+                        proposed_ind_perc,
+                        'now',
+                        'ACCEPTED',
+                        :g_user_id);
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0
+            THEN
+                INSERT INTO bto_error_log
+                VALUES (    'now',
+                            'Batch Reclass: Error inserting ' + 
+                            VARCHAR(:contributor_reference) + ' ' +
+                            VARCHAR(:period) + ' into reclass_contrib',
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+        ENDIF;
+
+        IF h_out_of_scope = 'y'
+        THEN
+            INSERT INTO bto_error_log
+            VALUES (    'now',
+                        'Batch Reclass: Out of Scope ' +
+                        VARCHAR(:contributor_reference) +
+                        ' ' + VARCHAR(:period),
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        If neither reclassified nor out of scope, insert a record into
+        reclass_contrib anyway with the original IDBR lower-level 
+        industry
+        --------------------------------------------------------------*/
+        IF h_reclassified = 'n' AND h_out_of_scope = 'n'
+        THEN
+            INSERT INTO reclass_contrib (
+                        contributor_reference,
+                        period,
+			inquiry,
+                        current_ind,
+                        current_ind_perc,
+                        proposed_ind,
+                        proposed_ind_perc,
+                        action_date,
+                        action,
+                        user_id)
+            VALUES (    :contributor_reference,
+                        :period,
+			:inquiry,
+                        :alt_industry,
+                        -2,
+                        :h_proposed_subclass,
+                        -2,
+                        'now',
+                        'ACCEPTED',
+                        :g_user_id);
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0
+            THEN
+                INSERT INTO bto_error_log
+                VALUES (    'now',
+                            'Batch Reclass: Error inserting ' + 
+                            VARCHAR(:contributor_reference) + ' ' +
+                            VARCHAR(:period) + ' into reclass_contrib',
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+        ENDIF;
+    };
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Batch Reclass: Error in reclassification loop',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    INSERT INTO bto_error_log
+    VALUES (    'now',
+                'Batch Reclass: ' + VARCHAR(:h_counter) +
+                ' Refs Processed',
+                :h_frpr_name,
+                :ret_val,
+                :g_user_id);
+    COMMIT;
+
+    RETURN 0;
+
+}

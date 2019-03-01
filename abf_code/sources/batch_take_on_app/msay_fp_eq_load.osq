@@ -1,0 +1,545 @@
+/*----------------------------------------------------------------------
+ Loads the EQ data
+ And delete any duplicates from all files in case the same disk
+ has been taken on twice
+----------------------------------------------------------------------*/
+
+PROCEDURE msay_fp_eq_load () =
+
+DECLARE h_frpr_name   = VARCHAR(24) NOT NULL,
+        h_table1      = VARCHAR(24) NOT NULL,
+        h_table2      = VARCHAR(24) NOT NULL,
+        h_save_name   = VARCHAR(24) NOT NULL,
+        h_directory   = VARCHAR(50) NOT NULL,
+        h_now         = VARCHAR(24) NOT NULL,
+        h_rows        = INTEGER4 NOT NULL,
+        ret_val       = INTEGER1 NOT NULL,
+
+{
+    h_frpr_name = 'msay_fp_eq_load';
+    h_table1 = 'temp_eq_load_data';
+    SELECT DBMSINFO('database') AS g_database;
+
+    IF :g_database = 'prodlivedb'
+    THEN
+        h_directory = '/home/prodcom/admin/prodlive/bto/';
+    ELSE
+        h_directory = '/home/prodcom/admin/prodlive/bto/produser/';
+    ENDIF;
+
+    MESSAGE 'Reformatting EQ Input File . . .';
+
+    /*------------------------------------------------------------------
+    The original input file of scanned data has record types, so
+    split these up into separate files
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msay_cp_callsys (
+              'msay_nawk_eq_data ' + :h_directory + ' eq_input');
+
+    /*------------------------------------------------------------------
+              'jweqnawk ' + :h_directory + ' eq_input');
+not applicable since Ian Treasure rewrote EQ (I think)
+              'msay_nawk_eq_data ' + :h_directory + ' eq_input');
+    Replace the above call with the following when the NEW EQ programs
+    are made live in March/April 1998:
+
+    ret_val = CALLPROC msay_cp_callsys (
+              'msay_nawk_new_eq_data ' + :h_directory + ' eq_input');
+    ------------------------------------------------------------------*/
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error calling msay_nawk_eq_data',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+
+    ELSEIF ret_val = 1
+    THEN
+        /*--------------------------------------------------------------
+        No EQ file to take on
+        --------------------------------------------------------------*/
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'BTO: No EQ data file ''eq_input'' to take on',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Load input file 1
+    ------------------------------------------------------------------*/
+
+    h_table2 = 'bto_eq_contributor';
+
+    MESSAGE 'Loading EQ File 1 . . .';
+
+    ret_val = CALLPROC batch_fp_drop_table (
+                       h_table = :h_table2);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_table2 (
+                 contributor_reference CHAR(11) NOT NULL,
+                 period                INTEGER4 NOT NULL,
+                 inquiry               INTEGER1 NOT NULL,
+                 contributor_industry  INTEGER4 NOT NULL,
+                 addressee             CHAR(30) NOT NULL,
+                 add_name1             CHAR(35) NOT NULL,
+                 add_name2             CHAR(35) NOT NULL,
+                 add_name3             CHAR(35) NOT NULL,
+                 add_tradstyle1        CHAR(35) NOT NULL,
+                 add_tradstyle2        CHAR(35) NOT NULL,
+                 add_tradstyle3        CHAR(35) NOT NULL WITH DEFAULT,
+                 add_line1             CHAR(30) NOT NULL,
+                 add_line2             CHAR(30) NOT NULL,
+                 add_line3             CHAR(30) NOT NULL,
+                 add_line4             CHAR(30) NOT NULL,
+                 add_line5             CHAR(30) NOT NULL WITH DEFAULT,
+                 add_postcode          CHAR(8) NOT NULL,
+                 phone_contact         CHAR(30) NOT NULL WITH DEFAULT,
+                 phone_area_code       CHAR(5) NOT NULL,
+                 phone                 CHAR(10) NOT NULL,
+                 phone_extension       CHAR(5) NOT NULL,
+                 fax_area_code         CHAR(5) NOT NULL,
+                 fax                   CHAR(10) NOT NULL,
+                 email                 CHAR(50) NOT NULL,
+                 address_change        CHAR(1) NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Copy the data from the dollar-delimited input file
+    ------------------------------------------------------------------*/
+
+    COPY TABLE :h_table2 (
+               contributor_reference = 'c0$',
+               period                = 'c0$',
+               inquiry               = 'c0$',
+               contributor_industry  = 'c0$',
+               addressee             = 'c0$',
+               add_name1             = 'c0$',
+               add_name2             = 'c0$',
+               add_name3             = 'c0$',
+               add_tradstyle1        = 'c0$',
+               add_tradstyle2        = 'c0$',
+               add_tradstyle3        = 'c0$',
+               add_line1             = 'c0$',
+               add_line2             = 'c0$',
+               add_line3             = 'c0$',
+               add_line4             = 'c0$',
+               add_line5             = 'c0$',
+               add_postcode          = 'c0$',
+               phone_contact         = 'c0$',
+               phone_area_code       = 'c0$',
+               phone                 = 'c0$',
+               phone_extension       = 'c0$',
+               fax_area_code         = 'c0$',
+               fax                   = 'c0$',
+               email                 = 'c0$',
+               address_change        = c0nl)
+    FROM       VARCHAR(:h_directory) + 'eq_input1.txt';
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error loading ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    UPDATE :h_table2
+    SET    addressee       = UPPERCASE(addressee),
+           add_name1       = UPPERCASE(add_name1),
+           add_name2       = UPPERCASE(add_name2),
+           add_name3       = UPPERCASE(add_name3),
+           add_tradstyle1  = UPPERCASE(add_tradstyle1),
+           add_tradstyle2  = UPPERCASE(add_tradstyle2),
+           add_tradstyle3  = UPPERCASE(add_tradstyle3),
+           add_line1       = UPPERCASE(add_line1),
+           add_line2       = UPPERCASE(add_line2),
+           add_line3       = UPPERCASE(add_line3),
+           add_line4       = UPPERCASE(add_line4),
+           add_line5       = UPPERCASE(add_line5),
+           add_postcode    = UPPERCASE(add_postcode),
+           phone_contact   = UPPERCASE(phone_contact),
+           phone_area_code = SQUEEZE(phone_area_code),
+           phone           = SQUEEZE(phone),
+           phone_extension = SQUEEZE(phone_extension),
+           fax_area_code   = SQUEEZE(fax_area_code),
+           fax             = SQUEEZE(fax),
+           address_change  = UPPERCASE(address_change);
+
+	   /*
+	   this line was taken out as certain contribs want their email
+	   address to contain uppercase letters.
+
+           email           = LOWERCASE(email),
+
+	   */
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error uppercasing ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Load input file 2
+    ------------------------------------------------------------------*/
+
+    h_table2 = 'bto_eq_question';
+
+    MESSAGE 'Loading EQ File 2 . . .';
+
+    ret_val = CALLPROC batch_fp_drop_table (
+                       h_table = :h_table2);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_table2 (
+                 contributor_reference CHAR(11) NOT NULL,
+                 period                INTEGER4 NOT NULL,
+                 inquiry               INTEGER1 NOT NULL,
+                 contributor_industry  INTEGER4 NOT NULL,
+                 question              INTEGER4 NOT NULL,
+                 avalue                INTEGER4 NOT NULL,
+                 confirmation_code     CHAR(1) NOT NULL,
+                 acell                 CHAR(2) NOT NULL WITH DEFAULT,
+                 acell_type            CHAR(2) NOT NULL WITH DEFAULT,
+                 quest_order           INTEGER1 NOT NULL WITH DEFAULT,
+                 question_industry     INTEGER4 NOT NULL WITH DEFAULT,
+                 question_inquiry      INTEGER1 NOT NULL WITH DEFAULT);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Copy the data from the dollar-delimited input file
+    ------------------------------------------------------------------*/
+
+    COPY TABLE :h_table2 (
+               contributor_reference = 'c0$',
+               period                = 'c0$',
+               inquiry               = 'c0$',
+               contributor_industry  = 'c0$',
+               question              = 'c0$',
+               avalue                = 'c0$',
+               confirmation_code     = c0nl)
+    FROM       VARCHAR(:h_directory) + 'eq_input2.txt';
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error loading ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Load input file 3
+    ------------------------------------------------------------------*/
+
+    h_table2 = 'bto_eq_comment';
+
+    MESSAGE 'Loading EQ File 3 . . .';
+
+    ret_val = CALLPROC batch_fp_drop_table (
+                       h_table = :h_table2);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_table2 (
+                 contributor_reference CHAR(11) NOT NULL,
+                 period                INTEGER4 NOT NULL,
+                 inquiry               INTEGER1 NOT NULL,
+                 contributor_industry  INTEGER4 NOT NULL,
+                 comment_no            INTEGER4 NOT NULL,
+                 comment_type          CHAR(1) NOT NULL,
+                 comment               VARCHAR(200) NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Copy the data from the dollar-delimited input file
+    ------------------------------------------------------------------*/
+
+    COPY TABLE :h_table2 (
+               contributor_reference = 'c0$',
+               period                = 'c0$',
+               inquiry               = 'c0$',
+               contributor_industry  = 'c0$',
+               comment_no            = 'c0$',
+               comment_type          = 'c0$',
+               comment               = c0nl)
+    FROM       VARCHAR(:h_directory) + 'eq_input3.txt';
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error loading ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Load input file 4
+    ------------------------------------------------------------------*/
+
+    h_table2 = 'bto_eq_lu';
+
+    MESSAGE 'Loading EQ File 4 . . .';
+
+    ret_val = CALLPROC batch_fp_drop_table (
+                       h_table = :h_table2);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_table2 (
+                 contributor_reference CHAR(11) NOT NULL,
+                 period                INTEGER4 NOT NULL,
+                 inquiry               INTEGER1 NOT NULL,
+                 contributor_industry  INTEGER4 NOT NULL,
+                 lu_reference          VARCHAR(8) NOT NULL,
+                 action                VARCHAR(10) NOT NULL,
+                 employment            INTEGER4 NOT NULL,
+                 add_name1             CHAR(35) NOT NULL WITH DEFAULT,
+                 add_name2             CHAR(35) NOT NULL WITH DEFAULT,
+                 add_name3             CHAR(35) NOT NULL WITH DEFAULT,
+                 add_line1             CHAR(30) NOT NULL,
+                 add_line2             CHAR(30) NOT NULL,
+                 add_line3             CHAR(30) NOT NULL,
+                 add_line4             CHAR(30) NOT NULL,
+                 add_line5             CHAR(30) NOT NULL WITH DEFAULT,
+                 add_postcode          CHAR(8) NOT NULL,
+                 date_start            DATE NOT NULL WITH DEFAULT,
+                 date_cease            DATE NOT NULL WITH DEFAULT);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Copy the data from the dollar-delimited input file
+    ------------------------------------------------------------------*/
+
+    COPY TABLE :h_table2 (
+               contributor_reference = 'c0$',
+               period                = 'c0$',
+               inquiry               = 'c0$',
+               contributor_industry  = 'c0$',
+               lu_reference          = 'c0$',
+               action                = 'c0$',
+               employment            = 'c0$',
+               add_name1             = 'c0$',
+               add_name2             = 'c0$',
+               add_name3             = 'c0$',
+               add_line1             = 'c0$',
+               add_line2             = 'c0$',
+               add_line3             = 'c0$',
+               add_line4             = 'c0$',
+               add_line5             = 'c0$',
+               add_postcode          = 'c0$',
+               date_start            = 'c0$',
+               date_cease            = c0nl)
+    FROM       VARCHAR(:h_directory) + 'eq_input4.txt';
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error loading ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    UPDATE :h_table2
+    SET    action         = UPPERCASE(action),
+           add_name1      = UPPERCASE(add_name1),
+           add_name2      = UPPERCASE(add_name2),
+           add_name3      = UPPERCASE(add_name3),
+           add_line1      = UPPERCASE(add_line1),
+           add_line2      = UPPERCASE(add_line2),
+           add_line3      = UPPERCASE(add_line3),
+           add_line4      = UPPERCASE(add_line4),
+           add_line5      = UPPERCASE(add_line5),
+           add_postcode   = UPPERCASE(add_postcode);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error uppercasing ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Save the input FILE to a unique name for later comparison of errors
+    If it's 10:09am on 22 Aug 1997, the name will be eq_19970822_1009
+    ------------------------------------------------------------------*/
+
+    h_now = VARCHAR(DATE('now'));
+
+    h_save_name = 'eq_' +
+                  VARCHAR(DATE_PART('year','now')) +
+                  RIGHT(LEFT(h_now,5),2) +
+                  LEFT(h_now,2) + '_' +
+                  RIGHT(LEFT(h_now,13),2) +
+                  RIGHT(LEFT(h_now,16),2);
+
+    ret_val = CALLPROC msay_cp_callsys (
+              'mv ' + VARCHAR(:h_directory) +
+              'eq_input ' + VARCHAR(:h_directory) + VARCHAR(:h_save_name));
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error renaming input_file',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    RETURN 0;
+}

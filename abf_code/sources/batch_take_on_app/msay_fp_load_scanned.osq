@@ -1,0 +1,879 @@
+/*----------------------------------------------------------------------
+ Loads the scanned data into the manually-taken on data table
+
+CHANGES
+MJE     19/05/2015     Added full paths to SCRIPTS parameters. 
+----------------------------------------------------------------------*/
+
+PROCEDURE msay_fp_load_scanned () =
+
+DECLARE 
+  h_frpr_name             = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_debug                 = VARCHAR(80)  NOT NULL WITH DEFAULT,
+  h_dup_table             = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_temp_input_table      = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_save_name             = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_save_name_qtr         = VARCHAR(30)  NOT NULL WITH DEFAULT,
+  h_now                   = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_directory             = VARCHAR(50)  NOT NULL WITH DEFAULT,
+  h_message               = VARCHAR(100) NOT NULL WITH DEFAULT,
+  h_command               = VARCHAR(999) NOT NULL WITH DEFAULT,
+  h_error_table           = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_rows                  = INTEGER4     NOT NULL WITH DEFAULT,
+  h_num_rows              = INTEGER4     NOT NULL WITH DEFAULT,
+  h_input_rows            = INTEGER4     NOT NULL WITH DEFAULT,
+  h_return                = INTEGER1     NOT NULL WITH DEFAULT,
+  h_return2               = INTEGER1     NOT NULL WITH DEFAULT,
+  h_contributor_reference = VARCHAR(11)  NOT NULL WITH DEFAULT,
+  h_period                = INTEGER4     NOT NULL WITH DEFAULT,
+
+  lp_error_check     = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_write_to_audit_trail = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name        = 'msay_fp_load_scanned';
+  h_error_table      = 'bto_errors';
+  h_dup_table        = 'tt_duplicate_forms';
+  h_temp_input_table = 'tt_scanned_input';
+
+  SELECT DBMSINFO('database') AS g_database;
+
+  IF :g_database = 'prodlivedb'
+  THEN
+    h_directory = '/home/prodcom/admin/prodlive/bto/';
+  ELSE
+    h_directory = '/home/prodcom/admin/prodlive/bto/produser/';
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    The original input file of scanned data has 3 record types, which
+    are split into two files:
+
+    1. Reference Details + Question Details - bto_input1.txt
+    2. Reference Details + Contact Details  - bto_input2.txt
+
+    (This used to be just one file so, to keep the rest of the code
+    the same, we're just loading the 2nd file into the 1st file).
+
+    plus
+
+    3. Error Details + Count of Lines - bto_errors.txt
+
+    4. Nawk code held in /home/prodcom/admin/utils
+       (bto_report.txt is created by msay_nawk_scanned_data)
+  ------------------------------------------------------------------*/
+  MESSAGE 'Importing and checking data file . . .';
+
+  h_now = VARCHAR(DATE('now'));
+
+  h_debug = 'PRO: Nawking Input File.';
+  CALLPROC write_to_process_log 
+         ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  h_return = CALLPROC msay_cp_callsys 
+           ( '$UTILS/msay_nawk_scanned_data ' + VARCHAR(:h_directory) +
+             'bto_input');
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed whilst calling msay_nawk_scanned_data.';
+    CALLPROC write_to_process_log 
+           ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ELSEIF h_return = 1
+  THEN
+    /* Nothing to Take On (no bto_input file) - Processing Stops */
+        h_debug = 'NOTE: No bto_input file found in ' +h_directory +'.';
+        CALLPROC write_to_process_log 
+		 (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+    RETURN 1 ;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Load up the error file into the error table.
+  ------------------------------------------------------------------*/
+
+  h_debug = 'PRO: Loading error file.';
+  CALLPROC write_to_process_log 
+         ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = :h_error_table);
+
+  IF h_return != 0
+  THEN
+    RETURN h_return;
+  ENDIF;
+                 
+  CREATE TABLE :h_error_table (text VARCHAR(200) NOT NULL);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed in creating bto_errors.';
+    CALLPROC write_to_process_log 
+           ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  COPY TABLE :h_error_table ( text = 'c0nl')
+  FROM       VARCHAR(:h_directory) + 'bto_errors.txt';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug = 'ERROR: Failed copying file into bto_errors.';
+    CALLPROC write_to_process_log 
+           ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    No of input lines from error table
+  ------------------------------------------------------------------*/
+
+  SELECT INT4(RIGHT(text,LENGTH(text)-2)) AS h_rows
+  FROM   :h_error_table
+  WHERE  text LIKE '0:%';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug = 'ERROR: Failed selecting from bto_errors.';
+    CALLPROC write_to_process_log 
+           ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_message = 'BTO: Input = ' + VARCHAR(h_rows) + ' lines';
+
+  /*------------------------------------------------------------------
+    No of batches from error table
+  ------------------------------------------------------------------*/
+
+  SELECT INT4(RIGHT(text,LENGTH(text)-2)) AS h_rows
+  FROM   :h_error_table
+  WHERE  text LIKE '1:%';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug = 'ERROR: Failed selecting from h_error_table.';
+    CALLPROC write_to_process_log 
+           ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_message = h_message + ' including ' + VARCHAR(h_rows) + ' Batch Headers';
+
+  CALLPROC write_to_process_log 
+         ( p_text=:h_message, p_frpr=:h_frpr_name, p_return=0);
+
+  /*------------------------------------------------------------------
+    Copy all input error lines into the error_log
+  ------------------------------------------------------------------*/
+
+  SELECT  'WARNING: Input Error: ' + RIGHT(text,LENGTH(text)-2) AS h_debug
+  FROM    :h_error_table
+  WHERE   text LIKE '2:%'
+  BEGIN
+    CALLPROC write_to_process_log 
+           ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=1);
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed recording input errors in bto_error_log.';
+    CALLPROC write_to_process_log 
+           ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_rows = :h_num_rows;
+
+  h_message = VARCHAR(:h_rows) + ' Invalid Input + ';
+
+  h_input_rows = h_rows;
+
+  /*------------------------------------------------------------------
+    Load the input file
+  ------------------------------------------------------------------*/
+
+  h_debug = 'PRO: Loading scanned data 1.';
+  CALLPROC write_to_process_log 
+         ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  h_command = '$SCRIPTS/check_file_empty.script '
+            + VARCHAR(:h_directory) + 'bto_input1.txt '
+            + ' 1>/dev/null '
+            + ' 2>/dev/null';
+
+  h_return = CALLPROC msay_cp_callsys(:h_command);
+
+  IF h_return != 0
+  THEN
+    h_debug = 'WARNING: No data found in bto_input1.txt. '
+            + 'Please check main file. Aborting gracefully.';
+    CALLPROC write_to_process_log
+           ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = 'bto_scanned_input');
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE bto_scanned_input 
+             ( inquiry               INTEGER1 NOT NULL,
+               contributor_industry  INTEGER4 NOT NULL,
+               period                INTEGER4 NOT NULL,
+               contributor_reference CHAR(11) NOT NULL,
+               phone_contact         CHAR(30) NOT NULL WITH DEFAULT,
+               phone_area_code       CHAR(5)  NOT NULL WITH DEFAULT,
+               phone                 CHAR(10) NOT NULL WITH DEFAULT,
+               phone_extension       CHAR(5)  NOT NULL WITH DEFAULT,
+               fax_area_code         CHAR(5)  NOT NULL WITH DEFAULT,
+               fax                   CHAR(10) NOT NULL WITH DEFAULT,
+               email                 CHAR(46) NOT NULL WITH DEFAULT,
+               address_change        CHAR(1)  NOT NULL WITH DEFAULT,
+               lu_change             CHAR(1)  NOT NULL WITH DEFAULT,
+               comments              CHAR(1)  NOT NULL WITH DEFAULT,
+               extra_pages           CHAR(1)  NOT NULL WITH DEFAULT,
+               question              INTEGER4 NOT NULL,
+               avalue                INTEGER4 NOT NULL);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug = 'ERROR: Failed to create bto_scanned_input.';
+    CALLPROC write_to_process_log 
+           ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Copy the data from the 1st dollar-delimited input file
+  ------------------------------------------------------------------*/
+
+  COPY TABLE bto_scanned_input 
+           ( inquiry               = 'c0$',
+             contributor_industry  = 'c0$',
+             period                = 'c0$',
+             contributor_reference = 'c0$',
+             question              = 'c0$',
+             avalue                = c0nl)
+  FROM       VARCHAR(:h_directory) + 'bto_input1.txt';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return = 9
+  THEN
+    h_debug = 'ERROR: Failed to load file into bto_scanned_input.';
+    CALLPROC write_to_process_log 
+           ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_rows = :h_num_rows;
+
+  h_message = h_message + VARCHAR(h_rows) + ' Qns';
+
+  h_input_rows = h_input_rows + h_rows;
+
+
+  /*------------------------------------------------------------------
+    Load the 2nd input file of contributor information
+  ------------------------------------------------------------------*/
+
+  h_debug = 'PRO: Loading scanned data 2.';
+  CALLPROC write_to_process_log 
+         ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  h_command = '$SCRIPTS/check_file_empty.script '
+            + VARCHAR(:h_directory) + 'bto_input2.txt '
+            + ' 1>/dev/null '
+            + ' 2>/dev/null';
+
+  h_return = CALLPROC msay_cp_callsys(:h_command);
+
+  IF h_return != 0
+  THEN
+    h_debug = 'WARNING: No data found in bto_input2.txt. '
+            + 'Please check main file. Aborting gracefully.';
+    CALLPROC write_to_process_log
+           ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = :h_temp_input_table);
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE :h_temp_input_table 
+             ( inquiry               INTEGER1 NOT NULL,
+               contributor_industry  INTEGER4 NOT NULL,
+               period                INTEGER4 NOT NULL,
+               contributor_reference CHAR(11) NOT NULL,
+               phone_contact         CHAR(30) NOT NULL WITH DEFAULT,
+               phone_area_code       CHAR(5)  NOT NULL WITH DEFAULT,
+               phone                 CHAR(10) NOT NULL WITH DEFAULT,
+               phone_extension       CHAR(5)  NOT NULL WITH DEFAULT,
+               fax_area_code         CHAR(5)  NOT NULL WITH DEFAULT,
+               fax                   CHAR(10) NOT NULL WITH DEFAULT,
+               email                 CHAR(60) NOT NULL WITH DEFAULT,
+               address_change        CHAR(1)  NOT NULL WITH DEFAULT,
+               lu_change             CHAR(1)  NOT NULL WITH DEFAULT,
+               comments              CHAR(1)  NOT NULL WITH DEFAULT,
+               extra_pages           CHAR(1)  NOT NULL WITH DEFAULT);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug = 'ERROR: Failed to create ' + :h_temp_input_table +'.';
+    CALLPROC write_to_process_log 
+           ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Copy the data from the 2nd dollar-delimited input file
+  ------------------------------------------------------------------*/
+
+  COPY TABLE :h_temp_input_table 
+           ( inquiry               = 'c0$',
+             contributor_industry  = 'c0$',
+             period                = 'c0$',
+             contributor_reference = 'c0$',
+             phone_contact         = 'c0$',
+             phone_area_code       = 'c0$',
+             phone                 = 'c0$',
+             phone_extension       = 'c0$',
+             fax_area_code         = 'c0$',
+             fax                   = 'c0$',
+             email                 = 'c0$',
+             address_change        = 'c0$',
+             lu_change             = 'c0$',
+             comments              = 'c0$',
+             extra_pages           = 'c0nl')
+  FROM       VARCHAR(:h_directory) + 'bto_input2.txt';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug = 'ERROR: Failed to load file into '+:h_temp_input_table+'.';
+    CALLPROC write_to_process_log 
+           ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_rows = :h_num_rows;
+
+  h_message = h_message + ' + ' + VARCHAR(h_rows*2) + ' heads/foots';
+
+  h_input_rows = h_input_rows + (h_rows*2);
+
+  h_message = 'BTO: '+VARCHAR(h_input_rows) + ' Rows  = ' + h_message;
+
+  CALLPROC write_to_process_log 
+         ( p_text=:h_message, p_frpr=:h_frpr_name, p_return=0);
+    
+  /*------------------------------------------------------------------
+    Identify rows on the second file that have no data on the first file,
+    as these are front page only returns and need to be flagged to control.
+    (DF - 2010)
+  ------------------------------------------------------------------*/
+
+  h_debug = 'PRO: Checking for front page only returns.';
+  CALLPROC write_to_process_log 
+         ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+
+  INSERT INTO bto_front_page_only
+  SELECT :g_batch_date,
+         :g_counter,
+         b.contributor_reference,
+	 (b.period/100)*100
+  FROM   :h_temp_input_table b
+  WHERE  b.contributor_reference NOT IN 
+         (SELECT z.contributor_reference
+	  FROM bto_scanned_input z
+	  WHERE z.contributor_reference = b.contributor_reference);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1 
+  THEN
+    h_debug = 'ERROR: Failed to insert FPO to bto_front_page_only.';
+    CALLPROC write_to_process_log 
+           ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_rows = :h_num_rows;
+
+  IF h_rows != 0
+  THEN
+    h_debug = 'BTO: '+VARCHAR(h_rows)+' front-page-only returns found.';
+    CALLPROC write_to_process_log 
+           ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    In case there are any duplicates on the 2nd file, delete the
+    first one read in
+  ------------------------------------------------------------------*/
+
+  h_debug = 'PRO: Deleting Duplicates from within same file.';
+  CALLPROC write_to_process_log 
+         ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  DELETE FROM :h_temp_input_table a
+  WHERE  contributor_reference IN 
+         (SELECT contributor_reference
+          FROM   :h_temp_input_table b
+          WHERE  a.period = b.period
+            AND  a.tid < b.tid);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed to delete duplicates from '+:h_temp_input_table;
+    CALLPROC write_to_process_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_rows = :h_num_rows;
+
+  IF h_rows != 0
+  THEN
+    h_debug = 'BTO: '+ VARCHAR(h_rows) + ' same batch duplicates deleted.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Note batch processing on audit trail.
+     (Forcing idbr date to prodcom period.)
+  ------------------------------------------------------------------*/
+
+  SELECT DISTINCT contributor_reference AS h_contributor_reference,
+                  INT(period/100)*100   AS h_period
+  FROM   :h_temp_input_table
+  ORDER 
+     BY  contributor_reference
+  BEGIN
+
+    h_return2 = CALLPROC lp_write_to_audit_trail
+              ( p_contributor_reference = :h_contributor_reference,
+                p_period                = :h_period,
+                p_code                  = 2);
+
+    IF h_return2 != 0
+    THEN
+      /* Error reporting handled by local procedure */
+      RETURN :h_return2;
+    ENDIF;
+
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug =  'ERROR: Failed to select for audit trail loop.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Put the contributor data into the main table as before
+  ------------------------------------------------------------------*/
+
+  h_debug = 'PRO: Inserting contributor data into main table.';
+  CALLPROC write_to_process_log 
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  UPDATE bto_scanned_input a
+  FROM   :h_temp_input_table b
+  SET    phone_contact         = b.phone_contact,
+         phone_area_code       = b.phone_area_code,
+         phone                 = b.phone,
+         phone_extension       = b.phone_extension,
+         fax_area_code         = b.fax_area_code,
+         fax                   = b.fax,
+         email                 = left(b.email,46),
+         address_change        = b.address_change,
+         lu_change             = b.lu_change,
+         comments              = b.comments,
+         extra_pages           = b.extra_pages
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.period = b.period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug = 'ERROR: Failed to insert 2nd table into bto_scanned_input';
+    CALLPROC write_to_process_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Update the IDBR 6-digit period to PRODCOM style 6 digit period
+  ------------------------------------------------------------------*/
+
+  h_debug = 'PRO: Updating IDBR periods.';
+  CALLPROC write_to_process_log 
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  UPDATE bto_scanned_input
+  SET    period = period / 100 * 100;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug = 'ERROR: Failed to update prodcom annual periods [1]';
+    CALLPROC write_to_process_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  UPDATE :h_temp_input_table
+  SET    period = period / 100 * 100;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug = 'ERROR: Failed to update prodcom annual periods [2]';
+    CALLPROC write_to_process_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Update the email/webpage field to 46 characters.                
+  ------------------------------------------------------------------*/
+
+  h_debug = 'PRO: Updating email/webpage field to 46 characters.';
+  CALLPROC write_to_process_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  UPDATE bto_scanned_input
+  SET    email = LEFT(email,46);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed to set email field to 46 characters.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Make fields the right case
+  ------------------------------------------------------------------*/
+
+  h_debug = 'PRO: Converting contributor details to upper case.';
+  CALLPROC write_to_process_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  UPDATE bto_scanned_input
+  SET    phone_contact    = UPPERCASE(phone_contact),
+         phone_area_code  = UPPERCASE(phone_area_code),
+         phone            = UPPERCASE(phone),
+         phone_extension  = UPPERCASE(phone_extension),
+         fax              = UPPERCASE(fax),
+         fax_area_code    = UPPERCASE(fax_area_code),
+         address_change   = UPPERCASE(address_change),
+         lu_change        = UPPERCASE(lu_change),
+         comments         = UPPERCASE(comments),
+         extra_pages      = UPPERCASE(extra_pages);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed whilst upper casing on bto_scanned_input';
+    CALLPROC write_to_process_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Save the input FILE to a unique name for later comparison of errors
+    If it's 10:09am on 22 Aug 1997, the name will be bto_220897_1009
+  ------------------------------------------------------------------*/
+
+  h_debug = 'PRO: Saving input file.';
+  CALLPROC write_to_process_log 
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  h_now = VARCHAR(DATE('now'));
+
+  h_save_name = 'bto_' 
+              + VARCHAR(DATE_PART('year','now')) 
+              + RIGHT(LEFT(h_now,5),2) 
+              + LEFT(h_now,2) + '_' 
+              + RIGHT(LEFT(h_now,13),2) 
+              + RIGHT(LEFT(h_now,16),2);
+
+  h_return = CALLPROC msay_cp_callsys 
+           ( 'mv ' + VARCHAR(:h_directory) + 'bto_input ' 
+                   + VARCHAR(:h_directory) + VARCHAR(:h_save_name));
+
+  IF h_return != 0
+  THEN
+    h_debug = 'ERROR: Failed whilst renaming input file.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+       If reset parameter was set to 'y', call reset forms.
+       This effectively dereceipts any form in the batch file so
+       it can be taken on again without being marked as a duplicate.
+       NOTE: On live, forms that have been taken on clean (status 4)   
+       are not reset, but are removed from the input file instead.
+  ------------------------------------------------------------------*/
+
+  IF :g_reset_forms = 'y'
+  THEN
+
+    h_debug = 'PRO: Calling msay_fp_reset_forms.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+    h_return = CALLPROC msay_fp_reset_forms
+             ( p_input_table      = 'bto_scanned_input',         
+               p_temp_input_table = :h_temp_input_table);
+
+    IF h_return != 0
+    THEN
+      /* Error reporting handled by external procedure */
+      RETURN h_return;
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    If a form has already been taken on before, don't take it on again
+    but put it into the bto_duplicates table
+  ------------------------------------------------------------------*/
+
+  h_debug = 'PRO: Checking forms already taken on.';
+  CALLPROC write_to_process_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = :h_dup_table);
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE :h_dup_table
+  AS 
+  SELECT DISTINCT(contributor_reference),
+          period
+  FROM    :h_temp_input_table a
+  WHERE   contributor_reference IN 
+          (SELECT contributor_reference
+           FROM   contributor_period b
+           WHERE  a.period = b.period
+             AND  b.form_status > 0); 
+                 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed whilst creating ' + :h_dup_table;
+    CALLPROC write_to_process_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ELSEIF h_return = 1
+  THEN
+    /* Nothing more to do... */
+    RETURN 0;
+  ENDIF;
+
+  h_rows = :h_num_rows;
+
+  h_debug = 'BTO: ' + VARCHAR(h_rows) + ' Forms previously received.';
+  CALLPROC write_to_process_log 
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  /*------------------------------------------------------------------
+    Insert into bto_duplicates
+  ------------------------------------------------------------------*/
+
+  h_debug = 'PRO: Dealing with forms already taken on.';
+  CALLPROC write_to_process_log 
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  INSERT INTO bto_duplicates  
+            ( time,
+              inquiry,
+              contributor_industry,
+              period,
+              contributor_reference,
+              phone_contact,
+              phone_area_code,
+              phone,
+              phone_extension,
+              fax_area_code,
+              fax,
+              email,
+              address_change,
+              lu_change,
+              comments,
+              extra_pages,
+              question,
+              avalue)
+  SELECT      'now',
+              a.inquiry,
+              a.contributor_industry,
+              a.period,
+              a.contributor_reference,
+              a.phone_contact,
+              a.phone_area_code,
+              a.phone,
+              a.phone_extension,
+              a.fax_area_code,
+              a.fax,
+              a.email,
+              a.address_change,
+              a.lu_change,
+              a.comments,
+              a.extra_pages,
+              a.question,
+              a.avalue
+  FROM        bto_scanned_input a,
+              :h_dup_table b
+  WHERE       a.contributor_reference = b.contributor_reference
+    AND       a.period = b.period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug = 'ERROR: Failed whilst inserting into bto_duplicates.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Delete these already-taken-on-forms from the input table
+  ------------------------------------------------------------------*/
+
+  h_debug = 'PRO: Deleting forms already taken on from main table.';
+  CALLPROC write_to_process_log 
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  DELETE FROM bto_scanned_input a
+  WHERE       contributor_reference IN 
+            ( SELECT contributor_reference
+              FROM   :h_dup_table b
+              WHERE  a.period = b.period);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug = 'ERROR: Failed whilst deleting from ' + :h_dup_table +'.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = :h_temp_input_table);
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN h_return;
+  ENDIF;
+
+  RETURN 0;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_num_row    = BYREF(:h_num_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+/*=======================================================================
+    Local procedure to write to audit trail in batch run mode.
+=======================================================================*/
+
+PROCEDURE lp_write_to_audit_trail
+        ( p_contributor_reference = CHAR(11)    NOT NULL WITH DEFAULT,
+          p_question              = INTEGER4    NOT NULL WITH DEFAULT,
+          p_period                = INTEGER4    NOT NULL WITH DEFAULT,
+          p_code                  = INTEGER1    NOT NULL WITH DEFAULT,
+          p_val_1                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_val_2                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_frpr_name             = VARCHAR(36) NOT NULL WITH DEFAULT )=
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC write_to_audit_trail 
+            ( p_contributor_reference = :p_contributor_reference, 
+              p_question              = :p_question,
+              p_period                = :p_period,
+              p_code                  = :p_code, 
+              p_val_1                 = :p_val_1,
+              p_val_2                 = :p_val_2,
+              p_frpr_name             = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+

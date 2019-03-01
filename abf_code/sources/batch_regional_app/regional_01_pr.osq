@@ -1,0 +1,591 @@
+/*----------------------------------------------------------------------
+ Start of Batch Question Selection
+
+ Rewritten to actually complete program, which was left unfinished with
+ instructions to perform the last steps manually. Will also remove code
+ relating to quarterly that is no longer relevant. 
+
+ The first run should be just after main despatch spc file creation, and
+ produces the despatch list and the gains and losses.
+
+ The second run produces an updated gains and losses for reference, and 
+ also the sales data.
+
+ All output is provided on files rather than paper prints.
+
+ DF 2012.
+
+  Three mandatory parameters (usually passed from PPC program):
+    *  g_annual_period: yyyy00
+    *  g_region       : S/W       [Scotland or Wales]
+    *  g_stage        : 1/2       [1st or 2nd run]         
+
+  e.g. Normal run called by PPC:
+       $IMAGES/batch_regional_app -dprodlivedb -a 201200 S 1
+
+----------------------------------------------------------------------*/
+
+PROCEDURE regional_01_pr () =
+
+DECLARE h_param_list         = VARCHAR(100) NOT NULL,
+        h_varchar_variable   = VARCHAR(100) NOT NULL,
+        h_integer_variable   = INTEGER1 NOT NULL,
+        h_param1             = VARCHAR(20) NOT NULL,
+        h_param2             = VARCHAR(20) NOT NULL,
+        h_param3             = VARCHAR(20) NOT NULL,
+        h_temp_table         = VARCHAR(36) NOT NULL,
+        h_return             = INTEGER1 NOT NULL,
+        h_retries_allowed    = INTEGER1 NOT NULL,
+        h_retries            = INTEGER1 NOT NULL,
+        h_retry_or_not       = CHAR(5) NOT NULL,
+        h_span_end           = INTEGER4 NOT NULL,
+        h_prev_period1       = INTEGER4 NOT NULL,
+        h_prev_period2       = INTEGER4 NOT NULL,
+        h_prev_period3       = INTEGER4 NOT NULL,
+        h_prev_period4       = INTEGER4 NOT NULL,
+        h_prev_period5       = INTEGER4 NOT NULL,
+        h_frpr_name          = VARCHAR(24) NOT NULL,
+        h_text               = VARCHAR(60) NOT NULL,
+        h_dummy              = VARCHAR(60) NOT NULL,
+        h_region_code        = CHAR(2) NOT NULL,
+
+        lp_error_check       = PROCEDURE RETURNING INTEGER NOT NULL,
+        lp_full_error_check  = PROCEDURE RETURNING INTEGER NOT NULL,
+        lp_drop_table        = PROCEDURE RETURNING INTEGER NOT NULL,
+
+{
+  h_frpr_name = 'regional_01_pr';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  h_retries_allowed = 3;
+
+  h_param_list = CALLPROC CommandLineParameters();
+
+  h_varchar_variable = SQUEEZE (h_param_list);
+
+  h_integer_variable = LOCATE (h_varchar_variable, ' ');
+  h_param1         =   LEFT (h_varchar_variable,h_integer_variable - 1);
+
+  h_varchar_variable = SHIFT (h_varchar_variable, - h_integer_variable);
+  h_integer_variable = locate (h_varchar_variable, ' ');
+  h_param2           = left (h_varchar_variable,h_integer_variable - 1);
+
+  h_varchar_variable = SHIFT (h_varchar_variable, - h_integer_variable);
+  h_integer_variable = locate (h_varchar_variable, ' ');
+  h_param3           = left (h_varchar_variable,h_integer_variable - 1);
+
+  g_period = INT4(:h_param1);
+  g_region = UPPER(:h_param2);
+  g_stage  = INT1(:h_param3);
+
+  h_temp_table = 'tt_regional_01';
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_procs (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    h_text = 'ALERT: Unauthorised attempt to run bu user_id ' +:g_user_id +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 9,
+             p_text      = :h_text);
+    EXIT;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+  /*------------------------------------------------------------------
+     Log start of process
+  ------------------------------------------------------------------*/
+
+  h_text = '*SIGNON*';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+
+  h_text = 'STARTING: Process 1 started.';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  /*------------------------------------------------------------------
+     Validate the period called.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[1/23] Validating parameters. . .';
+  SLEEP 1;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT span_end AS h_span_end
+    FROM   inquiry
+    WHERE  inquiry = 14;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select span end from table inquiry.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  IF h_span_end != g_period
+  THEN
+    h_text = 'ERROR: Period parameter does not match the span end.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  IF  g_region != 'S' 
+  AND g_region != 'W'
+  THEN
+    h_text = 'ERROR: Region parameter "' +:g_region + '" is not valid.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Check cycle_point : if not F, then stop
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[2/23] Checking cycle point. . .';
+  SLEEP 1;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT industry_cycle_point AS h_dummy
+    FROM   industry
+    WHERE  industry_cycle_point != 'F'
+    AND    inquiry = 14;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 0);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return = 1
+  THEN
+    h_text = 'WARNING: Industry cycle point is not "F". Aborting.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+
+  ELSEIF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to select cycle point from industry table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Set previous periods. 
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[3/23] Setting previous periods. . .';
+  SLEEP 1;
+
+  g_prev_period1 = :g_period - 100;
+  g_prev_period2 = :g_period - 200;
+  g_prev_period3 = :g_period - 300;
+  g_prev_period4 = :g_period - 400;
+  g_prev_period5 = :g_period - 500;
+
+  /*------------------------------------------------------------------
+    Set region_code:
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[4/23] Setting previous periods. . .';
+  SLEEP 1;
+
+  IF g_region = 'S'
+  THEN
+     h_region_code = 'XX';
+  ELSEIF g_region = 'W'
+  THEN
+     h_region_code = 'WW';
+  ENDIF;
+  
+  /*------------------------------------------------------------------
+     Drop and create working table
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[5/23] Creating main working table. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop working table ' +:h_temp_table + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    CREATE TABLE :h_temp_table 
+    AS
+      SELECT b.contributor_industry,
+             a.contributor_reference,
+             a.period,
+             ((SUM(a.register_emp) * 1.00) 
+             / b.register_emp * 100) as percentage,
+             int4(0) as avalue,
+             'N' as acell,  
+             b.register_emp,
+             b.structure,
+             SQUEEZE (SQUEEZE(c.add_name1) +' ' 
+                   +  SQUEEZE(c.add_name2) +' ' 
+                   +  SQUEEZE(c.add_name3))  AS contributor_name
+      FROM   contributor_luaddress a,
+             contributor_period b,
+             contributor c
+      WHERE  a.contributor_reference = b.contributor_reference
+        AND  b.contributor_reference = c.contributor_reference
+        AND  b.structure = 'L'
+        AND  a.period    = b.period
+        AND  a.lu_region = :h_region_code
+        AND  a.period IN (:g_period,
+                          :g_prev_period1,
+                          :g_prev_period2,
+                          :g_prev_period3,
+                          :g_prev_period4)
+      GROUP BY b.contributor_industry,
+               a.contributor_reference,
+               a.period,
+               b.structure,
+               b.register_emp,
+               c.add_name1,
+               c.add_name2,
+               c.add_name3
+    UNION
+      SELECT d.contributor_industry,
+             d.contributor_reference,
+             d.period,
+             float8(100.00) as percentage,
+             int4(0) as avalue,
+             'N' as acell,  
+             d.register_emp,
+             d.structure,
+             SQUEEZE (SQUEEZE(c.add_name1) +' ' 
+                   +  SQUEEZE(c.add_name2) +' ' 
+                   +  SQUEEZE(c.add_name3))  AS contributor_name
+      FROM   contributor_period d, 
+             contributor c
+      WHERE  d.contributor_reference = c.contributor_reference
+        AND  d.region    = :h_region_code
+        AND  d.structure = 'E'
+        AND  d.period IN (:g_period,
+                          :g_prev_period1,
+                          :g_prev_period2,
+                          :g_prev_period3,
+                          :g_prev_period4);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create working table ' +:h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Updating regional table with sales data from cqpv.
+  ------------------------------------------------------------------*/
+
+  IF g_stage = 1
+  THEN
+
+    MESSAGE '[6/23] SKIPPING: No need for sales data in this stage. . .';
+    SLEEP 1;
+
+  ELSE
+
+    MESSAGE '[6/23] Adding sales data to working table. . .';
+    SLEEP 1;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+  
+      h_retries = :h_retries + 1;
+  
+      UPDATE :h_temp_table a
+      FROM  cqpv b,
+            contributor_period c
+      SET   avalue = (b.avalue * 1.0 * a.percentage / 100),
+            acell  = b.acell
+      WHERE a.period = b.period
+      AND   a.period = c.period
+      AND   a.contributor_reference = b.contributor_reference
+      AND   a.contributor_reference = c.contributor_reference
+      AND   MOD(b.question, 10000) = 9200;
+  
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+      RETURN 7;
+
+    ELSEIF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to update working table ' +:h_temp_table +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Call regional processes based on region parameter. 
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[7/23] Calling regional processes. . .';
+  SLEEP 1;
+
+  IF g_region = 'S'
+  THEN
+    h_return = CALLPROC regional_02_s_pr;
+  ENDIF;
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to complete procedure regional_02_' 
+           + LOWER(:g_region) +'_pr.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Tidy up.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[23/23] Tidying up main working table. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop working table ' +:h_temp_table + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Log end of process
+  ------------------------------------------------------------------*/
+
+  h_text = 'COMPLETE: Process 1 completed.';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  h_text = '*SIGNOFF*';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  RETURN 0;
+
+}
+
+/************************* LOCAL PROCEDURES ***************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+                  h_num_row_ck = :p_num_row_ck,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(36) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name  = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  h_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF h_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+

@@ -1,0 +1,95 @@
+/*-s--------------------------------------------------------------------
+   Procedure msal_fp_cr_data
+   
+   This procedure creates a table containing regional data for the
+   current quarter and the five previous quarters of the span.
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msal_fp_cr_data () =
+
+DECLARE h_frpr_name             = VARCHAR(24) NOT NULL,
+        h_table                 = VARCHAR(24) NOT NULL,
+        ret_val                 = INTEGER1 NOT NULL,
+
+
+{
+    h_frpr_name = 'msal_fp_cr_data';
+
+    ret_val = CALLPROC batch_fp_drop_table (h_table = :g_sel_table);
+    IF ret_val <> 0
+    THEN
+	RETURN ret_val;
+    ENDIF;
+
+    MESSAGE 'Creating table . . .';
+
+    /*------------------------------------------------------------------------
+    FROM Q2/2003
+    The employment figure from contributor_luaddress is the current
+    employment on the IDBR.  Whereas the employment figure from
+    contributor_period is the frozen employment on idbr) 
+    ------------------------------------------------------------------------*/
+
+    CREATE TABLE :g_sel_table AS
+    SELECT b.inquiry,
+           a.lu_region as region,
+           b.contributor_industry,
+           a.contributor_reference,
+           a.period,
+           ((SUM(a.register_emp) * 1.00) / b.register_emp * 100) as percentage,
+           b.register_emp,
+           b.structure
+    FROM   contributor_luaddress a,
+           contributor_period b
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.period IN (:g_prev_period1,:g_prev_period2,
+                        :g_prev_period3,:g_prev_period4,
+                        :g_prev_period5,:g_period)
+    AND    b.structure = 'L'
+    AND    a.period = b.period
+    AND    lu_region IN ('WW','XX')
+    GROUP BY inquiry,
+             lu_region,
+             b.contributor_industry,
+             a.contributor_reference,
+             a.period,
+             b.structure,
+             b.register_emp
+
+    UNION
+    SELECT inquiry,
+           region,
+           contributor_industry,
+           contributor_reference,
+           period,
+           float8(100.00) as percentage,
+           register_emp,
+           structure
+    FROM   contributor_period
+    WHERE  period IN (:g_prev_period1,:g_prev_period2,
+                      :g_prev_period3,:g_prev_period4,
+                      :g_prev_period5,:g_period)
+    AND    region IN ( 'WW','XX')
+    AND    structure = 'E';
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Unable to create ' + :g_sel_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+}

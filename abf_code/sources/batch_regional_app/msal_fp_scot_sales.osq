@@ -1,0 +1,209 @@
+/*-s--------------------------------------------------------------------
+  Procedure msal_fp_scot_sales
+  This produces the sales and employment print and .txt file for Scotland
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msal_fp_scot_sales () = 
+
+
+DECLARE ret_val      = INTEGER4 NOT NULL,
+        report_name1 = CHAR(30) NOT NULL,
+        print_name1  = CHAR(30) NOT NULL,
+        file_name1   = CHAR(50) NOT NULL,
+        region1      = VARCHAR(2) NOT NULL,
+        h_table1     = VARCHAR(24) NOT NULL,
+        h_frpr_name  = VARCHAR(24) NOT NULL
+
+{
+    h_frpr_name  = 'msal_fp_scot_sales' ;
+    h_table1     = 'scot_sales';
+    report_name1 = 'msal_rw_scot_sales.rw';
+    print_name1  = 'scot_sales_' + ASCII(:g_period) + '.rpt';
+
+
+    file_name1   = :g_path_name1 + '/scot_sales_' + ASCII(:g_period) + '.txt';
+
+
+    /*-s----------------------------------------------------------------
+    Process Scottish sales data. 
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Scottish sales . . .';
+
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table1);
+
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create temp table to hold Scottish sales data and employment data
+    ----------------------------------------------------------------e-*/
+
+    CREATE TABLE :h_table1 AS 
+    SELECT a.contributor_industry,
+           a.contributor_reference,
+           a.period,
+           b.percentage,
+           int4(0) as avalue,
+           int4(0) as employment,
+           'N' as acell,
+           c.add_name1
+    FROM   contributor_period a,
+           country_contrib_period b,
+           contributor c
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.contributor_reference = c.contributor_reference
+    AND    a.period = b.period
+    AND    b.period IN (:g_prev_period1,:g_prev_period2,
+                        :g_prev_period3,:g_prev_period4,
+                        :g_period)
+    AND    b.region = 'XX';
+  
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Update contibutor_data with values from cqpv.
+    ----------------------------------------------------------------e-*/
+
+/*
+    UPDATE :h_table1 a
+    FROM  cqpv b,
+          cqpv c
+    SET   avalue = (b.avalue * 1.0 * a.percentage / 100),
+          acell = b.acell,
+          employment = (c.avalue * 1.0)
+    WHERE a.period = b.period
+    AND   a.period = c.period
+    AND   a.contributor_reference = b.contributor_reference
+    AND   a.contributor_reference = c.contributor_reference
+    AND   MOD(b.question, 10000) = 9200
+    AND   MOD(c.question, 10000) = 9100;
+*/
+    UPDATE :h_table1 a
+    FROM  cqpv b,
+          contributor_period c
+    SET   avalue = (b.avalue * 1.0 * a.percentage / 100),
+          acell = b.acell,
+          employment = c.register_emp
+    WHERE a.period = b.period
+    AND   a.period = c.period
+    AND   a.contributor_reference = b.contributor_reference
+    AND   a.contributor_reference = c.contributor_reference
+    AND   MOD(b.question, 10000) = 9200;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Call the report writer program for Scottish sales print
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC msa_cp_callsys(
+    'report ' +
+    :g_database +
+    ' ''(table_name = "' + :h_table1 + '")''' +
+    ' -f$PRINTOUT/' + :print_name1 +
+    ' -i$REPORTS/' + :report_name1 + '> report.output');
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error calling ' + :report_name1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+     /*--------------------------------------------------------------
+      Copy Scottish data table to CSV file 
+     --------------------------------------------------------------*/
+
+    COPY :h_table1 (
+         contributor_industry = c0comma,
+         contributor_reference = c0comma,
+         period = c0comma,
+         percentage = c0comma,
+         avalue = c0comma,
+         employment = c0comma,
+         acell = c0comma,
+         add_name1 = c0nl)
+    INTO :file_name1;
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+		       h_num_row_ck = 1,
+	               h_commit     = 'Y',
+	               h_frpr_name  = :h_frpr_name,
+	               h_rollback   = 'Y');
+
+    IF ret_val = 9 
+    THEN
+       INSERT INTO error_log
+       VALUES(   'now',
+ 		 'Error copying table ' + :h_table1 + ' to flat file',
+		 :h_frpr_name,
+		 :ret_val,
+		 :g_user_id);
+       COMMIT;
+       RETURN 9;
+    ENDIF;
+
+
+  /*  ret_val = CALLPROC msa_cp_callsys(
+              'lp -drxp -oLANZ+NPN+SIMPLEX -n2 $PRINTOUT/' + :print_name1 +
+	      ' >> report.output');
+*/
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error printing ' + :print_name1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+    RETURN 0;
+}

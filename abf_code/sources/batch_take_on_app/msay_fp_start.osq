@@ -1,0 +1,216 @@
+/*----------------------------------------------------------------------
+Batch Take On - Start
+
+Called as:
+
+batch_take_on_app -dprodlivedb -a <g_run_type> <g_reset_forms)
+                                  (parameters are optional)
+where:
+
+   g_run_type    = i = input is from IQ
+                   s = input is from Scanning (default)
+
+   g_reset_forms = y = reset forms
+                   n = don't (default)
+----------------------------------------------------------------------*/
+
+PROCEDURE msay_fp_start () =
+
+DECLARE 
+  h_frpr_name          = VARCHAR(24)  NOT NULL,
+  h_return             = INTEGER1     NOT NULL,
+  h_debug              = VARCHAR(160) NOT NULL,
+  h_param_list         = VARCHAR(100) NOT NULL,
+  h_varchar_variable   = VARCHAR(100) NOT NULL,
+  h_integer_variable   = INTEGER1     NOT NULL,
+  h_param1             = VARCHAR(10)  NOT NULL,
+  h_param2             = VARCHAR(10)  NOT NULL,
+
+  lp_error_check      = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name = 'msay_fp_start';
+
+  Message 'Avoiding possible log conflict with bto_receipt...';
+  SLEEP 3; 
+
+  /*-------------------------------------------------------------------------
+    Settingt up variables and parameters.
+  -------------------------------------------------------------------------*/
+
+  Message 'Setting globals and initial variables...';
+
+  g_log_no = 0;
+  g_batch_date = 'now';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  h_param_list = CALLPROC CommandLineParameters();
+
+  h_varchar_variable = squeeze (h_param_list);
+
+  h_integer_variable = locate (h_varchar_variable, ' ');
+  h_param1         =   left (h_varchar_variable,h_integer_variable - 1);
+
+  h_varchar_variable = shift (h_varchar_variable, - h_integer_variable);
+  h_integer_variable = locate (h_varchar_variable, ' ');
+  h_param2         =   left (h_varchar_variable,h_integer_variable - 1);
+
+  IF LOWERCASE(:h_param1) = 'i'
+  THEN
+    g_run_type = 'i';
+  ELSE
+    g_run_type = 's';
+  ENDIF;
+
+  IF LOWERCASE(:h_param2) = 'y'
+  THEN
+    g_reset_forms = 'y';
+  ELSE
+    g_reset_forms = 'n';
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+      If not running on live, clears down log tables easier diagnostics.
+  -------------------------------------------------------------------------*/
+
+  IF g_database != 'prodlivedb'
+  THEN
+
+    DELETE FROM error_log;
+    COMMIT;
+
+    DELETE FROM bto_process_log;
+    COMMIT;
+/*
+    DELETE FROM audit_trail;
+    COMMIT;
+*/
+
+  ENDIF;
+
+  h_debug = '*******************************************************';
+  CALLPROC write_to_process_log 
+         ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+
+  SELECT counter AS g_counter
+  FROM   bto_counter;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug = 'ERROR: Failed to select counter from bto_counter.';
+    CALLPROC write_to_process_log 
+           ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN 9;
+  ELSE
+    h_debug = 'PRO: Selected old g_counter.';
+    CALLPROC write_to_process_log 
+	   ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+  ENDIF;
+
+  g_counter = :g_counter+1;
+
+  UPDATE bto_counter
+     SET counter = :g_counter;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug = 'ERROR: Failed to update bto_counter with new g_counter.';
+    CALLPROC write_to_process_log 
+           ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN 9;
+  ELSE
+    h_debug = 'PRO: Updated with new g_counter.';
+    CALLPROC write_to_process_log 
+           ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+  ENDIF;
+
+  g_forms_failed = 0;
+  g_forms_cleared = 0;
+    
+  IF g_database = 'prodlivedb'                                   
+  THEN
+    DELETE FROM bto_error_log a
+    WHERE  LEFT(a.error_text,3) = 'DBG'
+      AND  a.time < (DATE('now') - '3 days');
+    COMMIT;
+
+    DELETE FROM bto_error_log a
+    WHERE  LEFT(a.error_text,3) = 'TMP'
+      AND  a.time < (DATE('now') - '7 days');
+    COMMIT;
+
+    DELETE FROM bto_error_log a
+    WHERE  LEFT(a.error_text,3) = 'PRO'
+      AND  a.time < (DATE('now') - '14 days');
+    COMMIT;
+  ENDIF;
+
+  h_return = CALLPROC msay_fp_bto_forms ();
+
+  IF h_return = 0
+  THEN
+
+    h_debug = 'BTO: End of run: ' + VARCHAR(:g_forms_cleared) 
+            + ' Forms cleared. ' + VARCHAR(:g_forms_failed) 
+            + ' Forms failed. Total forms = ' 
+            + VARCHAR(:g_forms_cleared + :g_forms_failed);
+    CALLPROC write_to_process_log 
+           ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+    h_debug = '*******************************************************';
+    CALLPROC write_to_process_log 
+	   ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+
+  ENDIF;
+
+    /*--------------------------------------------------------------------
+            Modifying bto_process_log
+    --------------------------------------------------------------------*/
+
+  MESSAGE 'Modifying bto_process_log table to btree . . .';
+
+  MODIFY bto_process_log TO BTREE ON time,log_no;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed to modify bto_process_log at end of run.'; 
+    CALLPROC write_to_process_log
+           ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

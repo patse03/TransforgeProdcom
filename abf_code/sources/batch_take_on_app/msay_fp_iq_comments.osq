@@ -1,0 +1,341 @@
+/*----------------------------------------------------------------------
+Store any comments that have come in via the Internet.
+----------------------------------------------------------------------*/
+
+PROCEDURE msay_fp_iq_comments () =
+
+DECLARE h_frpr_name             = VARCHAR(24) NOT NULL,
+        h_table                 = VARCHAR(24) NOT NULL,
+        ret_val                 = INTEGER4 NOT NULL,
+        h_contributor_reference = CHAR(11) NOT NULL,
+        h_store_ref             = CHAR(11) NOT NULL,
+        h_period                = INTEGER4 NOT NULL,
+        h_store_period          = INTEGER4 NOT NULL,
+        h_tid                   = INTEGER4 NOT NULL,
+        h_position              = INTEGER4 NOT NULL,
+        h_line                  = INTEGER4 NOT NULL,
+        h_comment_no            = INTEGER4 NOT NULL,
+        h_master_comment_no     = INTEGER1 NOT NULL,
+        h_comment               = VARCHAR(1100) NOT NULL
+
+{
+    h_frpr_name = 'msay_fp_iq_comments';
+    h_table = 'temp_iq_comments';
+
+    /*------------------------------------------------------------------
+    Delete any comments already stored:
+    A contact_code of 'I' identifies the contact details loaded from
+    Internet contributors; ALL other contacts have a contact_code of '*'
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Deleting Comments . . .';
+
+    SELECT a.contributor_reference AS h_contributor_reference,
+           a.period AS h_period,
+           a.contrib_tid AS h_tid
+    FROM   contrib_communication2 a
+    WHERE  a.contact_method = 'E'
+    AND    a.contact_code = 'I'
+    AND    a.contributor_reference IN (
+           SELECT contributor_reference
+           FROM   :h_table b
+           WHERE  a.period = b.period)
+    {
+        /*--------------------------------------------------------------
+        Delete comments from contrib_extra_info2
+        --------------------------------------------------------------*/
+
+        DELETE FROM contrib_extra_info2
+        WHERE       contributor_reference = :h_contributor_reference
+        AND         contrib_tid = :h_tid;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO bto_error_log
+            VALUES (    'now',
+                        'Error deleting from contrib_extra_info2',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        Delete comments from contrib_communication2
+        --------------------------------------------------------------*/
+
+        DELETE FROM contrib_communication2
+        WHERE       contributor_reference = :h_contributor_reference
+        AND         period = :h_period
+        AND         contrib_tid = :h_tid;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO bto_error_log
+            VALUES (    'now',
+                        'Error deleting from contrib_communication2',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+    };
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error in select loop for deleting comments',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Inserting comments
+    ------------------------------------------------------------------*/
+
+    h_store_period = 0;
+    h_store_ref = '';
+
+    MESSAGE 'Inserting Comments . . .';
+
+    SELECT   contributor_reference AS h_contributor_reference,
+             period AS h_period,
+             comments AS h_comment,
+             tid AS h_comment_no
+    FROM     :h_table
+    ORDER BY h_period,
+             h_contributor_reference,
+             h_comment_no
+    {
+        IF h_store_period <> h_period OR
+           h_store_ref <> h_contributor_reference
+        THEN
+            h_line = 0;
+            h_master_comment_no = 1;
+
+            SELECT IFNULL(MAX(contrib_tid),0) + 1 AS h_tid
+            FROM   contrib_communication2
+            WHERE  contributor_reference = :h_contributor_reference;
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9
+            THEN
+                INSERT INTO bto_error_log
+                VALUES (    'now',
+                            'Error selecting max from contrib_communication2',
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            INSERT INTO contrib_communication2 (
+                        contributor_reference,
+                        contrib_tid,
+                        period,
+                        contact_reason,
+                        contact_method,
+                        contact_inorout,
+                        contact_date,
+                        contact_code,
+                        contact_message,
+                        user_id)
+            VALUES (    :h_contributor_reference,
+                        :h_tid,
+                        :h_period,
+                        'D',
+                        'E',
+                        'I',
+                        'now',
+                        'I',
+                        'IQ Comments ' + VARCHAR(:h_period) +
+                        ' Page ' + VARCHAR(:h_master_comment_no),
+                        :g_user_id);
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0
+            THEN
+                INSERT INTO bto_error_log
+                VALUES (    'now',
+                            'Error inserting into contrib_communication2',
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+        ENDIF;
+
+        h_store_ref = :h_contributor_reference;
+        h_store_period = :h_period;
+
+        /*--------------------------------------------------------------
+        Split up any longer than 76 character comments into two
+        --------------------------------------------------------------*/
+
+        IF h_comment = ''
+        THEN
+            h_comment = ' ';
+        ENDIF;
+
+        WHILE LENGTH(:h_comment) > 0
+        DO
+            h_position = 77;
+
+            WHILE CHAREXTRACT(:h_comment,:h_position) <> ' '
+            DO
+                h_position = :h_position - 1;
+                /*------------------------------------------------------
+                Break out if comments exceed 77 chars without a space
+                ------------------------------------------------------*/
+                IF h_position = 0
+                THEN
+                    h_position = 77;
+                    ENDLOOP;
+                ENDIF;
+            ENDWHILE;
+
+            /*----------------------------------------------------------
+            If a full screen of comment lines have already been added,
+            start up another (insert a new master record/tid)
+            ----------------------------------------------------------*/
+
+            IF h_line = 18
+            THEN
+                h_line = 1;
+                h_tid = h_tid + 1;
+                h_master_comment_no = h_master_comment_no + 1;
+
+                INSERT INTO contrib_communication2 (
+                            contributor_reference,
+                            contrib_tid,
+                            period,
+                            contact_reason,
+                            contact_method,
+                            contact_inorout,
+                            contact_date,
+                            contact_code,
+                            contact_message,
+                            user_id)
+                VALUES (    :h_contributor_reference,
+                            :h_tid,
+                            :h_period,
+                            'D',
+                            'E',
+                            'I',
+                            'now',
+                            'I',
+                            'IQ Comments ' + VARCHAR(:h_period) +
+                            ' Page ' + VARCHAR(:h_master_comment_no),
+                            :g_user_id);
+
+                ret_val = CALLPROC batch_check_inq_ing (
+                          h_num_row_ck = 1,
+                          h_commit     = 'Y',
+                          h_rollback   = 'N',
+                          h_frpr_name  = :h_frpr_name);
+
+                IF ret_val <> 0
+                THEN
+                    INSERT INTO bto_error_log
+                    VALUES (    'now',
+                                'Error inserting into contrib_communication2',
+                                :h_frpr_name,
+                                :ret_val,
+                                :g_user_id);
+                    COMMIT;
+                    RETURN ret_val;
+                ENDIF;
+
+            ELSE
+                h_line = h_line + 1;
+            ENDIF;
+
+            INSERT INTO contrib_extra_info2 (
+                        contributor_reference,
+                        contrib_tid,
+                        line_no,
+                        contrib_text)
+            VALUES (    :h_contributor_reference,
+                        :h_tid,
+                        :h_line,
+                        LEFT(:h_comment,:h_position));
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0
+            THEN
+                INSERT INTO bto_error_log
+                VALUES (    'now',
+                            'Error inserting into contrib_extra_info2',
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            h_comment = SHIFT(:h_comment, - :h_position);
+
+        ENDWHILE;
+    };
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error in select loop inserting comments',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    RETURN 0;
+}

@@ -1,0 +1,376 @@
+/*----------------------------------------------------------------------
+This takes on any forms with an error_status = 1 on bto_reference,
+This will be both failing forms, and finally cleared forms.
+
+The parameter form_status updates the field form_status on
+contributor_period: 
+
+p_form_status = 2 is a form with data erros
+p_form_status = 3 is a form awaiting reclass or deselection 
+p_form_status = 4 is a cleared form 
+
+(A form status of one is receipted but not yet taken on by this application.)
+
+----------------------------------------------------------------------*/
+
+PROCEDURE msay_fp_take_on_forms (p_form_status = INTEGER1 NOT NULL) =
+
+DECLARE
+  h_frpr_name             = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_debug                 = VARCHAR(160) NOT NULL WITH DEFAULT,
+  h_test                  = INTEGER1     NOT NULL WITH DEFAULT,
+  h_counter               = INTEGER4     NOT NULL WITH DEFAULT,
+  h_contributor_reference = CHAR(11)     NOT NULL WITH DEFAULT,
+  h_enterprise            = CHAR(10)     NOT NULL WITH DEFAULT,
+  h_period                = INTEGER4     NOT NULL WITH DEFAULT,
+  h_count                 = INTEGER1     NOT NULL WITH DEFAULT,
+  h_inquiry               = INTEGER1     NOT NULL WITH DEFAULT,
+  h_quarter               = INTEGER4     NOT NULL WITH DEFAULT,
+  h_max_period            = INTEGER4     NOT NULL WITH DEFAULT,
+  h_form_taken_on         = CHAR(1)      NOT NULL WITH DEFAULT,
+  h_return                = INTEGER2     NOT NULL WITH DEFAULT,
+  h_return2               = INTEGER2     NOT NULL WITH DEFAULT,
+
+
+  lp_error_check          = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_write_to_audit_trail = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name = 'msay_fp_take_on_forms';
+  h_form_taken_on = 'S';
+  h_counter = 0;
+
+  h_debug =  'PRO: Start of msay_fp_take_on_forms.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  h_debug = 'PRO: Taking on forms with form_status ' 
+          + VARCHAR(:p_form_status) + '.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  /*------------------------------------------------------------------
+    Process each contributor to be taken on. 
+  ------------------------------------------------------------------*/
+
+  SELECT contributor_reference AS h_contributor_reference,
+         period                AS h_period
+  FROM   bto_reference
+  WHERE  error_status = 1
+  BEGIN 
+    h_debug = 'TMP: Taking on '
+            + 'contributor ' + VARCHAR(:h_contributor_reference) +' ' 
+            + 'for Period ' + VARCHAR(:h_period) + ' '
+            + 'with form status = ' + VARCHAR(:p_form_status) +'.';
+
+    CALLPROC write_to_process_log
+	     (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+    /*--------------------------------------------------------------
+         Insert original cqpv values into bto_archive
+    --------------------------------------------------------------*/
+
+    INSERT INTO bto_archive
+    SELECT DATE('now'),
+           a.*
+    FROM   cqpv a
+    WHERE  a.contributor_reference = :h_contributor_reference
+      AND  a.period = :h_period;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_debug = 'ERROR: Failed whilst inserting ' 
+              + VARCHAR(:h_contributor_reference) + ' ' 
+              + VARCHAR(:h_period) + ' into bto_archive.'; 
+      CALLPROC write_to_process_log
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+         Delete original values from cqpv
+    --------------------------------------------------------------*/
+
+    DELETE FROM cqpv
+    WHERE  contributor_reference = :h_contributor_reference
+      AND  period = :h_period;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_debug = 'ERROR: Failed whilst deleting ' 
+              + VARCHAR(:h_contributor_reference) + ' ' 
+              + VARCHAR(:h_period) + ' from cqpv.';
+      CALLPROC write_to_process_log
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+         Insert bto_question values into cqpv.
+         Each form being taken-on in batch has the f-fields set too.
+    --------------------------------------------------------------*/
+
+    INSERT INTO cqpv 
+         ( contributor_reference,
+           quest_order,
+           question,
+           period,
+           contributor_inquiry,
+           contributor_industry,
+           question_industry,
+           acell,
+           avalue,
+           acell_type,
+           aconstruction_type,
+           evalue,
+           fcell,
+           fvalue,
+           fcell_type,
+           fconstruction_type,
+           confirmation_code,
+           confirmation_date,
+           atypical)
+    SELECT contributor_reference,
+           quest_order,
+           question,
+           period,
+           inquiry,
+           contributor_industry,
+           question_industry,
+           acell,
+           avalue,
+           acell_type,
+           0,
+           evalue,
+           acell,
+           fvalue,
+           acell_type,
+           0,
+           confirmation_code,
+           '',
+           atypical
+    FROM   bto_question
+    WHERE  contributor_reference = :h_contributor_reference
+      AND  period = :h_period;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_debug = 'ERROR: Failed whilst inserting ' 
+              + VARCHAR(:h_contributor_reference) + ' ' 
+              + VARCHAR(:h_period) + ' into cqpv.';
+      CALLPROC write_to_process_log
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+         Delete bto_question values
+    --------------------------------------------------------------*/
+
+    DELETE FROM bto_question
+    WHERE  contributor_reference = :h_contributor_reference
+      AND  period = :h_period;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_debug = 'ERROR: Failed whilst deleting ' 
+              + VARCHAR(:h_contributor_reference) + ' ' 
+              + VARCHAR(:h_period) + ' from bto_question.';
+      CALLPROC write_to_process_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+         Note validation in audit trail.
+    --------------------------------------------------------------*/
+
+    h_return2 = CALLPROC lp_write_to_audit_trail
+              ( p_contributor_reference = :h_contributor_reference,
+                p_period                = :h_period,
+                p_val_2                 = :p_form_status,
+                p_code                  = 4);
+
+    IF h_return2 != 0
+    THEN
+      /* Error reported by external procedure */
+      RETURN 9;
+    ENDIF;
+
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed to select from bto_reference for take-on loop.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    For all forms on bto_reference . . .
+
+     Update contributor_period:
+         for forms failing, set form_status only
+         for forms cleared, set form_status and cleared flags
+  ------------------------------------------------------------------*/
+
+  h_debug = 'PRO: Updating status/cleared flags for '
+          + 'form_status ' + VARCHAR(:p_form_status) + '.';
+  CALLPROC write_to_process_log 
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  IF :p_form_status != 4
+  THEN
+
+    UPDATE contributor_period a
+    FROM   bto_reference b
+    SET    form_status = :p_form_status,
+           f9_count = 1,
+           form_taken_on = :h_form_taken_on
+    WHERE  a.contributor_reference = b.contributor_reference
+      AND  a.period = b.period
+      AND  b.error_status = 1;
+
+  ELSE
+
+    UPDATE contributor_period a
+    FROM   bto_reference b,
+           inquiry_period c 
+    SET    correct_date = 'today',
+           corr_week_no = c.week_no,
+           user_id = :g_user_id,
+           form_status = 4,
+           f9_count = 1,
+           form_taken_on = :h_form_taken_on
+    WHERE  a.contributor_reference = b.contributor_reference
+      AND  a.period = b.period
+      AND  a.period = c.period;
+
+  ENDIF;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug = 'ERROR: Failed updating contributor_period form_status.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Delete bto_references
+  ------------------------------------------------------------------*/
+
+  h_debug = 'PRO: Deleting processed references from bto_reference.';
+  CALLPROC write_to_process_log 
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  DELETE FROM bto_reference
+  WHERE  error_status = 1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug = 'ERROR: Failed to delete from bto_reference.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     g_forms_cleared: starts as being the number of forms to be taken
+     on, and the number failing is subtracted from it.
+     It therefore holds the number of forms that have yet to fail.
+  ------------------------------------------------------------------*/
+
+  IF :p_form_status != 4
+  THEN
+
+    g_forms_failed = :g_forms_failed + :h_counter;
+    g_forms_cleared = :g_forms_cleared - :h_counter;
+
+    h_debug = 'PRO: Set g_forms_failed to ' +VARCHAR(:g_forms_failed)
+	    + ' and g_forms_cleared to ' +VARCHAR(:g_forms_cleared)
+	    + ' after processing status ' +VARCHAR(:p_form_status) +'.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  ENDIF;
+
+  h_return = 0; 
+  h_debug =  'PRO: End of msay_fp_take_on_form.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  RETURN 0;
+
+}
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_num_row    = BYREF(:h_counter),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+
+/*=======================================================================
+    Local procedure to write to audit trail in batch run mode.
+=======================================================================*/
+
+PROCEDURE lp_write_to_audit_trail
+        ( p_contributor_reference = CHAR(11)    NOT NULL WITH DEFAULT,
+          p_question              = INTEGER4    NOT NULL WITH DEFAULT,
+          p_period                = INTEGER4    NOT NULL WITH DEFAULT,
+          p_code                  = INTEGER1    NOT NULL WITH DEFAULT,
+          p_val_1                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_val_2                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_frpr_name             = VARCHAR(36) NOT NULL WITH DEFAULT )=
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC write_to_audit_trail 
+            ( p_contributor_reference = :p_contributor_reference, 
+              p_question              = :p_question,
+              p_period                = :p_period,
+              p_code                  = :p_code, 
+              p_val_1                 = :p_val_1,
+              p_val_2                 = :p_val_2,
+              p_frpr_name             = :h_frpr_name);
+
+  /* Error reporting handled by external procedure */
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

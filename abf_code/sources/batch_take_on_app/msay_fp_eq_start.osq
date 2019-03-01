@@ -1,0 +1,140 @@
+/*----------------------------------------------------------------------
+Controlling Procedure for EQ
+----------------------------------------------------------------------*/
+
+PROCEDURE msay_fp_eq_start () =
+
+DECLARE h_frpr_name       = VARCHAR(24) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+
+{
+    h_frpr_name = 'msay_fp_eq_start';
+    SELECT DBMSINFO('username') AS g_user_id;
+
+    ret_val = CALLPROC msay_fp_eq_load ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC msay_fp_eq_errors ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC msay_fp_eq_contributor ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC msay_fp_eq_question ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC msay_fp_eq_comment ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC msay_fp_eq_lu ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Update Tick Boxes: 2nd = Local Units, 3rd = Comments
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Updating EQ View Images . . .';
+
+    UPDATE eq_view_images a
+    SET    tick_boxes = TRIM(LEFT(tick_boxes,1)) + 'YN-'
+    WHERE  contributor_reference IN
+          (SELECT contributor_reference
+          FROM    bto_eq_lu b
+          WHERE   a.period = b.period);
+
+/*----------------------------------------------------------------------
+    Temporarily flag all LUs as needing attention as N/C appears when
+    the address has been changed
+
+    AND    b.action NOT LIKE 'N/C%';
+----------------------------------------------------------------------*/
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error updating 3rd tickbox on eq_view_images',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    UPDATE eq_view_images a
+    SET    tick_boxes = TRIM(LEFT(tick_boxes,2)) + 'Y-'
+    WHERE  contributor_reference IN 
+          (SELECT contributor_reference 
+          FROM    bto_eq_comment b
+          WHERE   a.period = b.period);
+
+/*----------------------------------------------------------------------
+    flag question comments as well as the real comments
+    AND    b.comment_type = 'C';
+----------------------------------------------------------------------*/
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error updating 2nd tickbox on eq_view_images',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    DELETE FROM eq_view_images
+    WHERE       tick_boxes = 'NNN-';
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error in final delete from eq_view_images',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    RETURN 0;
+}

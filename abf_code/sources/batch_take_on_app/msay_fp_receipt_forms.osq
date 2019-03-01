@@ -1,0 +1,229 @@
+/*----------------------------------------------------------------------
+Receipt the Forms 
+----------------------------------------------------------------------*/
+
+PROCEDURE msay_fp_receipt_forms () =
+
+DECLARE 
+  h_retries_allowed = INTEGER1     NOT NULL WITH DEFAULT,
+  h_retries         = INTEGER1     NOT NULL WITH DEFAULT,
+  h_retry_or_not    = CHAR(5)      NOT NULL WITH DEFAULT,
+  h_frpr_name       = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_debug           = VARCHAR(160) NOT NULL WITH DEFAULT,
+  h_receipts_file   = VARCHAR(40)  NOT NULL WITH DEFAULT,
+  h_num_rows        = INTEGER4     NOT NULL WITH DEFAULT,
+  h_return          = INTEGER2     NOT NULL WITH DEFAULT,
+
+  lp_error_check          = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+
+  h_frpr_name = 'msay_fp_receipt_forms';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+
+  /*------------------------------------------------------------------
+    Copy from (and then empty) the postroom_receipts table.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Loading Postroom Receipts . . .';
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = 'bto_receipts');
+
+  IF h_return != 0
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE bto_receipts
+  AS 
+  SELECT contributor_reference,
+         period,
+         'Y' AS receipted_before
+  FROM   postroom_receipts
+  WHERE  inquiry = 14;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug =  'ERROR: Failed to create table bto_receipts.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Delete from the original table using modify to truncated in
+    order to clear the table out completely.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Emptying Postroom Table . . .';
+
+  MODIFY postroom_receipts TO TRUNCATED;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug =  'ERROR: Failed to truncate postroom_receipts table.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Remove those with period yyyy99 as those are not receipted.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Deleting non-receiptables...';
+
+  DELETE
+  FROM  bto_receipts
+  WHERE MOD(period,100) = 99;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug =  'ERROR: Failed removing unreceiptables.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+
+  /*------------------------------------------------------------------
+    Update the IDBR 6-digit period to PRODCOM style 6 digit period
+    excluding those with period yyyy99 as those are not receipted.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Updating Receipting Periods . . .';
+
+  UPDATE bto_receipts
+  SET    period = period / 100 * 100;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug =  'ERROR: Failed updating bto_receipts with annual periods.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Set the 'receipted_before' marker to NO if the form has
+    not yet been receipted
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Setting Receipt Markers . . .';
+
+  UPDATE bto_receipts a
+  FROM   contributor_period b
+  SET    receipted_before = 'N'
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.period = b.period
+    AND  b.receipt_date = '';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug =  'ERROR: Failed updating receipted_before on bto_receipts.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Store onto receipt_log
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Storing Receipt Markers . . .';
+
+  INSERT INTO bto_receipt_log 
+       ( time,
+         contributor_reference,
+         period,
+         receipted_before)
+  SELECT 'now',
+         contributor_reference,
+         period,
+         receipted_before
+  FROM   bto_receipts;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug =  'ERROR: Failed whilst inserting into bto_receipt_log.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Set receipt markers
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Receipting . . .';
+
+  UPDATE contributor_period a
+  FROM   inquiry_period b
+  SET    receipt_date = 'today',
+         form_received = 'P',
+         rec_week_no = b.week_no
+  WHERE  a.period = b.period
+    AND  a.receipt_date = ''
+    AND  a.contributor_reference IN 
+         ( SELECT contributor_reference
+           FROM   bto_receipts c
+           WHERE  a.period = c.period);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug =  'ERROR: Failed whilst receipting on contributor_period.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN 9;
+  ENDIF;
+
+  IF h_num_rows != 0 
+  THEN
+    h_debug = 'RCT: Rows receipted automatically before ' 
+            + 'batch take on = ' + VARCHAR(:h_num_rows) +'.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+  ENDIF;
+
+  RETURN 0;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_num_row    = BYREF(:h_num_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

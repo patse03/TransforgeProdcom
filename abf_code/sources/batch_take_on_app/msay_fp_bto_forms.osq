@@ -1,0 +1,3221 @@
+/*-----------------------------------------------------------------------
+Batch Take On - Main Procedure
+
+Message Key:
+BTO: Permanent Entry
+PRO: 2 Weeks
+TMP: 1 Week
+DBG: 3 Days (to allow weekend)
+
+Data related actions get logged to audit trail.
+Process updates and errors get logged to process log. 
+
+NOTES:
+
+1)  h_testing flag at top of program turns on all diagnostic output
+    to bto_error_log and bto_scoring_debug.
+
+2)  h_reset flag clears down tables for test runs to make reading easier.
+
+----------------------------------------------------------------------*/
+
+PROCEDURE msay_fp_bto_forms () =
+ 
+DECLARE h_frpr_name               = VARCHAR(24) NOT NULL,
+        h_return                   = INTEGER1 NOT NULL,
+        h_return2                 = INTEGER1 NOT NULL,
+        h_locked                  = INTEGER1 NOT NULL,
+        h_testing                 = INTEGER1 NOT NULL,
+        h_reset                   = INTEGER1 NOT NULL,
+        h_rows                    = INTEGER4 NOT NULL,
+        h_dummy                   = CHAR(11) NOT NULL,
+        h_contributor_reference   = CHAR(11) NOT NULL,
+        h_hold_reference          = CHAR(11) NOT NULL,
+        h_period                  = INTEGER4 NOT NULL,
+        h_avalue                  = INTEGER4 NOT NULL,
+        h_question                = INTEGER4 NOT NULL,
+        h_industry                = INTEGER4 NOT NULL,
+        h_question_industry       = INTEGER4 NOT NULL,
+        h_alt_industry            = INTEGER4 NOT NULL,
+        h_new_question            = INTEGER4 NOT NULL,
+        h_quest_order             = INTEGER1 NOT NULL,
+	h_strata                  = INTEGER1 NOT NULL,
+        h_forms_reclassed         = INTEGER4 NOT NULL,
+        h_forms_confirmed         = INTEGER4 NOT NULL,
+        h_fails_confirmed         = INTEGER4 NOT NULL,
+        h_register_emp            = INTEGER4 NOT NULL,
+        h_sum_of_01s              = INTEGER4 NOT NULL,
+        h_value_of_01             = INTEGER4 NOT NULL,
+        h_total_sales             = INTEGER4 NOT NULL,
+        h_counter                 = INTEGER4 NOT NULL,
+        h_count                   = INTEGER4 NOT NULL,
+        h_check                   = INTEGER4 NOT NULL,
+        h_reclassified            = CHAR(2) NOT NULL,
+        h_out_of_scope            = CHAR(2) NOT NULL,
+        h_original_acell          = CHAR(2) NOT NULL,
+        h_acell_type              = CHAR(2) NOT NULL,
+        h_acell                   = CHAR(2) NOT NULL,
+        h_total_rows              = INTEGER4 NOT NULL,
+        h_new_total_sales         = INTEGER4 NOT NULL,
+        h_atypical                = CHAR(1) NOT NULL,
+        h_mpi_cong_flag           = CHAR(1) NOT NULL,
+        h_mpi_forms               = INTEGER4 NOT NULL,
+        prev_period               = INTEGER4 NOT NULL,
+        prev_period1              = INTEGER4 NOT NULL,
+        mpi_diff                  = INTEGER4 NOT NULL,
+	mpi_perc                  = INTEGER4 NOT NULL,
+	h_mpi_total_turnover      = INTEGER4 NOT NULL,
+	h_specials_count          = INTEGER4 NOT NULL,
+        h_text                    = VARCHAR(160) NOT NULL,
+        h_score                   = FLOAT8 NOT NULL,
+        h_threshold               = FLOAT8 NOT NULL,
+        h_band                    = CHAR(1) NOT NULL,
+        h_zone                    = CHAR(1) NOT NULL,
+        h_rs_marker               = CHAR(1) NOT NULL,
+        h_action                  = CHAR(4) NOT NULL,
+	h_code                    = INTEGER1 NOT NULL,
+	h_error_status            = INTEGER1 NOT NULL,
+	h_num_rows                = INTEGER4 NOT NULL,
+        h_rap_printer             = CHAR(10) NOT NULL,
+        h_dvb_printer             = CHAR(10) NOT NULL,
+        h_dev_printer             = CHAR(10) NOT NULL,
+ 
+  lp_testing_cleardown    = PROCEDURE,
+  lp_error_check          = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_confirm_form         = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_confirm_fails        = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_total_sales_rezone   = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_continuity_rezone    = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_score_question       = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_score_form           = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_estimate_prev_vol    = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_estimate_prev_val    = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_set_weight           = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_insert_score         = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_write_to_audit_trail = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_locked    = 0;
+  h_testing   = 0;
+  h_reset     = 0;
+  h_frpr_name = 'msay_fp_bto_forms';
+  h_total_rows = 0;
+
+  h_text =  'BTO: START OF MAIN PROCEDURE. BATCH COUNTER '
+          +  VARCHAR(:g_counter) + '.';
+  CALLPROC write_to_process_log
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+  COMMIT;
+
+  SELECT lock AS h_locked
+  FROM   bto_lock;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text =  'ERROR: Failed to select lock status from bto_lock.';
+    CALLPROC write_to_process_log
+           ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN 9;
+  ENDIF;
+
+  IF h_locked = 1 
+  THEN
+    h_text =  'BTO: END OF MAIN PROCEDURE. (SAFETY LOCK ON).';
+    CALLPROC write_to_process_log
+           ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=2);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    If running on test and reset required, clear out some tables.
+    No error handling, only ever runs on test.
+  ------------------------------------------------------------------*/
+
+  IF h_reset = 1 AND g_database != 'prodlivedb'
+  THEN
+    h_text =  'BTO: TEST SERVER CLEAR DOWN ENABLED.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+    CALLPROC lp_testing_cleardown ();
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Load the scanned data:
+  ------------------------------------------------------------------*/
+
+  h_text =  'PRO: Calling msay_fp_load_scanned.';
+  CALLPROC write_to_process_log
+         ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  h_return = CALLPROC msay_fp_load_scanned ();
+
+  IF h_return = 1
+  THEN
+    h_text = 'BTO: END OF MAIN PROCEDURE (No input file available.)';
+    CALLPROC write_to_process_log
+           ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+      RETURN h_return;
+  ENDIF;
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Call to load data failed.';
+    CALLPROC write_to_process_log
+           ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Validates the scanned data
+  ------------------------------------------------------------------*/
+
+  h_text =  'PRO: Calling msay_fp_check_scanned.';
+  CALLPROC write_to_process_log
+	 ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  h_return = CALLPROC msay_fp_check_scanned ();
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Call to check scanned data failed.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Converts the euro forms into sterling
+  ------------------------------------------------------------------*/
+
+  h_text =  'PRO: Calling msay_fp_convert_euro.';
+  CALLPROC write_to_process_log
+	 ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  h_return = CALLPROC msay_fp_convert_euro ();
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Call to convert euro failed.';
+    CALLPROC write_to_process_log
+	   ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Create table of the distinct references
+     (set no. of references to g_forms_cleared and subtract from it
+      any failures along the way)
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating Initial bto_reference . . .';
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = 'bto_reference');
+
+  IF h_return != 0
+  THEN
+    /* Error logged in external procedure */
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE bto_reference
+  AS SELECT    DISTINCT(contributor_reference),
+               contributor_industry,
+               inquiry,
+               period,
+               INT1(0) AS error_status
+  FROM         bto_question;
+            
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  g_forms_cleared = :h_num_rows;
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create bto_reference.';
+    CALLPROC write_to_process_log
+           ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ELSEIF h_return = 1 
+  THEN
+    h_text = 'WARNING: No references left to take on.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+    RETURN 0;
+  ENDIF; 
+
+  MODIFY bto_reference TO BTREE ON contributor_reference,period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify bto_reference to btree.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+     Set printers for EnV and RAP to remove need for hardcoding.
+  ------------------------------------------------------------------------*/
+
+  SELECT DISTINCT default_printer AS h_dvb_printer
+  FROM   passwords_new
+  WHERE  access_code = 'I5';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to set DVB printer.';
+    CALLPROC write_to_process_log
+           ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  SELECT DISTINCT default_printer AS h_rap_printer
+  FROM   passwords_new
+  WHERE  access_code = 'R5';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to set RAP printer.';
+    CALLPROC write_to_process_log
+           ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  SELECT default_printer AS h_dev_printer
+  FROM   passwords_new
+  WHERE  access_code = 'D5';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to set DEV printer.';
+    CALLPROC write_to_process_log
+           ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Printing a list of all contributor references listed as pesticide
+      special marker for EnV and RAP. (Assyst Call R182915)
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Printing pesticide list if needed . . .';
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = 'tt_bto_pesticides');
+
+  IF h_return != 0
+  THEN
+    /* Error logged in external procedure */
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE tt_bto_pesticides AS
+  SELECT a.contributor_reference
+  FROM   bto_reference a,
+	 special_markers b
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.period = b.period
+    AND  b.marker = 'P';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Unable to create tt_bto_pesticides.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+    
+  IF h_return = 1 /* No Pesticides */
+  THEN 
+
+    h_text = 'PRO: No contributors marked as pesticide '
+            + 'references returned in this batch.';
+    CALLPROC write_to_process_log
+           ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  ELSE /* Pesticide matches present */
+      
+    SELECT COUNT( contributor_reference ) AS h_specials_count
+    FROM   tt_bto_pesticides;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2  != 0
+    THEN
+      h_text = 'ERROR: Failed to count pesticide references';
+      CALLPROC write_to_process_log
+             ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN 9;
+    ENDIF;
+	
+    h_text = 'PRO: Printing list of ' + VARCHAR(:h_specials_count) +' '
+            + 'contributors marked as pesticide '
+            + 'references returned in this batch.';
+    CALLPROC write_to_process_log
+	   ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+    IF g_database = 'prodlivedb'
+    THEN                                        /* Live prints */
+
+      h_return = CALLPROC msay_cp_callsys 
+               ( 'report ' +
+                 :g_database +
+                 ' -i$REPORTS/pesticide_alert.rw' +
+                 ' -f$REPORTS/pesticide_alert.rpt' );
+
+      IF h_return != 0
+      THEN
+        h_text = 'ERROR: Failed to create pesticide_alert.rpt';
+        CALLPROC write_to_process_log
+	       ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+        RETURN 9;
+      ENDIF;
+
+      h_return = CALLPROC msay_cp_callsys
+               ( 'lp -d' +:h_dvb_printer +' $REPORTS/pesticide_alert.rpt');
+
+      IF h_return != 0
+      THEN
+        h_text = 'ERROR: Failed to print pesticide_alert.rpt for DVB.';
+        CALLPROC write_to_process_log
+	       ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+        RETURN 9;
+      ENDIF;
+
+      h_return = CALLPROC msay_cp_callsys
+               ( 'lp -d' +:h_rap_printer +' $REPORTS/pesticide_alert.rpt');
+
+      IF h_return != 0
+      THEN
+        h_text = 'ERROR: Failed to print pesticide_alert.rpt for RAP.';
+        CALLPROC write_to_process_log
+               ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+        RETURN 9;
+      ENDIF;
+
+    ELSE                                        /* Test prints */
+
+      h_return = CALLPROC msay_cp_callsys 
+               ( 'report ' +
+                 :g_database +
+                 ' -i$SOURCE/batch_take_on_app/pesticide_alert.rw' +
+                 ' -f$SOURCE/batch_take_on_app/pesticide_alert.rpt' );
+
+      IF h_return != 0
+      THEN
+        h_text = 'ERROR: Failed to create pesticide_alert.rpt';
+        CALLPROC write_to_process_log
+               ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+        RETURN 9;
+      ENDIF;
+
+      h_return = CALLPROC msay_cp_callsys
+               ( 'lp -d' +:h_dev_printer +' '
+               + '$SOURCE/batch_take_on_app/pesticide_alert.rpt');
+
+      IF h_return != 0
+      THEN
+        h_text = 'ERROR: Failed to print pesticide_alert.rpt for DEV.';
+        CALLPROC write_to_process_log
+               ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+        RETURN 9;
+      ENDIF;
+
+    ENDIF; /* database fork */
+
+  ENDIF; 
+
+  /*------------------------------------------------------------------
+      Printing a list of all contributor references listed as pallet
+      special marker for EnV and RAP. (Assyst Call xxxxxxx)
+  ------------------------------------------------------------------*/
+  MESSAGE 'Printing pallet list if needed . . .';
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = 'tt_bto_pallets');
+
+  IF h_return != 0
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE tt_bto_pallets AS
+  SELECT a.contributor_reference
+  FROM   bto_reference a,
+	 special_markers b
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.period = b.period
+    AND  b.marker = 'W';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Unable to create tt_bto_pallets.';
+    CALLPROC write_to_process_log
+           ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+    
+  IF h_return = 1 /* No Pallets */
+  THEN 
+
+    h_text = 'PRO: No contributors marked as pallets '
+            + 'references returned in this batch.';
+    CALLPROC write_to_process_log
+           ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+   ELSE /* Pallet matches present */
+      
+    SELECT COUNT(contributor_reference) AS h_specials_count
+    FROM   tt_bto_pallets;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed to count pallet references.';
+      CALLPROC write_to_process_log
+             ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN 9;
+    ENDIF;
+	
+    h_text = 'PRO: Printing list of ' + VARCHAR(:h_specials_count) +' '
+            + 'contributors marked as pallet '
+            + 'references returned in this batch.';
+    CALLPROC write_to_process_log
+	   ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+    IF g_database = 'prodlivedb'
+    THEN                                        /* Live prints */
+
+      h_return = CALLPROC msay_cp_callsys 
+               ( 'report ' +
+                 :g_database +
+                 ' -i$REPORTS/pallets_alert.rw' +
+                 ' -f$REPORTS/pallets_alert.rpt' );
+
+      IF h_return != 0
+      THEN
+        h_text = 'ERROR: Failed to create pallets_alert.rpt';
+        CALLPROC write_to_process_log
+	       ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+        RETURN 9;
+      ENDIF;
+
+      h_return = CALLPROC msay_cp_callsys
+               ( 'lp -d' +:h_dvb_printer +' $REPORTS/pallets_alert.rpt');
+
+      IF h_return != 0
+      THEN
+        h_text = 'ERROR: Failed to print pallets_alert.rpt for DVB.';
+        CALLPROC write_to_process_log
+	       ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+        RETURN 9;
+      ENDIF;
+
+      h_return = CALLPROC msay_cp_callsys
+               ( 'lp -d' +:h_rap_printer +' $REPORTS/pallets_alert.rpt');
+
+      IF h_return != 0
+      THEN
+        h_text = 'ERROR: Failed to print pallets_alert.rpt for RAP.';
+        CALLPROC write_to_process_log
+               ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+        RETURN 9;
+      ENDIF;
+
+    ELSE                                        /* Test prints */
+
+      h_return = CALLPROC msay_cp_callsys 
+               ( 'report ' +
+                 :g_database +
+                 ' -i$SOURCE/batch_take_on_app/pallets_alert.rw' +
+                 ' -f$SOURCE/batch_take_on_app/pallets_alert.rpt' );
+
+      IF h_return != 0
+      THEN
+        h_text = 'ERROR: Failed to create pallets_alert.rpt on test database.';
+        CALLPROC write_to_process_log
+	       ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+        RETURN 9;
+      ENDIF;
+
+      h_return = CALLPROC msay_cp_callsys
+               ( 'lp -d' +:h_dev_printer +' '
+               + '$SOURCE/batch_take_on_app/pallets_alert.rpt');
+
+      IF h_return != 0
+      THEN
+        h_text = 'ERROR: Failed to print pallets_alert.rpt for DEV.';
+        CALLPROC write_to_process_log
+	       ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+        RETURN 9;
+      ENDIF;
+
+    ENDIF; /* database fork */
+
+  ENDIF; 
+
+  /*------------------------------------------------------------------
+     Delete Uncoded Entry Zeroes from bto_question
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Deleting uncoded entry zeros . . .';
+
+  DELETE FROM bto_question
+  WHERE       acell = 'W'
+  AND         avalue = 0;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Unable to delete Uncoded Entry zeroes.';
+    CALLPROC write_to_process_log
+           ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Create temp table of the sum of 01s
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Total Sales . . .';
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = 'bto_view');
+  IF h_return != 0
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE bto_view
+  AS 
+  SELECT contributor_reference,
+         period,
+         INT4(SUM(avalue)) AS avalue
+  FROM   bto_question
+  WHERE  MOD(question,10) = 1
+  GROUP
+     BY  contributor_reference,
+         period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create table bto_view.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  MODIFY bto_view TO BTREE ON contributor_reference;
+	    
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify bto_view to btree.';
+    CALLPROC write_to_process_log
+           ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Volume Mismatches
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'ValVol Mismatch . . .';
+
+  h_text =  'PRO: Calling msay_fp_value_volume.';
+  CALLPROC write_to_process_log
+	 ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  h_return = CALLPROC msay_fp_value_volume ();
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Call to msay_fp_value_volume failed.';
+    CALLPROC write_to_process_log
+	   ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  IF :g_forms_cleared = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Set returned employment to register employment always and
+     not just where returned emp = 0 and where total sales > 0
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Register Employment . . .';
+
+  UPDATE bto_question a
+  FROM   bto_question b,
+         contributor_period c
+  SET    avalue = c.register_emp,
+         confirmation_code = 'R'
+  WHERE  a.contributor_reference = b.contributor_reference
+  AND    a.contributor_reference = c.contributor_reference
+  AND    a.period = b.period
+  AND    a.period = c.period
+  AND    a.avalue = 0
+  AND    a.quest_order = 11
+  AND    b.quest_order = 10;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed whilst updating register employment.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Go through each Question for Credibility
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Credibility loop . . .';
+
+  h_counter = 0;
+  h_count = 0;
+  h_hold_reference = '';
+
+  h_text =  'PRO: Starting credibility check loop.';
+  CALLPROC write_to_process_log
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  SELECT COUNT (DISTINCT a.contributor_reference) AS h_count
+  FROM   bto_question a
+  WHERE  a.acell NOT IN ('W','L','M','B');
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Unable to count from bto_question.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  SELECT a.question              AS h_question,
+         a.quest_order           AS h_quest_order,
+         a.contributor_reference AS h_contributor_reference,
+         a.period                AS h_period,
+         a.avalue                AS h_avalue,
+         a.acell_type            AS h_acell_type,
+         b.register_emp          AS h_register_emp,
+         c.avalue                AS h_sum_of_01s
+  FROM   bto_question a,
+         contributor_period b,
+         bto_view c
+  WHERE  a.period = b.period
+  AND    a.period = c.period
+  AND    a.contributor_reference = b.contributor_reference
+  AND    a.contributor_reference = c.contributor_reference
+  AND    a.acell NOT IN ('W','L','M','B')
+  ORDER BY h_period,
+           h_contributor_reference,
+           h_quest_order,
+           h_question
+  BEGIN
+
+    IF MOD(:h_question,10) = 1 and :h_quest_order = 1
+    THEN
+      h_value_of_01 = :h_avalue;
+    ENDIF;
+
+    IF MOD(:h_question,10000) = 9200
+    THEN
+      h_total_sales = :h_avalue;
+    ENDIF;
+
+    h_return = CALLPROC msay_fp_credibility 
+             ( p_contributor_reference = :h_contributor_reference,
+               p_period                = :h_period,
+               p_question              = :h_question,
+               p_quest_order           = :h_quest_order,
+               p_register_emp          = :h_register_emp,
+               p_value_of_01           = :h_value_of_01,
+               p_total_of_01           = :h_sum_of_01s,
+               p_total_sales           = :h_total_sales,
+               p_new_total_sales       = BYREF(:h_new_total_sales),
+               p_atypical              = BYREF(:h_atypical),
+               p_avalue                = BYREF(:h_avalue),
+               p_acell                 = BYREF(:h_acell),
+               p_acell_type            = BYREF(:h_acell_type));
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Call to msay_fp_fp_credibility failed.';
+      CALLPROC write_to_process_log
+	     ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+      RETURN h_return;
+    ENDIF;
+
+    /*---------------------------------------------------------------
+      Updates following credibility check.
+
+      As it is a bulk update, the audit trail entries had to be put
+      in the external procedure called above.
+    ----------------------------------------------------------------*/
+
+    UPDATE bto_question
+    SET    acell                 = :h_acell,
+           acell_type            = :h_acell_type,
+           avalue                = :h_avalue
+    WHERE  contributor_reference = :h_contributor_reference
+    AND    period                = :h_period
+    AND    question              = :h_question;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Unable to update bto_question after credibility.';
+      CALLPROC write_to_process_log
+             ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+      RETURN h_return;
+    ENDIF;
+
+    /*--------------------------------------------------------------------
+      If total sales has been P marked, we need to set total sales to
+      h_new_total sales and update avalue_autoedit table.
+    --------------------------------------------------------------------*/
+
+    IF h_acell = 'P' AND h_quest_order = 10 
+    THEN 
+
+      h_total_sales = :h_new_total_sales;
+
+      INSERT INTO avalue_autoedit
+      VALUES ( date('now'),
+               :h_contributor_reference,
+               :h_question,
+               :h_period,
+               'Total of 01s used to construct total sales question.');
+
+      h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return2 != 0
+      THEN
+        h_text = 'ERROR: Failed to insert into avalue_autoedit '
+               + 'with change for contributor ' 
+               + VARCHAR(:h_contributor_reference) + ' and question '
+      	       + VARCHAR(:h_question) + ' in period '
+      	       + VARCHAR(:h_period) + '.';
+        CALLPROC write_to_process_log
+               ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+        RETURN :h_return2;
+      ENDIF;
+
+      h_return = CALLPROC lp_write_to_audit_trail
+               ( p_contributor_reference = :h_contributor_reference, 
+                 p_question              = :h_question,
+                 p_period                = :h_period,
+                 p_code                  = 8,
+                 p_val_1                 = :h_new_total_sales);
+
+      IF h_return != 0
+      THEN
+        /* Error reported by external procedure */
+        RETURN 9;
+      ENDIF;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+        If auto-editing has taken place - the avalue for the Total
+	Sales question will have to be updated to the new Total Sales
+    ------------------------------------------------------------------*/
+
+    IF MOD(:h_question,10000) = 9200 AND :h_atypical = 'y'
+    THEN
+      UPDATE bto_question
+      SET    avalue                = :h_new_total_sales,
+             atypical              = 'Y'        
+      WHERE  contributor_reference = :h_contributor_reference
+        AND  period                = :h_period
+        AND  question              = :h_question;
+
+      h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return != 0
+      THEN
+        h_text = 'ERROR: Unable to update bto_question with '
+                + 'auto-edited new total sales.';
+        CALLPROC write_to_process_log
+	         (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+        RETURN h_return;
+      ENDIF;
+
+      h_return = CALLPROC lp_write_to_audit_trail
+               ( p_contributor_reference = :h_contributor_reference, 
+                 p_question              = :h_question,
+                 p_period                = :h_period,
+                 p_code                  = 6,
+                 p_val_1                 = :h_new_total_sales);
+
+      IF h_return != 0
+      THEN
+        /* Error reported by external procedure */
+        RETURN 9;
+      ENDIF;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Check if question has replaced more than one question this year ie
+     is a many to one replacement (type 3) that the system cannot do 
+     credibility for.  
+     
+     This will make the form fail credibility with form_status = 1, and
+     update a table that will later mark the form as Q in the RSDQ column
+     of Forms Needing Attention.
+
+     Note that the occurance of this is quite rare, only happening when 
+     EuroStat ammend the questions in this manner. 
+    ------------------------------------------------------------------*/
+
+    SELECT new_question AS h_new_question
+    FROM   question_history
+    WHERE  new_question = :h_question
+    AND    period = :h_period
+    AND    rep_type = 3;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 0);
+
+    IF h_return > 1
+    THEN
+
+      h_text = 'ERROR: Unable to select from question_history.';
+      CALLPROC write_to_process_log
+             ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+      RETURN h_return;
+
+    ELSEIF h_return = 1 
+    THEN
+
+      INSERT INTO bto_new_questions
+      VALUES (    :h_contributor_reference,
+                  :h_question,
+                  :h_period,
+                  'now',
+                  'N');
+
+      h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return2 > 1
+      THEN
+        h_text = 'ERROR: Unable to insert into bto_new_questions.';
+        CALLPROC write_to_process_log
+               ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+        RETURN h_return2;
+      ENDIF;
+
+      UPDATE bto_reference a
+      SET    error_status = 1
+      WHERE  contributor_reference = :h_contributor_reference
+        AND  period = :h_period;
+
+      h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      h_rows = :h_num_rows;
+
+      IF h_return2 != 0
+      THEN
+        h_text = 'ERROR: Unable to update bto_reference with '
+                + 'references that have rep_type 3 questions.';
+        CALLPROC write_to_process_log
+               ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+        RETURN h_return2;
+      ENDIF;
+
+    ENDIF;
+
+    h_total_rows = :h_rows;
+
+  END;
+
+  h_text =  'PRO: End of credibility check loop.';
+  CALLPROC write_to_process_log
+         ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0 
+  THEN
+    h_text = 'ERROR: Select for credibility loop failed.';
+    CALLPROC write_to_process_log
+           ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+   Create a backup of bto_question at this point to aid diagnostics and
+   provide a reference to forms received this batch that pass prevalidation.
+  -------------------------------------------------------------------------*/
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = 'tt_question_backup');
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE tt_question_backup
+  AS
+  SELECT *
+  FROM   bto_question;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0 
+  THEN
+    h_text = 'ERROR: Failed to create backup of bto_question.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN 9;
+  ENDIF;
+
+  MODIFY tt_question_backup TO BTREE UNIQUE
+      ON contributor_reference, period, question;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0 
+  THEN
+    h_text = 'ERROR: Failed to modify tt_question_backup.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------
+      Loop through questions to score them for selective editing.
+      No need to deal with duplicate forms as these are thrown out
+      earlier in bto process.
+  ----------------------------------------------------------------*/
+
+  MESSAGE 'Setting variables ready for scoring. . .';
+
+  h_counter = 0;
+  h_count   = 0;
+  h_hold_reference = '';
+
+  /*----------------------------------------------------------------
+       Selects count to use in process log notes.
+  ----------------------------------------------------------------*/
+
+  SELECT COUNT(DISTINCT contributor_reference) AS h_count
+  FROM   bto_question; 
+    
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0 
+  THEN 
+    h_text = 'ERROR: Failed to select h_count from bto_question.';
+    CALLPROC write_to_process_log
+           ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Selects Threshold to use in question scoring and zoning.
+  ------------------------------------------------------------------*/
+
+  SELECT a.threshold AS h_threshold
+  FROM   bto_scoring_threshold a
+  WHERE  a.date_effective = (SELECT MAX(z.date_effective)
+                             FROM   bto_scoring_threshold z); 
+    
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0 
+  THEN 
+    h_text = 'ERROR: Failed to select scoring threshold.';
+    CALLPROC write_to_process_log
+           ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Question scoring loop.
+  ------------------------------------------------------------------*/
+
+  h_text = 'PRO: Starting loop to score questions for selective editing.';
+  CALLPROC write_to_process_log
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  h_check = 0;
+
+  SELECT period as h_period,
+         contributor_reference as h_contributor_reference,
+	 contributor_industry  as h_industry,
+	 question as h_question,
+	 avalue as h_avalue,
+	 acell as h_acell
+  FROM   bto_question 
+  ORDER 
+     BY  period, contributor_reference ,question
+  BEGIN
+      
+    h_check = h_check + 1;
+
+    IF h_contributor_reference != h_hold_reference
+    THEN
+      h_hold_reference = h_contributor_reference;
+      h_counter = h_counter + 1;
+      h_check   = 1;
+    ENDIF;
+
+    MESSAGE 'Scoring loop [Form ' +VARCHAR(:h_counter) +'/'
+          +  VARCHAR(:h_count) +'] Question: '
+          +  VARCHAR(:h_check);
+
+    h_return = 0;
+    h_score = 0;
+    h_code = 0;
+    h_zone = ' ';
+
+    h_return = CALLPROC lp_score_question (p_score = BYREF(:h_score),
+                                           p_code  = BYREF(:h_code));
+
+
+    IF h_return = 1 THEN
+
+      h_score = 9999999;
+
+      IF h_code = 2 
+      THEN
+        h_score = :h_threshold + 0.001;
+      ELSEIF (h_code >= 8 AND h_code <= 10)
+      THEN
+        h_score = 0;
+      ENDIF;
+
+    ELSEIF h_return > 1
+    THEN
+      /* Error recording handled in local procedure. */
+      RETURN :h_return; 
+    ENDIF; 
+
+    /*------------------------------------------------------------------
+           Inserts score, code and zone into question_reference.
+    ------------------------------------------------------------------*/
+
+    h_return = CALLPROC lp_insert_score (p_score = :h_score,
+                                         p_code  = :h_code,
+                                         p_acell = :h_acell);
+
+    IF h_return != 0
+    THEN
+      /* Error recording handled in local procedure. */
+      RETURN 9;
+    ENDIF;
+
+  END;
+
+  h_text = 'PRO: Ended loop to score questions for selective editing.';
+  CALLPROC write_to_process_log
+         ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  /*-----------------------------------------------------------------------
+     Modifies bto_question_score to btree, not unique as although
+     duplicate forms will never be scored in reality, testing is 
+     another matter.
+  -----------------------------------------------------------------------*/
+
+  MODIFY bto_question_score TO BTREE
+      ON period, contributor_reference, question;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return  > 1
+  THEN
+    h_text = 'ERROR: Failed to modify bto_question_score.'; 
+    CALLPROC write_to_process_log
+           ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*----------------------------------------------------------------
+        Score forms based on their max question score.
+  ----------------------------------------------------------------*/
+
+  h_text = 'PRO: Starting loop to score forms for selective editing.';
+  CALLPROC write_to_process_log
+         ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  h_counter = 0;
+  h_hold_reference = '';
+
+  SELECT DISTINCT a.contributor_reference as h_contributor_reference,
+                  a.period as h_period
+  FROM   bto_question_score a
+  WHERE  a.contributor_reference IN 
+      (  SELECT DISTINCT b.contributor_reference
+         FROM   bto_question b
+         WHERE  a.contributor_reference = b.contributor_reference
+           AND  b.period = a.period)
+  BEGIN
+
+    IF h_contributor_reference != h_hold_reference
+    THEN
+      h_hold_reference = h_contributor_reference;
+      h_counter = h_counter + 1;
+      MESSAGE 'Scoring form [' +VARCHAR(:h_counter) 
+            + '/' +VARCHAR(:h_count) + '] . . .';
+    ENDIF;
+
+    SELECT MIN(zone) AS h_zone
+      FROM bto_question_score
+     WHERE contributor_reference = :h_contributor_reference
+       AND period = :h_period;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to select min zone from bto_question_score.';
+      CALLPROC write_to_process_log
+             ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+      RETURN h_return;
+    ENDIF;
+
+    SELECT score AS h_score
+    FROM   bto_question_score a
+    WHERE  a.contributor_reference = :h_contributor_reference
+      AND  a.period = :h_period
+      AND  a.zone = :h_zone
+      AND  a.score = (SELECT MAX(z.score) 
+  		      FROM   bto_question_score z
+		      WHERE  z.contributor_reference = a.contributor_reference
+		        AND  z.period = a.period
+                        AND  z.zone = :h_zone);
+
+    h_return = CALLPROC lp_score_form (p_score = :h_score);
+
+    IF h_return != 0 
+    THEN 
+      /* Error reporting handled by local procedure */
+      RETURN 9; 
+    ENDIF;
+
+  END;
+
+  h_text = 'PRO: Ending loop to score/zone forms for selective editing.';
+  CALLPROC write_to_process_log
+         ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  /*-----------------------------------------------------------------------
+    Loop through forms in zone B and D to automatically confirm errors
+  -----------------------------------------------------------------------*/
+   
+  h_forms_confirmed = 0;
+  h_fails_confirmed = 0;
+
+  SELECT COUNT (DISTINCT a.contributor_reference) AS h_count
+  FROM  tt_question_backup a,
+        bto_reference_score b
+  WHERE a.contributor_reference = b.contributor_reference
+    AND a.period = b.period
+    AND b.zone != 'A';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed on count to set h_forms_confirmed.'; 
+    CALLPROC write_to_process_log
+           ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_text = 'PRO: Automatically confirming any credibility fails found on the '
+          + VARCHAR(:h_count) + ' forms in zones B, C and D.';
+  CALLPROC write_to_process_log
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  SELECT DISTINCT a.contributor_reference AS h_contributor_reference,
+                  a.period AS h_period,
+                  b.zone AS h_zone,
+                  b.score AS h_score
+  FROM  tt_question_backup a,
+        bto_reference_score b
+  WHERE a.contributor_reference = b.contributor_reference
+    AND a.period = b.period
+    AND b.zone != 'A'
+  BEGIN
+
+    h_forms_confirmed = h_forms_confirmed + 1;
+
+    MESSAGE 'Confirming credibility fails below threshold ['
+          + VARCHAR(:h_forms_confirmed) +'/'
+          + VARCHAR(:h_count) +'].';
+
+    h_return2 = CALLPROC lp_confirm_form ();
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed to confirm errors on form '
+              + VARCHAR(:h_contributor_reference) + ' '
+              + VARCHAR(:h_period) +'.'; 
+      CALLPROC write_to_process_log
+             ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return;
+    ENDIF;
+
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to select for threshold clearining loop.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_text = 'PRO: Completed confirming '
+         + VARCHAR(:h_fails_confirmed) + ' credibility fails on '
+         + VARCHAR(:h_forms_confirmed) + ' forms.';
+  CALLPROC write_to_process_log
+         ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  /*------------------------------------------------------------------
+     Prepare to export forms failing on data errors
+  ------------------------------------------------------------------*/
+
+  h_text =  'PRO: Dealing with forms failing credibility.';
+  CALLPROC write_to_process_log
+         ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  UPDATE bto_reference a
+  SET    error_status = 1
+  WHERE  contributor_reference IN
+      (  SELECT contributor_reference
+         FROM   bto_question b
+         WHERE  a.period = b.period
+           AND  b.acell IN ('U','1V','W','1U','M','l'));
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  h_rows = :h_num_rows;
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Faled to update bto_reference with data errors.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Prepare to export rereferenced contributors (that have not failed
+     data credibility checks).
+  ------------------------------------------------------------------*/
+
+  h_total_rows = :h_total_rows + :h_rows;
+
+  h_text =  'PRO: Dealing with rerefrenced contributors.';
+  CALLPROC write_to_process_log
+         ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  UPDATE bto_reference a
+  SET    error_status = 1
+  WHERE  contributor_reference IN
+      (  SELECT contributor_reference
+         FROM   reref_contributors b
+         WHERE  a.period = b.period
+           AND  b.actioned = 'N');
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  h_rows = :h_num_rows;
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update bto_reference '
+           + 'with re-referenced contributors.';
+    CALLPROC write_to_process_log
+           ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_total_rows = :h_total_rows + :h_rows;
+
+  MESSAGE 'Taking on credibility failing forms...';
+
+  IF :h_total_rows != 0
+  THEN
+
+    h_text =  'PRO: Calling msay_fp_take_on_forms for form status 2.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+    h_return = CALLPROC msay_fp_take_on_forms (p_form_status = 2);
+
+    IF h_return != 0
+    THEN
+      /* Error reporting handled by external procedure */
+      RETURN h_return;
+    ENDIF;
+
+    h_text = 'PRO: Good return from msay_fp_take_on_forms for forms status 2.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  ENDIF;
+
+  IF :g_forms_cleared = 0
+  THEN
+
+    h_return = CALLPROC batch_fp_drop_table (p_table = 'tt_question_backup');
+
+    IF h_return != 0
+    THEN
+      /* Error reporting handled by external procedure */
+      RETURN h_return;
+    ENDIF;
+
+    h_text =  'BTO: END OF MAIN PROCEDURE (No clear forms #1).';
+    CALLPROC write_to_process_log
+           ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+    RETURN 0;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Reclassifications: either reclassified or out_of_scope
+  ------------------------------------------------------------------*/
+
+  h_text =  'PRO: Dealing with reclasses and out of scope forms.';
+  CALLPROC write_to_process_log
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  h_forms_reclassed = 0;
+
+  SELECT a.contributor_reference AS h_contributor_reference,
+         a.period                AS h_period,
+         a.contributor_industry  AS h_industry,
+         b.alt_industry          AS h_alt_industry
+  FROM   bto_reference a,
+         contributor_period b
+  WHERE  a.contributor_reference = b.contributor_reference
+  AND    a.period                = b.period
+  BEGIN
+    h_reclassified = 'n';
+    h_out_of_scope = 'n';
+
+    h_return = CALLPROC msay_fp_reclassify 
+             ( p_contributor_reference = :h_contributor_reference,
+               p_period                = :h_period,
+               p_contributor_industry  = :h_industry,
+               p_alt_industry          = :h_alt_industry,
+               p_reclassified          = BYREF(:h_reclassified),
+               p_out_of_scope          = BYREF(:h_out_of_scope));
+
+    IF h_return != 0
+    THEN
+      /* Error reporting handled by external procedure */
+      RETURN h_return;
+    ENDIF;
+
+    IF :h_out_of_scope = 'y' OR :h_reclassified = 'y'
+    THEN
+
+      h_forms_reclassed = h_forms_reclassed + 1;
+
+      /*------------------------------------------------------------------
+         Mark up reclasses and out of scopes.
+      ------------------------------------------------------------------*/
+      h_rs_marker = '';
+
+      IF :h_out_of_scope = 'y' 
+      THEN
+        h_rs_marker = 'S';
+        UPDATE bto_reference_score
+        SET    marker = 'S'
+        WHERE  contributor_reference = :h_contributor_reference
+          AND  period = :h_period;
+       ELSE  
+        h_rs_marker = 'R';
+        UPDATE bto_reference_score
+        SET    marker = 'R'
+        WHERE  contributor_reference = :h_contributor_reference
+          AND  period = :h_period;
+      ENDIF;  
+
+      h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return != 0 
+      THEN 
+        h_text = 'ERROR: Failed to set R or S marker for '
+                + 'out of scope or reclass. ' 
+                + 'Contributor: ' + VARCHAR(:h_contributor_reference)
+                + ' and period '  + VARCHAR(:h_period) +'.';
+        CALLPROC write_to_process_log
+                 (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+        RETURN :h_return;
+      ENDIF;
+
+      /*------------------------------------------------------------------
+         Remove correct date and week no of R/S marks as these break 
+         the work practices and systems that get used at desk.
+         
+         (Selective Editing originally scored all these as max score, 
+          so this was never needed. Last minute methodology changes 
+          caused this unforseen impact)
+      ------------------------------------------------------------------*/
+
+      UPDATE contributor_period 
+      SET    correct_date = '',
+             corr_week_no = 0
+      WHERE  contributor_reference = :h_contributor_reference
+        AND  period = :h_period;
+
+      h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return != 0 
+      THEN 
+        h_text = 'ERROR: Failed to reset correct week and date for '
+                + 'out of scope or reclass. ' 
+                + 'Contributor: ' + VARCHAR(:h_contributor_reference)
+                + ' and period '  + VARCHAR(:h_period) +'.';
+        CALLPROC write_to_process_log
+                 (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+        RETURN :h_return;
+      ENDIF;
+
+      /*------------------------------------------------------------------
+           Continuing with original code...
+      ------------------------------------------------------------------*/
+
+      UPDATE bto_reference
+      SET    error_status = 1
+      WHERE  contributor_reference = :h_contributor_reference
+        AND  period = :h_period;
+
+      h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return != 0
+      THEN
+        h_text =  'ERROR: Failed to update reclassifications/scopes.';
+        CALLPROC write_to_process_log
+                 (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+        RETURN h_return;
+      ENDIF;
+
+    ENDIF;
+
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return = 9
+  THEN
+    h_text = 'ERROR: Reclassification loop failed.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*--------------------------------------------------------------------
+          Modifying a few tables after changes made.
+  --------------------------------------------------------------------*/
+
+  MESSAGE 'Modifying unscored table to btree . . .';
+
+  MODIFY bto_unscored TO BTREE
+      ON contributor_reference, period, contributor_industry, time;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to modify bto_unscored.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  MESSAGE 'Modifying reference score table to btree . . .';
+
+  MODIFY bto_reference_score TO BTREE
+      ON contributor_reference, period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to modify bto_reference_score.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  MESSAGE 'Modifying enforcement table to btree . . .';
+
+  MODIFY bto_enforcement TO BTREE
+      ON period, contributor_reference;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to modify bto_enforcement.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+
+  MESSAGE 'Modifying scoring debug table to btree . . .';
+
+  MODIFY bto_scoring_debug TO BTREE UNIQUE 
+      ON batch_date, contributor_reference, question, period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to modify bto_scoring_debug.'; 
+    CALLPROC write_to_process_log
+           ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+        Deal with reclassed/out of scope forms.
+  -----------------------------------------------------------------------*/
+  MESSAGE 'Taking on reclassed/out of scope forms...';
+
+  IF :h_forms_reclassed != 0
+  THEN
+
+    h_text =  'PRO: Calling msay_fp_take_on_forms for form status 3.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+    h_return = CALLPROC msay_fp_take_on_forms (p_form_status = 3);
+
+    IF h_return != 0
+    THEN
+      /* Error reporting handled by external procedure */
+      RETURN h_return;
+    ENDIF;
+
+    h_text = 'PRO: Good return from msay_fp_take_on_forms for forms status 3.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+    IF :g_forms_cleared = 0
+    THEN
+
+      h_return = CALLPROC batch_fp_drop_table (p_table = 'tt_question_backup');
+
+      IF h_return != 0
+      THEN
+        /* Error reporting handled by external procedure */
+        RETURN h_return;
+      ENDIF;
+
+      h_text =  'BTO: END OF MAIN PROCEDURE (No clear forms #2).';
+      CALLPROC write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+      RETURN 0;
+
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    The only ones left now are the cleared ones
+  ------------------------------------------------------------------*/
+
+  MESSAGE ' Taking on clean forms...';
+
+  h_text =  'PRO: Dealing with clean returns.';
+  CALLPROC write_to_process_log
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  UPDATE bto_reference
+  SET    error_status = 1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed updating error_status on bto_reference.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_text =  'PRO: Calling msay_fp_take_on_forms for form status 4.';
+  CALLPROC write_to_process_log
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  h_return = CALLPROC msay_fp_take_on_forms (p_form_status = 4);
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN h_return;
+  ENDIF;
+
+  h_text =  'PRO: Good return from msay_fp_take_on_forms for forms status 4.';
+  CALLPROC write_to_process_log
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  /*------------------------------------------------------------------
+      Re-modify the (by now, empty) bto_question
+  ------------------------------------------------------------------*/
+
+  h_text =  'PRO: Remodifying the now empty bto_question to btree.';
+  CALLPROC write_to_process_log
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  MODIFY    bto_question TO BTREE
+  UNIQUE ON contributor_reference,
+            period,
+            question;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return = 9
+  THEN
+    h_text = 'ERROR: Failed to modify bto_question.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = 'tt_question_backup');
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN h_return;
+  ENDIF;
+
+  h_text =  'BTO: END OF MAIN PROCEDURE. (Some clear forms.)';
+  CALLPROC write_to_process_log
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  RETURN 0;
+
+}
+
+/*************************** LOCAL PROCEDURES ***************************/
+
+/*=======================================================================
+    Local procedure to score a question ready for smart targeting.
+
+    score = (100 x weight x ( | avalue - evalue | )) / tvalue
+
+    Where no previous value for value question, estimate this way: 
+
+    evalue =  (tot_val / tot_emp) x emp
+
+    first at contributor industry level, then if not successful at question
+    industry level.
+
+    Where no previous value for volume question, estimate this way: 
+
+    evalue = mvalue / agg_unit_val
+
+    where agg_unit_val is taken from SAS output.
+
+    Variable listing:
+
+     p_score          = question score  (the required output)
+
+     h_code           = type of default score returned. 
+     h_question       = question number
+     h_industry       = contributor industry (needed for cut-off)
+     h_strata         = the cell the contributor is in within the industry
+     h_avalue         = returned value
+
+     lp_estimate      = Flag that estimate used for diagnostic output.
+     lp_emp           = Employment for contributor.
+     lp_special       = count of special markers for contributor in period.
+     lp_prev_period   = period previous to period of returned data.
+     lp_prev_val      = previous period avalue for contributor question.
+     lp_weight        = the calculated sample weight
+     lp_evalue        = expected value or volume. 
+     lp_tvalue        = total estimated value for product in prev year
+     lp_tot_val       = total mvalue for product in prev year
+     lp_tot_vol       = total estimated volume for product in prev year
+     lp_tot_emp       = total employment of those making product in prev year
+
+========================================================================*/
+
+PROCEDURE lp_score_question 
+          (p_score        = FLOAT8    NOT NULL WITH DEFAULT,
+           p_code         = INTEGER1  NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return       = INTEGER4  NOT NULL WITH DEFAULT,
+          lp_return2      = INTEGER4  NOT NULL WITH DEFAULT,
+  	  lp_dummy        = INTEGER4  NOT NULL WITH DEFAULT,
+          lp_dummy2       = CHAR(11)  NOT NULL WITH DEFAULT,
+	  lp_estimate     = CHAR(1)   NOT NULL WITH DEFAULT,
+  	  lp_prev_period  = INTEGER4  NOT NULL WITH DEFAULT,
+	  lp_emp          = INTEGER4  NOT NULL WITH DEFAULT,
+	  lp_special      = INTEGER1  NOT NULL WITH DEFAULT,
+          lp_prev_val     = FLOAT8    NOT NULL WITH DEFAULT,
+          lp_weight       = FLOAT8    NOT NULL WITH DEFAULT,
+          lp_evalue       = FLOAT8    NOT NULL WITH DEFAULT,
+          lp_tvalue       = FLOAT8    NOT NULL WITH DEFAULT
+
+{
+
+  p_code           = 0;
+  lp_prev_period   = 0;
+  lp_emp           = 0;
+  lp_weight        = 0;
+  lp_evalue        = 0;
+  lp_tvalue        = 0;
+  lp_estimate      = ' ';
+
+/*--------------------------------------------------------------------------
+   1A: Return a score of Threshold + 0.001 if form from before the 
+       implementation of selective editing.
+--------------------------------------------------------------------------*/
+
+  IF h_period < 201100
+  THEN
+    p_code = 2;
+    RETURN 1;     /* Assigns default score */
+  ENDIF;
+
+
+/*--------------------------------------------------------------------------
+   1B: Return maximum score for Written ins. 
+--------------------------------------------------------------------------*/
+
+  IF h_acell = 'W'
+  THEN
+    p_code = 1;
+    RETURN 1;     /* Assigns max score */
+  ENDIF;
+
+/*--------------------------------------------------------------------------
+   1C: Return maximum score for questions contributor is key for. 
+--------------------------------------------------------------------------*/
+
+  SELECT question AS lp_dummy
+    FROM key_responder_data 
+   WHERE contributor_reference = :h_contributor_reference
+     AND for_period = :h_period
+     AND question = :h_question;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return  > 1 
+  THEN 
+    h_text = 'ERROR: Failed to select from key_responder_data . '
+	    + 'Error code ' + VARCHAR(:lp_return) + '.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN :lp_return;
+  ENDIF;
+
+  IF lp_return = 0
+  THEN
+    p_code = 3;
+    RETURN 1;     /* Assigns max score */
+  ENDIF;
+
+/*--------------------------------------------------------------------------
+   1D: Return maximum score for special markers. 
+--------------------------------------------------------------------------*/
+
+  SELECT COUNT(marker) AS lp_special
+  FROM   special_markers
+  WHERE  contributor_reference = :h_contributor_reference
+    AND  period = :h_period;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 0);
+
+  IF lp_return  > 1 
+  THEN 
+    h_text = 'ERROR: Failed to select from contributor_period. '
+	    + 'Error code ' + VARCHAR(:lp_return) + '.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+  ENDIF;
+
+  IF lp_special > 0
+  THEN
+    p_code = 4;
+    RETURN 1;     /* Assigns max score as marker present */
+  ENDIF;
+
+/*--------------------------------------------------------------------------
+   1E: Return zero score for zero return in a question
+       that had a zero  or null return in previous period.
+--------------------------------------------------------------------------*/
+
+  lp_prev_period = h_period - 100;
+
+  SELECT IFNULL(a.avalue,0) AS lp_prev_val
+    FROM cqpv a
+   WHERE a.contributor_reference = :h_contributor_reference
+     AND a.question = :h_question
+     AND a.period   = :lp_prev_period; 
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1 
+  THEN 
+    h_text = 'ERROR: Failed to select previous avalue '
+            + 'from cqpv for contributor ' 
+	    + VARCHAR(:h_contributor_reference) + ' and question '
+	    + VARCHAR(:h_question) + ' in period '
+	    + VARCHAR(:lp_prev_period) + '.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN :lp_return;
+  ENDIF;
+  
+  IF h_avalue = 0 AND lp_prev_val = 0     /* New question zero response */
+  THEN
+    p_code = 8;
+    RETURN 1;
+  ENDIF;
+
+/*--------------------------------------------------------------------------
+   1E: Return a score of zero for questions marked for batch aggregation (B)
+       or substituted total volumes (P).
+--------------------------------------------------------------------------*/
+
+  IF h_acell = 'B'
+  OR h_acell = 'P'
+  THEN
+    p_code = 9;
+    RETURN 1;     /* Assigns default score of zero */
+  ENDIF;
+
+/*--------------------------------------------------------------------------
+   2: Check to see if it is a default weight from a standard heading. 
+      If not, then calculate it.
+--------------------------------------------------------------------------*/
+
+  IF   RIGHT(VARCHAR(:h_question),5) = '09301'
+    OR RIGHT(VARCHAR(:h_question),5) = '09401'
+    OR RIGHT(VARCHAR(:h_question),5) = '09501'
+    OR RIGHT(VARCHAR(:h_question),5) = '09601'
+    OR RIGHT(VARCHAR(:h_question),5) = '09801'
+    OR RIGHT(VARCHAR(:h_question),1) = '5'
+  THEN
+    lp_weight = 0.1;
+  ENDIF;
+
+  lp_return = 0;
+
+  IF lp_weight = 0
+  THEN
+    lp_return = CALLPROC lp_set_weight (p_weight = BYREF(:lp_weight)); 
+  ENDIF;
+
+  IF lp_return != 0
+  THEN
+    /* Error report handled by local procedure */
+    RETURN :lp_return; 
+  ENDIF;
+
+/*--------------------------------------------------------------------------
+   3a: Retrieve or impute the edited value for last year for use as
+       a predicted value for this year.
+--------------------------------------------------------------------------*/
+
+  SELECT IFNULL(avalue,0) AS lp_evalue
+  FROM   cqpv
+  WHERE  contributor_reference = :h_contributor_reference
+    AND  question = :h_question
+    AND  period = :lp_prev_period;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to select previous avalue from cqpv.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN :lp_return;
+  ENDIF;
+
+/*--------------------------------------------------------------------------
+   3b: If we cant get a previous figure to use for expected, we need to
+       get an employment figure then estimate based on last years data. 
+       Diferent methods used for Val and Vol.
+--------------------------------------------------------------------------*/
+
+  IF lp_return = 1
+  THEN
+
+    lp_estimate = 'Y'; 
+
+    /*......................................................
+         Need to get employment for calculations. 
+    ......................................................*/
+
+    SELECT register_emp AS lp_emp 
+    FROM   contributor_period
+    WHERE  contributor_reference = :h_contributor_reference
+      AND  period = :h_period;
+
+    lp_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF lp_return2  > 1 
+    THEN 
+      h_text = 'ERROR: Failed to select employment from contributor_period. '
+  	      + 'Error code ' + VARCHAR(:lp_return) + '.';
+      CALLPROC write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return2);
+      RETURN :lp_return2;
+    ENDIF;
+
+    /*......................................................
+         Now get the estimates. 
+    ......................................................*/
+
+    lp_return2 = 0; 
+    
+    IF RIGHT(VARCHAR(:h_question),1) = '2'
+    THEN
+      lp_return2 = CALLPROC lp_estimate_prev_vol 
+			    (p_evalue      = BYREF(:lp_evalue),
+			     p_emp         = :lp_emp,
+			     p_prev_period = :lp_prev_period);
+     ELSE
+      lp_return2 = CALLPROC lp_estimate_prev_val
+			    (p_evalue      = BYREF(:lp_evalue),
+			     p_emp         = :lp_emp,
+			     p_prev_period = :lp_prev_period,
+			     p_question    = :h_question);
+    ENDIF; 
+
+    IF lp_return2 > 1 
+    THEN 
+      RETURN :lp_return2;  /* Error message handled locally */
+    ENDIF;
+
+  ENDIF;
+
+/* NB: Zero values for prev period allowed, they boost score aproipriately. */
+
+/*--------------------------------------------------------------------------
+   4: Get the gross question tota from the previous period.
+--------------------------------------------------------------------------*/
+
+  SELECT gross_total AS lp_tvalue
+  FROM   gross_question_totals
+  WHERE  question = :h_question
+    AND  period   = :lp_prev_period;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to select gross_question total '
+           + 'for qst ' +SQUEEZE(VARCHAR(:h_question)) +' '
+           + 'in prev period ' +SQUEEZE(VARCHAR(:lp_prev_period)) +'.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN :lp_return;
+  ENDIF;
+   
+  IF lp_return = 1 
+  THEN
+    p_code = 6;
+    RETURN 1;   /* Assigns max score */
+  ENDIF;
+
+  IF lp_tvalue = 0
+  THEN
+    p_code = 7;
+    RETURN 1;   /* Assigns max score */
+  ENDIF;
+
+/*--------------------------------------------------------------------------
+   5: Calculate the score a using the weight, the absolute difference between
+      the actual and estimated values, and the gross question total from
+      the previous period.
+--------------------------------------------------------------------------*/
+
+  p_score = ((ABS(:h_avalue - :lp_evalue) / :lp_tvalue) * :lp_weight) * 100;
+
+  IF h_testing = 1
+  THEN
+    INSERT INTO bto_scoring_debug
+    VALUES    ( :g_batch_date,
+                :h_contributor_reference,
+                :h_question,
+                :h_period,
+                :h_avalue,
+                :lp_evalue,
+                :lp_estimate,
+                :lp_tvalue,
+                :lp_weight,
+                :p_score);
+
+    lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF lp_return != 0
+    THEN
+      h_text = 'ERROR: Failed to insert into bto_scoring_debug.';
+      CALLPROC write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/*=======================================================================
+    Local procedure to insert a score into the question_score table.
+========================================================================*/
+
+PROCEDURE lp_insert_score (p_score = FLOAT8   NOT NULL WITH DEFAULT,
+                           p_code  = INTEGER1 NOT NULL WITH DEFAULT,
+			   p_acell = CHAR(2)  NOT NULL WITH DEFAULT) =
+
+DECLARE lp_return       = INTEGER1  NOT NULL WITH DEFAULT,
+	lp_error_status = INTEGER1  NOT NULL WITH DEFAULT,
+	lp_zone         = CHAR(1)   NOT NULL WITH DEFAULT
+
+{
+
+  IF   p_acell = 'U'
+    OR p_acell = '1V'
+    OR p_acell = 'W'
+    OR p_acell = '1U'
+    OR p_acell = 'M'
+    OR p_acell = 'L' 
+  THEN
+    lp_error_status = 1;
+  ELSE
+    lp_error_status = 0;
+  ENDIF;
+
+  lp_zone = ' ';
+
+  IF 
+    p_score >= h_threshold AND lp_error_status = 1 THEN lp_zone = 'A'
+  ELSEIF 
+    p_score >= h_threshold AND lp_error_status = 0 THEN lp_zone = 'B'
+  ELSEIF 
+    p_score <  h_threshold AND lp_error_status = 1 THEN lp_zone = 'C'
+  ELSE 
+    lp_zone = 'D' 
+  ENDIF; 
+
+  INSERT INTO bto_question_score
+  VALUES (    :h_period,
+	      :h_contributor_reference,
+	      :h_question,
+	      :p_score,
+	      :p_code,
+	      :lp_zone);
+  
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0 
+  THEN 
+    h_text = 'ERROR: Failed to indsert to bto_question_score. '
+	    + 'Error code ' + VARCHAR(:lp_return) + '.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+  ENDIF;
+
+  RETURN :lp_return;
+
+}
+
+
+/*=======================================================================
+    Local procedure to insert into the reference_score table and
+    note enforcement form receipt on bto_enforcement.
+========================================================================*/
+
+PROCEDURE lp_score_form (p_score = FLOAT8 NOT NULL WITH DEFAULT) =
+
+DECLARE lp_return  = INTEGER4  NOT NULL WITH DEFAULT,
+        lp_return2 = INTEGER4  NOT NULL WITH DEFAULT,
+  	lp_dummy   = CHAR(11)  NOT NULL WITH DEFAULT
+
+{
+
+  INSERT INTO bto_reference_score
+  VALUES (    :h_contributor_reference,
+              :h_period,
+	      :p_score,
+	      :h_zone,
+              ' ');
+  
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0 
+  THEN 
+    h_text = 'ERROR: Failed to insert to bto_reference_score.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN :lp_return;
+  ENDIF;
+
+  SELECT contributor_reference AS lp_dummy
+    FROM contributor_period
+   WHERE contributor_reference = :h_contributor_reference
+     AND period = :h_period
+     AND output_category = 'Y';
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return  > 1 
+  THEN 
+    h_text = 'ERROR: Failed to select enforced from contributor_period. '
+	    + 'Error code ' + VARCHAR(:lp_return) + '.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN :lp_return;
+  ENDIF;
+
+  IF lp_return = 0
+  THEN
+
+    INSERT INTO bto_enforcement
+    VALUES    ( :h_period, :h_contributor_reference); 
+
+    lp_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF lp_return2 != 0 
+    THEN 
+      h_text = 'ERROR: Failed to insert to bto_enforcement.';
+      CALLPROC write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return2);
+    ENDIF;
+
+  ENDIF;
+  
+  RETURN 0;
+
+}
+
+/*=======================================================================
+    Local procedure to estimate a previous value for a question.
+
+    evalue =  lp_sph x p_emp
+
+     h_industry      = contributor industry (needed for cut-off)
+     p_question      = question number (need to pass as uses mquest as well)
+     p_emp           = Employment for contributor.
+     p_evalue        = expected value or volume. 
+     p_prev_period   = period of previous return, null = 0
+     lp_sph          = sph or average sph from sas_sph_data table.
+
+  NB: USES RETURN OF 1 TO INDICATE NO ESTIMATE POSSIBLE THUS USE DEFAULT SCORE
+
+============================================================================*/
+
+PROCEDURE lp_estimate_prev_val 
+	  (p_evalue       = FLOAT8   NOT NULL WITH DEFAULT,
+	   p_emp          = INTEGER4 NOT NULL WITH DEFAULT,
+	   p_prev_period  = INTEGER4 NOT NULL WITH DEFAULT,
+	   p_question     = INTEGER4 NOT NULL WITH DEFAULT)=
+
+DECLARE lp_return       = INTEGER4  NOT NULL WITH DEFAULT,
+        lp_return2      = INTEGER4  NOT NULL WITH DEFAULT,
+        lp_sph          = FLOAT8    NOT NULL WITH DEFAULT
+
+{
+
+  lp_sph      = 0;
+
+  /*-----------------------------------------------------------------------
+    A: Get variable: lp_sph                         
+       If contributor industry listed against question on sas_sph_data
+       then use that figure.
+       If contributor industry not listed against question on sas_sph_data
+       then use average figure for that question.
+  -----------------------------------------------------------------------*/
+
+  SELECT sph AS lp_sph
+    FROM question_contrind_sph a
+   WHERE a.question  = :p_question
+     AND a.period    = :p_prev_period 
+     AND a.contr_ind = :h_industry;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1 
+  THEN 
+    h_text = 'ERROR: Failed to select sph from question_contrind_sph '
+	    + 'for Question '
+	    + VARCHAR(:p_question) + ' : Industry '
+	    + VARCHAR(:h_industry) + ' : Period '
+	    + VARCHAR(:p_prev_period) + '.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN :lp_return;
+  ENDIF;
+
+  IF lp_sph = 0
+  THEN
+
+    SELECT IFNULL(AVG(sph),0) AS lp_sph
+      FROM question_contrind_sph a
+     WHERE a.period   = :p_prev_period 
+       AND a.question = :p_question;
+
+    lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF lp_return > 1 
+    THEN 
+      h_text = 'ERROR: Failed to select an average sph '
+  	      + 'from question_contrind_sph question ' 
+	      + VARCHAR(:p_question) + ' in period '
+	      + VARCHAR(:p_prev_period) + '.';
+      CALLPROC write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+      RETURN :lp_return;
+    ENDIF;
+
+  ENDIF;
+
+  IF lp_sph = 0
+  THEN
+    h_text = 'TMP:     Unable to get exact or average sph so zero sph used.'
+  ENDIF;
+
+  
+  /*-----------------------------------------------------------------------
+    B: Set estimated avalue to be passed back (p_evalue).
+  -----------------------------------------------------------------------*/
+
+  p_evalue =  lp_sph * p_emp;
+
+  RETURN 0;
+
+}
+
+/*=======================================================================
+    Local procedure to estimate a previous volume for a question.
+
+    Where no previous value for volume question, estimate this way: 
+
+    evalue = (mvalue x 1000) / agg_unit_val
+
+    where agg_unit_val is taken from SAS output.
+
+    Variable listing:
+     h_question       = question number
+     p_emp            = Employment for contributor.
+     p_evalue         = expected value or volume. 
+     p_prev_period    = period of previous return, null = 0
+     lp_mquest        = matching value question for a volume question 
+     lp_mvalue        = matching value evalue for a volume question 
+     lp_tot_val       = total estimated value for product in prev year
+     lp_tot_vol       = total estimated volume for product in prev year
+
+========================================================================*/
+
+PROCEDURE lp_estimate_prev_vol 
+	  (p_evalue       = FLOAT8   NOT NULL WITH DEFAULT,
+	   p_emp          = INTEGER4 NOT NULL WITH DEFAULT,
+	   p_prev_period  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE lp_return         = INTEGER4  NOT NULL WITH DEFAULT,
+        lp_return2        = INTEGER4  NOT NULL WITH DEFAULT,
+        lp_mquest         = INTEGER4  NOT NULL WITH DEFAULT,
+        lp_mvalue         = FLOAT8    NOT NULL WITH DEFAULT,
+        lp_tot_val        = FLOAT8    NOT NULL WITH DEFAULT,
+        lp_tot_vol        = FLOAT8    NOT NULL WITH DEFAULT,
+        lp_agg_unit_val   = FLOAT8    NOT NULL WITH DEFAULT,
+
+{
+
+  lp_tot_val = 0;
+  lp_tot_vol = 0;
+  lp_mvalue  = 0;
+  lp_mquest  = 0;
+
+  /*-----------------------------------------------------------------------
+    A: Get matching value from value question.
+  -----------------------------------------------------------------------*/
+
+  lp_mquest = :h_question - 1;
+
+  SELECT IFNULL(a.avalue,0) AS lp_mvalue
+    FROM cqpv a
+   WHERE a.contributor_reference = :h_contributor_reference
+     AND a.question              = :lp_mquest
+     AND a.period                = :p_prev_period 
+     AND a.acell                != 'N';
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1  
+  THEN 
+    h_text = 'ERROR: Failed to select matching avalue '
+	    + 'from cqpv for question ' 
+	    + VARCHAR(:h_question) + ' in period '
+	    + VARCHAR(:p_prev_period) + '.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN :lp_return;
+  ENDIF;
+
+  /*..........................................................................
+    If there is no matching data for a value question in the previous period, 
+    we need to impute it using the same mechanism as we did earlier.
+  ..........................................................................*/
+
+  IF lp_mvalue = 0
+  THEN
+    lp_return2 = CALLPROC lp_estimate_prev_val
+                          (p_evalue      = BYREF(:lp_mvalue),
+                           p_emp         = :p_emp,
+                           p_prev_period = :p_prev_period,
+			   p_question    = :lp_mquest);
+
+    lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF lp_return > 1  
+    THEN 
+      h_text = 'ERROR: Failed to select matching avalue '
+  	      + 'for question ' 
+  	      + VARCHAR(:h_question) + ' in period '
+  	      + VARCHAR(:p_prev_period) + '.';
+      CALLPROC write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+      RETURN :lp_return;
+    ENDIF;
+
+    IF lp_return = 1
+    OR lp_mvalue = 0
+    THEN 
+      p_evalue = 0; 
+      RETURN 0; 
+    ENDIF;
+
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+    B: Get agg_unit_val for the question in the prev period.
+  -----------------------------------------------------------------------*/
+
+  SELECT agg_uv AS lp_agg_unit_val
+  FROM   agg_unit_values
+  WHERE  question = :h_question
+    AND  period   = :p_prev_period;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1  
+  THEN 
+    h_text = 'ERROR: Failed to select agg_unit_val '
+            + 'from agg_unit_values for question ' 
+  	    + VARCHAR(:h_question) + ' in period '
+  	    + VARCHAR(:p_prev_period) + '.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN :lp_return;
+  ENDIF;
+
+  IF lp_return = 1  
+  OR lp_agg_unit_val <= 0
+  THEN 
+    p_evalue = 0; 
+    RETURN 0; 
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+    C: Set estimated avalue to be passed back (p_evalue).
+  -----------------------------------------------------------------------*/
+
+  p_evalue = ((lp_mvalue * 1000) / lp_agg_unit_val);
+
+  RETURN 0;
+
+}
+
+/*=======================================================================
+    Local procedure to obtain a sample weight for a question.
+
+    Gets contributors strata, then matches period, contrib industry and 
+    strata on sample_weights to get weight.
+
+    There is no possible way that a zero weight could be obtained given all
+    the checks in pre-val etc, so if no match found then its a system error
+    and the batch will be terminated.  
+============================================================================*/
+
+PROCEDURE lp_set_weight
+	  (p_weight       = FLOAT8   NOT NULL WITH DEFAULT)=
+
+DECLARE lp_return       = INTEGER4  NOT NULL WITH DEFAULT,
+        lp_return2      = INTEGER4  NOT NULL WITH DEFAULT,
+        lp_strata       = INTEGER1  NOT NULL WITH DEFAULT,
+        lp_weight       = FLOAT8    NOT NULL WITH DEFAULT,
+        lp_got_weight   = INTEGER1  NOT NULL WITH DEFAULT
+
+{
+
+  lp_weight = 0;
+  lp_strata = 0;
+
+  /*-----------------------------------------------------------------------
+     Gets the strata for the contributor.
+  -----------------------------------------------------------------------*/
+
+  SELECT strata AS lp_strata
+    FROM contributor_industry_strata
+   WHERE contributor_reference = :h_contributor_reference
+     AND period = :h_period
+     AND contributor_industry = :h_industry;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0 
+  THEN 
+    h_text = 'ERROR: Failed to select strata '
+            + 'from contributor_industry_strata for question ' 
+  	    + VARCHAR(:h_question) + ' and industry '
+  	    + VARCHAR(:h_industry) + ' in period '
+  	    + VARCHAR(:h_period) + '.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN 9;
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+    Use strata, contrib ind, period to get weight from sample_weights.
+  -----------------------------------------------------------------------*/
+
+  SELECT weight AS lp_weight
+    FROM sample_weights
+   WHERE contr_ind = :h_industry
+     AND period = :h_period
+     AND strata = :lp_strata; 
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0 
+  THEN 
+    h_text = 'ERROR: Failed to select weight '
+            + 'from sample_weights for industry ' 
+    	    + VARCHAR(:h_industry) + ' in period '
+    	    + VARCHAR(:h_period) + ' with strata'
+    	    + VARCHAR(:lp_strata) + '.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN 9;
+  ENDIF;
+
+  IF lp_weight = 0  
+  THEN
+    h_text = 'ERROR: Zero weight selected '
+            + 'from sample_weights for industry ' 
+    	    + VARCHAR(:h_industry) + ' in period '
+    	    + VARCHAR(:h_period) + ' with strata'
+    	    + VARCHAR(:lp_strata) + '. This should not be possible.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=9);
+    RETURN 9;
+  ENDIF;
+
+  /* Weight found, so return it */
+
+  p_weight = :lp_weight;
+
+  RETURN 0;
+
+}
+
+
+/*===========================================================================
+    Local procedure to confirm any errors on a form that is in zone B, C or D.
+
+    1: We need to check if form is on rereferencing table. If it is,
+    then we move the form to zone A and not confirm anything.
+    
+    2: We need to check if total sales is only returned value. If it is,
+    then we move the form to zone A and not confirm anything.
+    
+    3: If form not rezoned due to total sales only or data continuity 
+    checks, then continue by sorting out the cell codes for question 
+    errors on B and C zone forms.
+
+    4: Zone D forms have no fails, so only need the "correct date" set.
+============================================================================*/
+
+PROCEDURE lp_confirm_form ()=
+
+DECLARE lp_return        = INTEGER4  NOT NULL WITH DEFAULT,
+        lp_return2       = INTEGER4  NOT NULL WITH DEFAULT,
+        lp_sum_of_01s    = INTEGER4  NOT NULL WITH DEFAULT,
+        lp_total_sales   = FLOAT8    NOT NULL WITH DEFAULT,
+        lp_question_zone = CHAR(1)   NOT NULL WITH DEFAULT
+
+{
+
+  /*-----------------------------------------------------------------------
+    1: We need to check if form is on rereferencing table. If it is,
+    then we move the form to zone A and not confirm anything.
+  -----------------------------------------------------------------------*/
+
+  SELECT contributor_reference AS :h_dummy
+  FROM   reref_contributors
+  WHERE  contributor_reference = :h_contributor_reference
+    AND  period = :h_period;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 0);
+
+  IF lp_return = 1 
+  THEN 
+    lp_return = CALLPROC lp_continuity_rezone();
+    /* Error reporting handled in local procedure */ 
+    RETURN :lp_return;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN 
+    h_text = 'ERROR: Failed to select total sales '
+            + 'from bto_question for contributor ' 
+    	    + VARCHAR(:h_contributor_reference) + ' in period '
+    	    + VARCHAR(:h_period) + '.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN 9;
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+    2: We need to check if total sales is only returned value. If it is,
+    then we move the form to zone A and not confirm anything.
+  -----------------------------------------------------------------------*/
+
+  SELECT INT4(SUM(avalue)) AS lp_sum_of_01s
+  FROM   bto_question
+  WHERE  contributor_reference = :h_contributor_reference
+    AND  period = :h_period
+    AND  MOD(question,10) = 1;
+    
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0 
+  THEN 
+    h_text = 'ERROR: Failed to select sum of sales '
+            + 'from bto_question for contributor ' 
+    	    + VARCHAR(:h_contributor_reference) + ' in period '
+    	    + VARCHAR(:h_period) + '.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN 9;
+  ENDIF;
+
+  SELECT avalue AS lp_total_sales
+  FROM   bto_question
+  WHERE  contributor_reference = :h_contributor_reference
+    AND  period = :h_period
+    AND  quest_order = 10;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0 
+  THEN 
+    h_text = 'ERROR: Failed to select total sales '
+            + 'from bto_question for contributor ' 
+    	    + VARCHAR(:h_contributor_reference) + ' in period '
+    	    + VARCHAR(:h_period) + '.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN 9;
+  ENDIF;
+
+  IF lp_sum_of_01s = 0 AND lp_total_sales > 0
+  THEN
+    lp_return = CALLPROC lp_total_sales_rezone();
+    /* Error reporting handled in local procedure */ 
+    RETURN :lp_return;
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+     3: If form not rezoned due to total sales only or data continuity 
+     checks, then continue by sorting out the cell codes for question 
+     errors on B and C zone forms.
+  -----------------------------------------------------------------------*/
+
+  IF h_zone = 'B' OR h_zone = 'C'
+  THEN
+    
+    SELECT a.question    AS h_question,
+           a.acell       AS h_acell,
+           a.avalue      AS h_avalue,
+           a.quest_order AS h_quest_order
+      FROM bto_question a,
+           bto_question_score b
+     WHERE a.contributor_reference = :h_contributor_reference
+       AND a.contributor_reference = b.contributor_reference
+       AND a.period = :h_period    
+       AND a.period = b.period    
+       AND a.question = b.question    
+       AND b.zone = 'C'
+    BEGIN
+
+      h_fails_confirmed = h_fails_confirmed +1; 
+
+      lp_return = CALLPROC lp_confirm_fails ();
+
+      IF lp_return != 0 
+      THEN 
+        h_text = 'ERROR: Failed to confirm credibility fail for contributor ' 
+    	        + VARCHAR(:h_contributor_reference) + ' on question '
+    	        + VARCHAR(:h_question) + ' in period '
+    	        + VARCHAR(:h_period) + '.';
+        CALLPROC write_to_process_log
+                (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+        RETURN :lp_return;
+      ENDIF;
+
+    END;
+
+  ENDIF;   /*  End of form zone in B or C */
+
+  /*-----------------------------------------------------------------------
+     4: Having dealt with changing the cell codes on forms from zones B and C,
+        we now set the "correct date" to today and complete other
+        fields apropriate to confirming. 
+  -----------------------------------------------------------------------*/
+
+  UPDATE contributor_period a
+  FROM   bto_reference b,
+         inquiry_period c
+  SET    correct_date = 'today',
+         corr_week_no = c.week_no,
+         user_id = :g_user_id,
+         f9_count = 1,
+         form_taken_on = 'S'
+  WHERE  a.contributor_reference = :h_contributor_reference
+    AND  a.period = :h_period
+    AND  a.contributor_reference = b.contributor_reference
+    AND  a.period = b.period
+    AND  a.period = c.period
+    AND  a.inquiry = c.inquiry;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0 
+  THEN 
+    h_text = 'ERROR: Failed to update confirming data '
+            + 'on contributor_period for contributor ' 
+    	    + VARCHAR(:h_contributor_reference) + ' in period '
+    	    + VARCHAR(:h_period) + '.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/*===========================================================================
+    Local procedure to confirm individual credibility fails at question
+    level.   
+    
+    Incorrect total sales questions get set to the value of their 01's
+    and acell gets set to "P" or "Z" accordingly. (Rezones due to total
+    sales only being returned have already been dealt with)
+
+    Questions with zero value have their acell set to "Z" and their 
+    acell_type blanked.
+
+    Other questions have their acell set to "V" and their 
+    acell_type blanked.
+
+============================================================================*/
+
+PROCEDURE lp_confirm_fails ()=
+
+DECLARE lp_return        = INTEGER4  NOT NULL WITH DEFAULT,
+        lp_return2       = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  /*-------------------------------------------------------------------------
+        First up, the total sales questions. 
+  -------------------------------------------------------------------------*/
+
+  IF h_quest_order = 10
+  THEN
+
+    SELECT INT4(SUM(avalue)) AS h_sum_of_01s
+    FROM   bto_question
+    WHERE  contributor_reference = :h_contributor_reference
+      AND  period = :h_period
+      AND  MOD(question,10) = 1;
+
+    lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF lp_return != 0
+    THEN
+      h_text = 'ERROR: Failed to recalculate sum_of_01s '
+            + 'from bto_question for contributor ' 
+    	    + VARCHAR(:h_contributor_reference) + ' in period '
+    	    + VARCHAR(:h_period) + '.';
+      CALLPROC write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+      RETURN :lp_return;
+    ENDIF;
+
+    IF h_sum_of_01s = 0
+    THEN    
+
+       /* avalue must be zero or the form would have been rezoned. */ 
+
+      UPDATE bto_question
+         SET avalue = 0,
+             acell  = 'Z',
+             acell_type = '', 
+             confirmation_code = 'T'
+       WHERE contributor_reference = :h_contributor_reference
+         AND question = :h_question
+         AND period = :h_period;
+
+      lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF lp_return != 0 
+      THEN 
+
+        h_text = 'ERROR: Failed to confirm zero total sales '
+               + 'on bto_question for contributor ' 
+               + VARCHAR(:h_contributor_reference) + ' for question '
+               + VARCHAR(:h_question) + ' in period '
+               + VARCHAR(:h_period) + '.';
+        CALLPROC write_to_process_log
+               ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+        RETURN 9;
+
+      ELSE
+
+        lp_return2 = CALLPROC lp_write_to_audit_trail
+                   ( p_contributor_reference = :h_contributor_reference, 
+                     p_question              = :h_question,
+                     p_period                = :h_period,
+                     p_code                  = 16);
+
+        IF lp_return2 != 0
+        THEN
+          /* Error reported by external procedure */
+          RETURN 9;
+        ENDIF;
+
+      ENDIF;
+
+    ELSE  /* h_sum_of_01s > 0 */
+
+      INSERT INTO avalue_autoedit
+      VALUES ( date('now'),
+               :h_contributor_reference,
+               :h_question,
+               :h_period,
+               'Total of 01s used to confirm total sales question.');
+
+      lp_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF lp_return != 0
+      THEN
+        h_text = 'ERROR: Failed to insert into avalue_autoedit '
+              + 'with change  for contributor ' 
+      	      + VARCHAR(:h_contributor_reference) + ' and question '
+      	      + VARCHAR(:h_question) + ' in period '
+      	      + VARCHAR(:h_period) + '.';
+        CALLPROC write_to_process_log
+                 (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return2);
+        RETURN :lp_return2;
+      ENDIF;
+
+      UPDATE bto_question
+      SET    avalue = :h_sum_of_01s,
+             acell  = 'P',
+             acell_type = '', 
+             confirmation_code = 'T'
+      WHERE  contributor_reference = :h_contributor_reference
+        AND  question = :h_question
+        AND  period = :h_period;
+
+      lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF lp_return != 0 
+      THEN 
+
+        h_text = 'ERROR: Failed to confirm retotaled sales '
+               + 'on bto_question for contributor ' 
+               + VARCHAR(:h_contributor_reference) + ' for question '
+               + VARCHAR(:h_question) + ' in period '
+               + VARCHAR(:h_period) + '.';
+        CALLPROC write_to_process_log
+               ( p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+        RETURN 9;
+
+      ELSE
+
+        lp_return2 = CALLPROC lp_write_to_audit_trail
+                   ( p_contributor_reference = :h_contributor_reference, 
+                     p_question              = :h_question,
+                     p_period                = :h_period,
+                     p_val_2                 = :h_sum_of_01s,
+                     p_code                  = 6);
+
+        IF lp_return2 != 0
+        THEN
+          /* Error reported by external procedure */
+          RETURN 9;
+        ENDIF;
+
+        RETURN 0;
+
+      ENDIF; /* End of lp_return fork. */
+
+    ENDIF; /* End of h_sum_of_01s fork */
+
+  ENDIF; /* End of quest order 10 */
+
+  /*-------------------------------------------------------------------------
+        Next up, the value/volume questions. 
+  -------------------------------------------------------------------------*/
+
+  IF h_avalue = 0
+  THEN
+      
+    UPDATE bto_question
+       SET acell  = 'Z',
+           acell_type = '', 
+           confirmation_code = 'T'
+     WHERE contributor_reference = :h_contributor_reference
+       AND question = :h_question
+       AND period = :h_period;
+
+   ELSE
+
+    UPDATE bto_question
+       SET acell  = 'V',
+           acell_type = '', 
+           confirmation_code = 'T'
+     WHERE contributor_reference = :h_contributor_reference
+       AND question = :h_question
+       AND period = :h_period;
+
+  ENDIF;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0 
+  THEN 
+    h_text = 'ERROR: Failed to update with confirmation data '
+            + 'on bto_question for contributor ' 
+    	    + VARCHAR(:h_contributor_reference) + ' for question '
+      	    + VARCHAR(:h_question) + ' in period '
+    	    + VARCHAR(:h_period) + '.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN 9;
+
+  ELSE
+
+    lp_return2 = CALLPROC lp_write_to_audit_trail
+               ( p_contributor_reference = :h_contributor_reference, 
+                 p_question              = :h_question,
+                 p_period                = :h_period,
+                 p_code                  = 16);
+
+    IF lp_return2 != 0
+    THEN
+      /* Error reported by external procedure */
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/*===========================================================================
+    Local procedure to move a form with total sales only that has fallen into 
+    zone C up into zone A with the minimum possible score to get it there.
+============================================================================*/
+
+PROCEDURE lp_total_sales_rezone ()=
+
+DECLARE lp_return        = INTEGER4  NOT NULL WITH DEFAULT
+
+{
+  UPDATE contributor_period
+     SET correct_date = '',
+         corr_week_no = 0
+   WHERE contributor_reference = :h_contributor_reference
+     AND period = :h_period;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0 
+  THEN 
+    h_text = 'ERROR: Failed to update with correct date and week '
+            + 'on contributor_period for contributor ' 
+    	    + VARCHAR(:h_contributor_reference) + ' for question '
+      	    + VARCHAR(:h_question) + ' in period '
+    	    + VARCHAR(:h_period) + '.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN 9;
+  ENDIF;
+
+  IF h_zone != 'A'
+  THEN
+    UPDATE bto_reference_score
+       SET score = (:h_threshold + 0.001),
+           zone  = 'A'
+     WHERE contributor_reference = :h_contributor_reference
+       AND period = :h_period;
+
+    lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF lp_return != 0 
+    THEN 
+      h_text = 'ERROR: Failed to update with new score and zone '
+              + 'on bto_reference_score for contributor ' 
+    	      + VARCHAR(:h_contributor_reference) + ' in period '
+    	      + VARCHAR(:h_period) + '.';
+      CALLPROC write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+  RETURN 0;
+}
+
+/*===========================================================================
+    Local procedure to move a form that needs data continuity checking that 
+    has fallen into zone C up into zone A with the minimum possible score.
+============================================================================*/
+
+PROCEDURE lp_continuity_rezone ()=
+
+DECLARE lp_return        = INTEGER4  NOT NULL WITH DEFAULT
+
+{
+  IF h_zone = 'A'
+  THEN
+     
+    UPDATE bto_reference_score
+    SET    marker = 'D'
+    WHERE contributor_reference = :h_contributor_reference
+      AND period = :h_period;
+
+  ELSE /* can only be zone C if not in A */
+
+    UPDATE bto_reference_score
+    SET    marker = 'D',
+           zone = 'A',
+           score = (:h_threshold + 0.001)
+    WHERE contributor_reference = :h_contributor_reference
+      AND period = :h_period;
+    
+    lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF lp_return != 0 
+    THEN 
+      h_text = 'ERROR: Failed to update with new score, marker and zone '
+              + 'on bto_reference_score for contributor ' 
+    	      + VARCHAR(:h_contributor_reference) + ' in period '
+    	      + VARCHAR(:h_period) + '.';
+      CALLPROC write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+
+/*===========================================================================
+    Local procedure to clear down tables for a test run.
+============================================================================*/
+
+PROCEDURE lp_testing_cleardown ()=
+
+{
+
+    MESSAGE 'Clearing score tables for testing. . .';
+
+    MODIFY bto_question_score TO TRUNCATED; COMMIT;
+    h_text = 'PRO: Truncated bto_question_score for test run.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+    MODIFY bto_reference_score TO TRUNCATED; COMMIT;
+    h_text = 'PRO: Truncated bto_reference_score for test run.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+    MODIFY bto_scoring_debug TO TRUNCATED; COMMIT;
+    h_text = 'PRO: Truncated bto_scoring_debug for test run.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+    MODIFY avalue_autoedit TO TRUNCATED; COMMIT;
+    h_text = 'PRO: Truncated avalue_autoedit for test run.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+    MODIFY avalue_autoedit TO BTREE ON contributor, question, period; COMMIT;
+    h_text = 'PRO: Modified avalue_autoedit to btree for test run.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+    MODIFY bto_reference_acu TO TRUNCATED; COMMIT;
+    h_text = 'PRO: Truncated bto_reference_acu for test run.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+    MODIFY bto_reference_acu TO BTREE ON contributor, period, acu; COMMIT;
+    h_text = 'PRO: Modified bto_reference_acu to btree for test run.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+    MODIFY bto_scanning_errors TO TRUNCATED; COMMIT;
+    h_text = 'PRO: Truncated bto_scanning_errors for test run.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+    MODIFY bto_scanning_errors TO BTREE 
+        ON contributor_reference, period, contributor_industry; COMMIT;
+    h_text = 'PRO: Modified bto_scanning_errors to btree for test run.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+    MODIFY bto_scanning_debug TO TRUNCATED; COMMIT;
+    h_text = 'PRO: Truncated bto_scanning_debug for test run.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+    MODIFY bto_unscored TO TRUNCATED; COMMIT;
+    h_text = 'PRO: Truncated bto_unscored for test run.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+    MODIFY bto_unscored TO BTREE 
+        ON contributor_reference, period, time; COMMIT;
+    h_text = 'PRO: Modified bto_unscored to btree for test run.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+    MODIFY bto_unscored_cleared TO TRUNCATED; COMMIT;
+    h_text = 'PRO: Truncated bto_unscored_cleared for test run.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+    MODIFY bto_unscored_cleared TO BTREE 
+        ON contributor_reference, period, contributor_industry; COMMIT;
+    h_text = 'PRO: Modified bto_unscored_cleared '
+            + 'to btree for test run.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+    MODIFY bto_enforcement TO TRUNCATED; COMMIT;
+    h_text = 'PRO: Truncated bto_enforcement for test run.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+    MODIFY bto_front_page_only TO TRUNCATED; COMMIT;
+    h_text = 'PRO: Truncated bto_front_page_only for test run.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+}
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_num_row    = BYREF(:h_num_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+/*=======================================================================
+    Local procedure to write to audit trail in batch run mode.
+=======================================================================*/
+
+PROCEDURE lp_write_to_audit_trail
+        ( p_contributor_reference = CHAR(11)    NOT NULL WITH DEFAULT,
+          p_question              = INTEGER4    NOT NULL WITH DEFAULT,
+          p_period                = INTEGER4    NOT NULL WITH DEFAULT,
+          p_code                  = INTEGER1    NOT NULL WITH DEFAULT,
+          p_val_1                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_val_2                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_frpr_name             = VARCHAR(36) NOT NULL WITH DEFAULT )=
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC write_to_audit_trail 
+            ( p_contributor_reference = :p_contributor_reference, 
+              p_question              = :p_question,
+              p_period                = :p_period,
+              p_code                  = :p_code, 
+              p_val_1                 = :p_val_1,
+              p_val_2                 = :p_val_2,
+              p_frpr_name             = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

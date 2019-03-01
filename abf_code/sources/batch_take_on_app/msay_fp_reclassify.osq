@@ -1,0 +1,792 @@
+PROCEDURE msay_fp_reclassify 
+        ( p_contributor_reference = CHAR(11) NOT NULL,
+          p_period                = INTEGER4 NOT NULL,
+          p_contributor_industry  = INTEGER4 NOT NULL,
+          p_alt_industry          = INTEGER4 NOT NULL,
+          p_reclassified          = CHAR(1) NOT NULL,
+          p_out_of_scope          = CHAR(1) NOT NULL) =
+
+DECLARE 
+  h_frpr_name           = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_subclass            = INTEGER4     NOT NULL WITH DEFAULT,
+  h_debug               = VARCHAR(160) NOT NULL WITH DEFAULT,
+  h_return               = INTEGER1    NOT NULL WITH DEFAULT,
+  h_max_period          = INTEGER4     NOT NULL WITH DEFAULT,
+  h_table1              = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_table2              = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_table3              = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_table4              = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_changed             = CHAR(1)      NOT NULL WITH DEFAULT,
+  h_section             = CHAR(1)      NOT NULL WITH DEFAULT,
+  h_count               = INTEGER1     NOT NULL WITH DEFAULT,
+  h_division            = INTEGER1     NOT NULL WITH DEFAULT,
+  h_grp                 = INTEGER4     NOT NULL WITH DEFAULT,
+  h_class               = INTEGER4     NOT NULL WITH DEFAULT,
+  h_merchanted          = INTEGER4     NOT NULL WITH DEFAULT,
+  h_avalue              = INTEGER4     NOT NULL WITH DEFAULT,
+  h_services            = INTEGER4     NOT NULL WITH DEFAULT,
+  h_work_done           = INTEGER4     NOT NULL WITH DEFAULT,
+  h_waste               = INTEGER4     NOT NULL WITH DEFAULT,
+  h_total_sales         = INTEGER4     NOT NULL WITH DEFAULT,
+  h_question            = INTEGER4     NOT NULL WITH DEFAULT,
+  h_proposed_class      = INTEGER4     NOT NULL WITH DEFAULT,
+  h_prin_class          = INTEGER4     NOT NULL WITH DEFAULT,
+  h_prin_group          = INTEGER4     NOT NULL WITH DEFAULT,
+  h_prin_division       = INTEGER1     NOT NULL WITH DEFAULT,
+  h_prin_section        = CHAR(1)      NOT NULL WITH DEFAULT,
+  h_prin_subclass_value = INTEGER4     NOT NULL WITH DEFAULT,
+  h_prin_class_value    = INTEGER4     NOT NULL WITH DEFAULT,
+  h_prin_group_value    = INTEGER4     NOT NULL WITH DEFAULT,
+  h_prin_division_value = INTEGER4     NOT NULL WITH DEFAULT,
+  h_prin_section_value  = INTEGER4     NOT NULL WITH DEFAULT,
+  h_merchanted_perc     = FLOAT8       NOT NULL WITH DEFAULT,
+  h_work_done_perc      = FLOAT8       NOT NULL WITH DEFAULT,
+  h_waste_perc          = FLOAT8       NOT NULL WITH DEFAULT,
+  h_services_perc       = FLOAT8       NOT NULL WITH DEFAULT,
+  h_stand_head_perc     = FLOAT8       NOT NULL WITH DEFAULT,
+
+  lp_drop_tt_tables       = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,  
+  lp_error_check          = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name = 'msay_fp_reclassify';
+
+  h_table1  = 'tt_reclass_1';
+  h_table2  = 'tt_reclass_2';
+  h_table3  = 'tt_reclass_3';
+  h_table4  = 'tt_reclass_4';
+  h_changed = 'n';
+
+  p_out_of_scope = 'n';
+  p_reclassified = 'n';
+
+  /*-------------------------------------------------------------------------
+     Drops all temp tables if they exist.
+  -------------------------------------------------------------------------*/
+
+  h_return = CALLPROC lp_drop_tt_tables();
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by local procedure */
+    RETURN 9;
+  ENDIF;
+   
+  /*--------------------------------------------------------------
+    Remove entry if already on reclass_contrib
+  --------------------------------------------------------------*/
+
+  DELETE FROM reclass_contrib
+  WHERE  contributor_reference = :p_contributor_reference
+    AND  period = :p_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug =  'ERROR: Failed to delete from reclass_contrib.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*--------------------------------------------------------------
+    Create temp table 3
+  --------------------------------------------------------------*/
+
+  CREATE TABLE :h_table3
+  AS 
+  SELECT question,
+         contributor_industry,
+         question_industry,
+         quest_order,
+         avalue
+  FROM   bto_question
+  WHERE  contributor_reference = :p_contributor_reference
+    AND  period                = :p_period;
+       
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug =  'ERROR: Failed to create ' + :h_table3 +'.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Load standard headings
+  ------------------------------------------------------------------*/
+
+  h_merchanted = 0;
+  h_work_done = 0;
+  h_waste = 0;
+  h_services = 0;
+  h_total_sales = 0;
+
+  SELECT question AS h_question,
+         avalue   AS h_avalue
+  FROM   :h_table3
+  WHERE  quest_order != 1
+  BEGIN
+
+    IF MOD(:h_question,10000) = 9301
+    THEN
+      h_merchanted = :h_avalue;
+    ELSEIF MOD(:h_question,10000) = 9401
+    THEN
+      h_work_done = :h_avalue;
+    ELSEIF MOD(:h_question,10000) = 9501
+    THEN
+      h_waste = :h_avalue;
+    ELSEIF MOD(:h_question,10000) = 9601
+    THEN
+      h_services = :h_avalue;
+    ELSEIF MOD(:h_question,10000) = 9200
+    THEN
+      h_total_sales = :h_avalue;
+    ENDIF;
+
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug = 'ERROR: Failed to load standard headings '
+            + 'for contributor ' +:p_contributor_reference +' '
+            + 'in period ' +VARCHAR(:p_period) +'.';
+    CALLPROC write_to_process_log
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Test for out-of-scope
+  ------------------------------------------------------------------*/
+
+  IF :h_total_sales = 0
+  THEN
+    h_merchanted_perc = 0;
+    h_work_done_perc  = 0;
+    h_waste_perc      = 0;
+    h_services_perc   = 0;
+    h_stand_head_perc = 0;
+  ELSE
+    h_merchanted_perc = (:h_merchanted * 100) / :h_total_sales;
+    h_work_done_perc  = (:h_work_done * 100)  / :h_total_sales;
+    h_waste_perc      = (:h_waste * 100)      / :h_total_sales;
+    h_services_perc   = (:h_services * 100)   / :h_total_sales;
+    h_stand_head_perc = ((:h_merchanted + :h_waste + :h_services) * 100) 
+                      / :h_total_sales;
+  ENDIF;
+
+  IF :h_merchanted_perc > 85
+  THEN
+    p_out_of_scope = 'y';
+  ENDIF;
+
+  IF :h_waste_perc > 60
+  THEN
+    p_out_of_scope = 'y';
+  ENDIF;
+
+  IF :h_services_perc > 60
+  THEN
+    p_out_of_scope = 'y';
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Test if standard headings collectively exceed cutoff
+  ------------------------------------------------------------------*/
+
+  IF  :p_out_of_scope    = 'n'
+  AND :h_stand_head_perc > 85
+  THEN
+    p_out_of_scope = 'y';
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Deal with out of scopes.
+  ------------------------------------------------------------------*/
+
+  IF :p_out_of_scope = 'y'
+  THEN
+
+    INSERT INTO reclass_contrib 
+              ( contributor_reference,
+                period,
+                inquiry,
+                current_ind,
+                current_ind_perc,
+                proposed_ind,
+                proposed_ind_perc,
+                action_date,
+                action,
+                user_id)
+    VALUES (    :p_contributor_reference,
+                :p_period,
+                14,
+                :p_alt_industry,
+                0,
+                111111111,
+                0,
+                'now',
+                'NON PROD',
+                :g_user_id);
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_debug = 'ERROR: Failed to insert out-of-scope into reclass_contrib '
+              + 'for contributor ' +:p_contributor_reference +' '
+              + 'in period ' +VARCHAR(:p_period) +'.';
+      CALLPROC write_to_process_log
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+      RETURN h_return;
+    ENDIF;
+
+    RETURN 0;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Only reclassify if the period is the latest one that has been
+     receipted. 
+  ------------------------------------------------------------------*/
+
+  SELECT IFNULL(MAX(period),0) AS h_max_period
+  FROM   contributor_period
+  WHERE  contributor_reference = :p_contributor_reference
+    AND  receipt_date != '';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug = 'ERROR: Failed to select from contributor_period '
+            + 'for contributor ' +:p_contributor_reference +' '
+            + 'in period ' +VARCHAR(:p_period) +'.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+      RETURN h_return;
+    ENDIF;
+
+  IF :h_max_period != :p_period
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+     Drops all temp tables if they exist.
+  -------------------------------------------------------------------------*/
+
+  h_return = CALLPROC lp_drop_tt_tables();
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by local procedure */
+    RETURN 9;
+  ENDIF;
+   
+  /*--------------------------------------------------------------
+     Create table for this Contributor from bto_question
+  --------------------------------------------------------------*/
+
+  CREATE TABLE :h_table1
+  AS 
+  SELECT question,
+         contributor_industry,
+         question_industry,
+         quest_order,
+         avalue
+  FROM   bto_question
+  WHERE  contributor_reference = :p_contributor_reference
+    AND  period                = :p_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug = 'ERROR: Failed to select from bto_question '
+            + 'for contributor ' +:p_contributor_reference +' '
+            + 'in period ' +VARCHAR(:p_period) +'.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Create temporary table to hold all grps/divisions/etc
+  ------------------------------------------------------------------*/
+
+  CREATE TABLE :h_table2
+  AS 
+  SELECT a.question,
+         a.contributor_industry,
+         a.question_industry,
+         a.avalue,
+         b.section,
+         (a.question_industry/1000) AS division,
+         (a.question_industry/100) AS grp,
+         (a.question_industry/10) AS class
+  FROM   :h_table1 a,
+         top_down_lookup b
+  WHERE  a.question_industry/1000 = b.division
+    AND  a.quest_order = 1
+    AND  MOD(a.question,10) = 1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed to create ' + :h_table2 +' '
+            + 'for contributor ' +:p_contributor_reference +' '
+            + 'in period ' +VARCHAR(:p_period) +'.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ELSEIF h_return = 1
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Update question_industry to its IDBR one (e.g. 15110 --> 15111)
+  ------------------------------------------------------------------*/
+
+  UPDATE :h_table2 a
+  FROM   question_levels b
+  SET    question_industry = b.question_subclass
+  WHERE  a.question = b.question;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed to update ' +:h_table2 +' with question_subclass '
+            + 'for contributor ' +:p_contributor_reference +' '
+            + 'in period ' +VARCHAR(:p_period) +'.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Find what categories principal products are in
+  ------------------------------------------------------------------*/
+
+  h_prin_class = :p_contributor_industry / 10;
+  h_prin_group = :p_contributor_industry / 100;
+  h_prin_division = :p_contributor_industry / 1000;
+
+  SELECT section AS h_prin_section
+  FROM   top_down_lookup
+  WHERE  division = :p_contributor_industry / 1000;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug = 'ERROR: Failed to calculate principal section '
+            + 'for contributor ' +:p_contributor_reference +' '
+            + 'in period ' +VARCHAR(:p_period) +'.';
+    CALLPROC write_to_process_log
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Find value of principal products - ALT INDUSTRY (i.e. industry
+     selected by IDBR)
+  ------------------------------------------------------------------*/
+
+  SELECT IFNULL(SUM(avalue),0) AS h_prin_subclass_value
+  FROM   :h_table2
+  WHERE  question_industry = :p_alt_industry;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed to calculate Prin Ind values '
+            + 'for contributor ' +:p_contributor_reference +' '
+            + 'in period ' +VARCHAR(:p_period) +'.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Find value of principal products - CLASS
+  ------------------------------------------------------------------*/
+
+  SELECT IFNULL(SUM(avalue),0) AS h_prin_class_value
+  FROM   :h_table2
+  WHERE  class = :h_prin_class;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed to calculate Prin Class values '
+            + 'for contributor ' +:p_contributor_reference +' '
+            + 'in period ' +VARCHAR(:p_period) +'.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Find value of principal products - GROUP
+  ------------------------------------------------------------------*/
+
+  SELECT IFNULL(SUM(avalue),0) AS h_prin_group_value
+  FROM   :h_table2
+  WHERE  grp = :h_prin_group;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed to calculate Prin Group values '
+            + 'for contributor ' +:p_contributor_reference +' '
+            + 'in period ' +VARCHAR(:p_period) +'.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Find value of principal products - DIVISION
+  ------------------------------------------------------------------*/
+
+  SELECT IFNULL(SUM(avalue),0) AS h_prin_division_value
+  FROM   :h_table2
+  WHERE  division = :h_prin_division;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed to calculate Prin Div values '
+            + 'for contributor ' +:p_contributor_reference +' '
+            + 'in period ' +VARCHAR(:p_period) +'.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Find value of principal products - SECTION
+  ------------------------------------------------------------------*/
+
+  SELECT IFNULL(SUM(avalue),0) AS h_prin_section_value
+  FROM   :h_table2
+  WHERE  section = :h_prin_section;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed to calculate Prin Section values '
+            + 'for contributor ' +:p_contributor_reference +' '
+            + 'in period ' +VARCHAR(:p_period) +'.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Find section that most Sales are in:
+     If not > 105% of current section, current section stays the max.
+  ------------------------------------------------------------------*/
+
+  SELECT   SUM(avalue) as h_avalue,
+           section AS h_section
+  FROM     :h_table2
+  GROUP BY section
+  ORDER BY h_avalue DESC;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed to select section from ' + :h_table2 + ' '
+            + 'for contributor ' +:p_contributor_reference +' '
+            + 'in period ' +VARCHAR(:p_period) +'.';
+    CALLPROC write_to_process_log
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  IF  :h_section != :h_prin_section
+  AND FLOAT8(:h_avalue) > FLOAT8(:h_prin_section_value) * 1.05
+  THEN
+    h_changed = 'y';
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Find division that most Sales for that section are in.
+     If you haven't changed, then if > 105% of current division,
+     change sections
+  ------------------------------------------------------------------*/
+
+  SELECT   SUM(avalue) as h_avalue,
+           division AS h_division
+  FROM     :h_table2
+  WHERE    section = :h_section
+  GROUP BY division
+  ORDER BY h_avalue DESC;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed to select division from ' + :h_table2 + ' '
+            + 'for contributor ' +:p_contributor_reference +' '
+            + 'in period ' +VARCHAR(:p_period) +'.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  IF  :h_changed = 'n'
+  AND :h_division != :h_prin_division
+  AND FLOAT8(:h_avalue) > FLOAT8(:h_prin_division_value) * 1.05
+  THEN
+    h_changed = 'y';
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Find grp that most Sales for that division are in.
+     If you haven't changed, then if > 105% of current group,
+     change groups
+  ------------------------------------------------------------------*/
+
+  SELECT   SUM(avalue) as h_avalue,
+           grp AS h_grp
+  FROM     :h_table2
+  WHERE    division = :h_division
+  GROUP BY grp
+  ORDER BY h_avalue DESC;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed to select group from ' + :h_table2 + ' '
+            + 'for contributor ' +:p_contributor_reference +' '
+            + 'in period ' +VARCHAR(:p_period) +'.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  IF  :h_changed = 'n'
+  AND :h_grp != :h_prin_group
+  AND FLOAT8(:h_avalue) > FLOAT8(:h_prin_group_value) * 1.05
+  THEN
+    h_changed = 'y';
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Find Class that most Sales for that group are in.
+     If you haven't changed, then if > 105% of current class,
+     change classes
+  ------------------------------------------------------------------*/
+
+  SELECT   SUM(avalue) as h_avalue,
+           class AS h_class
+  FROM     :h_table2
+  WHERE    grp = :h_grp
+  GROUP BY class
+  ORDER BY h_avalue DESC;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed to select class from ' + :h_table2 + ' '
+            + 'for contributor ' +:p_contributor_reference +' '
+            + 'in period ' +VARCHAR(:p_period) +'.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  IF  :h_changed = 'n'
+  AND :h_class != :h_prin_class
+  AND FLOAT8(:h_avalue) > FLOAT8(:h_prin_class_value) * 1.05
+  THEN
+    h_changed = 'y';
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Find Subclass that most Sales for that class are in:
+     1.  If you haven't changed, then if > 105% of current class,
+         change classes.
+     2.  If you have changed, change classes regardless.
+  ------------------------------------------------------------------*/
+
+  SELECT   SUM(avalue) as h_avalue,
+           question_industry AS h_subclass
+  FROM     :h_table2
+  WHERE    class = :h_class
+  GROUP BY question_industry
+  ORDER BY h_avalue DESC;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed to select subclass from ' + :h_table2 + ' '
+            + 'for contributor ' +:p_contributor_reference +' '
+            + 'in period ' +VARCHAR(:p_period) +'.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  IF  :h_changed = 'n'
+  AND :h_subclass != :p_alt_industry
+  AND FLOAT8(:h_avalue) > FLOAT8(:h_prin_subclass_value) * 1.05
+  THEN
+    h_changed = 'y';
+  ENDIF;
+
+  IF :h_changed = 'n'
+  THEN
+
+    h_return = CALLPROC lp_drop_tt_tables ();
+
+    IF h_return != 0
+    THEN
+      /* Error reporting handled by local procedure */
+      RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+
+  ENDIF;
+
+  p_reclassified = 'y';
+
+  INSERT INTO reclass_contrib 
+            ( contributor_reference,
+              period,
+              inquiry,
+              current_ind,
+              current_ind_perc,
+              proposed_ind,
+              proposed_ind_perc,
+              action_date,
+              action,
+              user_id)
+  VALUES (    :p_contributor_reference,
+              :p_period,
+              14,
+              :p_alt_industry,
+               0,
+              :h_subclass,
+              0,
+              'now',
+              'WAITING',
+              'prodlive');
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug = 'ERROR: Failed to insert reclass into reclass_contrib '
+            + 'for contributor ' +:p_contributor_reference +' '
+            + 'in period ' +VARCHAR(:p_period) +'.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_return = CALLPROC lp_drop_tt_tables ();
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by local procedure */
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+
+/*===========================================================================
+	   Local procedure for dropping any existing temp tables
+============================================================================*/
+
+PROCEDURE lp_drop_tt_tables() = 
+
+DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_fp_drop_table (p_table = :h_table1);
+
+  IF lp_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN 9;
+  ENDIF; 
+
+  lp_return = CALLPROC batch_fp_drop_table (p_table = :h_table2);
+
+  IF lp_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN 9;
+  ENDIF;
+
+  lp_return = CALLPROC batch_fp_drop_table (p_table = :h_table3);
+
+  IF lp_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN 9;
+  ENDIF; 
+
+  lp_return = CALLPROC batch_fp_drop_table (p_table = :h_table4);
+  
+  IF lp_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN 9;
+  ENDIF; 
+
+  RETURN 0;
+
+}
+

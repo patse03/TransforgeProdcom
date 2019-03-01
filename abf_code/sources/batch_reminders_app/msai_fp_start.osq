@@ -1,0 +1,193 @@
+/*-s--------------------------------------------------------------------
+This procedure is the top procedure of the application.
+
+e.g. $IMAGES/batch_reminders_app -dprodlivedb -a 14 200500 1
+
+where:
+
+     200500   = period
+     1        = rem_type: 1 = 1st reminders
+                          2 = 2nd reminders
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msai_fp_start () =
+
+DECLARE ret_val              = INTEGER1 NOT NULL,
+        h_param_list         = VARCHAR(200) NOT NULL,
+        h_varchar_variable   = VARCHAR(200) NOT NULL,
+        h_integer_variable   = INTEGER4 NOT NULL,
+        h_param1             = VARCHAR(10) NOT NULL,
+        h_param2             = VARCHAR(10) NOT NULL,
+        h_param3             = VARCHAR(10) NOT NULL,
+        h_frpr_name          = VARCHAR(25) NOT NULL
+
+{
+    h_frpr_name = 'msai_fp_start';
+    g_analysts_table = 'rem_data_analysts';
+
+    SELECT DBMSINFO('username') AS g_user_id;
+    SELECT DBMSINFO('database') AS g_database;
+
+    MESSAGE 'Checking Parameters . . .';
+
+    /*-s----------------------------------------------------------------
+    Select the parameters from the UNIX line
+    ----------------------------------------------------------------e-*/
+
+    h_param_list = CALLPROC COMMANDLINEPARAMETERS();
+
+    h_varchar_variable = SQUEEZE (h_param_list);
+
+    h_integer_variable = LOCATE (h_varchar_variable, ' ');
+    h_param1           = LEFT   (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = SHIFT  (h_varchar_variable, - h_integer_variable);
+
+    h_integer_variable = LOCATE (h_varchar_variable, ' ');
+    h_param2           = LEFT   (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = SHIFT  (h_varchar_variable, - h_integer_variable);
+
+    h_integer_variable = LOCATE (h_varchar_variable, ' ');
+    h_param3           = LEFT   (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = SHIFT  (h_varchar_variable, - h_integer_variable);
+
+    g_inquiry = INT1(:h_param1);
+    g_period = INT4(:h_param2);
+    g_type = INT1(:h_param3);
+
+    /*-s----------------------------------------------------------------
+    Check parameters
+    ----------------------------------------------------------------e-*/
+
+    IF :g_inquiry <> 14 AND :g_inquiry <> 15
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid Inquiry = ' + VARCHAR(:g_inquiry),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    SELECT period AS :g_period
+    FROM   inquiry_period
+    WHERE  period = :g_period
+    AND    inquiry = :g_inquiry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+             h_num_row_ck = 1,
+             h_commit     = 'Y',
+             h_rollback   = 'N',
+             h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'System error accessing inquiry_period',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+
+    ELSEIF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid Period = ' + VARCHAR(:g_period),
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF :g_type <> 1 AND :g_type <> 2
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid RemType = ' + VARCHAR(:g_type),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    INSERT INTO error_log
+    VALUES(     'now',
+               'Reminders: Inq = ' + VARCHAR(:g_inquiry) +
+               ', Period = ' + VARCHAR(:g_period) +
+               ', RemType = ' + VARCHAR(:g_type),
+               :h_frpr_name,
+               0,
+               :g_user_id);
+    COMMIT;
+
+    /*------------------------------------------------------------------
+    Work out what form-should-have-been-returned-by-date should be
+    printed on the form
+    ------------------------------------------------------------------*/
+
+    IF :g_inquiry = 14
+    THEN
+        g_date = DATE('01/02/' + VARCHAR((:g_period/100)+1));
+    ELSE
+        IF MOD(:g_period,100) = 3
+        THEN
+            g_date = DATE('14/04/' + VARCHAR(:g_period/100));
+
+        ELSEIF MOD(g_period,100) = 6
+        THEN
+            g_date = DATE('14/07/' + VARCHAR(:g_period/100));
+
+        ELSEIF MOD(g_period,100) = 9
+        THEN
+            g_date = DATE('14/10/' + VARCHAR(:g_period/100));
+
+        ELSE
+            g_date = DATE('14/01/' + VARCHAR((:g_period/100)+1));
+
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Create table to hold the data analysts
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Creating Analyst Table . . .';
+
+    ret_val = CALLPROC batch_fp_drop_table (
+              h_table = :g_analysts_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_get_analysts (
+              h_contributor_industry = 'ALL',
+              h_table                = :g_analysts_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val =  CALLPROC msai_fp_reminders ();
+
+    IF ret_val = 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                   'Reminders Run Ends OK',
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+        COMMIT;
+    ENDIF;
+
+    RETURN 0;
+}

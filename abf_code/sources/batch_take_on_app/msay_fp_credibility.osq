@@ -1,0 +1,1532 @@
+PROCEDURE msay_fp_credibility 
+        ( p_contributor_reference = CHAR(11) NOT NULL,
+          p_period                = INTEGER4 NOT NULL,
+          p_question              = INTEGER4 NOT NULL,
+          p_quest_order           = INTEGER1 NOT NULL,
+          p_register_emp          = INTEGER4 NOT NULL,
+          p_value_of_01           = INTEGER4 NOT NULL,
+          p_total_of_01           = INTEGER4 NOT NULL,
+          p_total_sales           = INTEGER4 NOT NULL,
+          p_new_total_sales       = INTEGER4 NOT NULL,
+          p_atypical              = CHAR(1)  NOT NULL,
+          p_avalue                = INTEGER4 NOT NULL,
+          p_acell                 = CHAR(2)  NOT NULL,
+          p_acell_type            = CHAR(2)  NOT NULL) =
+
+DECLARE 
+  h_return              = INTEGER1     NOT NULL WITH DEFAULT,
+  h_retries_allowed     = INTEGER1     NOT NULL WITH DEFAULT,
+  h_mpi_cong_flag       = CHAR(1)      NOT NULL WITH DEFAULT,
+  h_waste_ind           = INTEGER4     NOT NULL WITH DEFAULT,
+  h_rounded             = CHAR(1)      NOT NULL WITH DEFAULT,
+  h_retries             = INTEGER1     NOT NULL WITH DEFAULT,
+  h_retry_or_not        = CHAR(5)      NOT NULL WITH DEFAULT,
+  h_frpr_name           = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_debug               = VARCHAR(160) NOT NULL WITH DEFAULT,
+  h_prev_period         = INTEGER4     NOT NULL WITH DEFAULT,
+  h_avalue              = INTEGER4     NOT NULL WITH DEFAULT,
+  h_fvalue              = INTEGER4     NOT NULL WITH DEFAULT,
+  h_key_responder       = CHAR(1)      NOT NULL WITH DEFAULT,
+  h_prev_found          = CHAR(1)      NOT NULL WITH DEFAULT,
+  h_prev_value          = INTEGER4     NOT NULL WITH DEFAULT,
+  h_prev_emp            = INTEGER4     NOT NULL WITH DEFAULT,
+  h_prev_value_of_01    = INTEGER4     NOT NULL WITH DEFAULT,
+  h_prev_tot_sales      = INTEGER4     NOT NULL WITH DEFAULT,
+  h_search_question     = INTEGER4     NOT NULL WITH DEFAULT,
+  h_span_start          = INTEGER4     NOT NULL WITH DEFAULT,
+  h_old_value           = INTEGER4     NOT NULL WITH DEFAULT,
+  h_old_volume          = INTEGER4     NOT NULL WITH DEFAULT,
+  h_old_period          = INTEGER4     NOT NULL WITH DEFAULT,
+  h_unit_changed_period = INTEGER4     NOT NULL WITH DEFAULT,
+  h_difference          = FLOAT8       NOT NULL WITH DEFAULT,
+  h_perc                = FLOAT8       NOT NULL WITH DEFAULT,
+  h_prev_uv             = FLOAT8       NOT NULL WITH DEFAULT,
+  h_curr_uv             = FLOAT8       NOT NULL WITH DEFAULT,
+  h_prev_sph            = FLOAT8       NOT NULL WITH DEFAULT,
+  h_curr_sph            = FLOAT8       NOT NULL WITH DEFAULT,
+  h_output_category     = CHAR(1)      NOT NULL WITH DEFAULT,
+  h_diff_01             = INTEGER4     NOT NULL WITH DEFAULT,
+  h_perc_diff           = FLOAT8       NOT NULL WITH DEFAULT,
+  h_minimum_change      = INTEGER4     NOT NULL WITH DEFAULT,
+  h_maximum_value       = INTEGER4     NOT NULL WITH DEFAULT,
+  h_increase            = INTEGER4     NOT NULL WITH DEFAULT,
+  h_decrease            = INTEGER4     NOT NULL WITH DEFAULT,
+  h_uv_increase         = INTEGER4     NOT NULL WITH DEFAULT,
+  h_uv_decrease         = INTEGER4     NOT NULL WITH DEFAULT,
+  h_sph_increase        = INTEGER4     NOT NULL WITH DEFAULT,
+  h_sph_decrease        = INTEGER4     NOT NULL WITH DEFAULT,
+  h_new_uv_range_from   = FLOAT8       NOT NULL WITH DEFAULT,
+  h_new_uv_range_to     = FLOAT8       NOT NULL WITH DEFAULT,
+  h_new_sph_range_from  = INTEGER4     NOT NULL WITH DEFAULT,
+  h_new_sph_range_to    = INTEGER4     NOT NULL WITH DEFAULT,
+  h_mpi_total_turnover  = INTEGER4     NOT NULL WITH DEFAULT,
+ 
+  lp_error_check          = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_delete_autoedit      = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_insert_autoedit      = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_write_to_audit_trail = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+
+  h_frpr_name = 'msay_fp_credibility';
+  h_retries_allowed = 3;
+  p_atypical = '';
+  p_new_total_sales = 0;
+  h_prev_period = :p_period - 100;
+
+  /*------------------------------------------------------------------
+    Set up the default BYREF variables for an OK value.
+    If the value is NOT OK, the variables will be changed later on
+  ------------------------------------------------------------------*/
+
+  IF p_avalue = 0
+  THEN
+    p_acell = 'Z';
+  ELSE
+    p_acell = 'V';
+  ENDIF;
+
+  p_acell_type = '';
+
+  /*------------------------------------------------------------------
+    If it's a volume that's changed its units for a particular period,
+    quit without doing any checking
+  ------------------------------------------------------------------*/
+
+  IF MOD(:p_question,10) = 2 
+  OR MOD(:p_question,10) = 4
+  OR MOD(:p_question,10) = 5 
+  OR MOD(:p_question,10) = 6
+  OR MOD(:p_question,10) = 8
+  THEN
+
+    SELECT period AS h_unit_changed_period
+    FROM   takeon_unit_changes
+    WHERE  question = :p_question;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return > 1
+    THEN
+      h_debug = 'ERROR: Failed to access takeon_unit_changes.';
+      CALLPROC write_to_process_log
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+      RETURN 9;
+    ELSEIF h_return = 1
+    THEN
+      h_unit_changed_period = 0;
+    ENDIF;
+
+    /*..............................................................
+      Quit if the current period is the unit-changed-for period
+    ..............................................................*/
+
+    IF h_unit_changed_period = :p_period
+    THEN
+      RETURN 0;
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Find out if contributor had this question last period
+    ------------------------------------------------------------------*/
+
+  IF p_quest_order = 1
+  THEN
+
+    SELECT avalue       AS h_prev_value,
+           register_emp AS h_prev_emp
+    FROM   cqpv a,
+           contributor_period b
+    WHERE  a.contributor_reference = :p_contributor_reference
+      AND  a.period = :h_prev_period
+      AND  b.period = :h_prev_period
+      AND  a.question = :p_question
+      AND  a.acell != 'N'
+      AND  a.contributor_reference = b.contributor_reference
+
+    UNION
+
+    SELECT avalue AS h_prev_value,
+	   register_emp AS h_prev_emp
+    FROM   cqpv a,
+           question_history b,
+           contributor_period c
+    WHERE  a.contributor_reference = :p_contributor_reference
+      AND  a.contributor_reference = c.contributor_reference
+      AND  b.period       = :p_period
+      AND  a.period       = :h_prev_period
+      AND  c.period       = :h_prev_period
+      AND  a.question     = b.old_question
+      AND  b.new_question = :p_question
+      AND  b.rep_type     = 1
+      AND  a.acell       != 'N'
+
+    UNION
+
+    SELECT SUM(avalue) AS h_prev_value,
+           register_emp AS h_prev_emp
+    FROM   cqpv a,
+           question_history b,
+           contributor_period c
+    WHERE  a.contributor_reference = :p_contributor_reference
+      AND  b.period = :p_period
+      AND  a.period = :h_prev_period
+      AND  a.question = b.old_question
+      AND  b.new_question = :p_question
+      AND  b.rep_type = 2
+      AND  a.acell != 'N'
+      AND  a.contributor_reference = c.contributor_reference
+      AND  c.period = :h_prev_period
+
+    GROUP 
+       BY  a.period,
+           c.register_emp;
+
+  ELSE
+
+    /*...................................................................
+      Standard headings: have to allow for reclassifications so
+      that 155209801 is compared with 159809801
+    ...................................................................*/
+
+    SELECT avalue AS h_prev_value,
+           register_emp AS h_prev_emp
+    FROM   cqpv a,
+           contributor_period b
+    WHERE  a.contributor_reference = :p_contributor_reference
+      AND  a.quest_order = :p_quest_order
+      AND  MOD(a.question,10000) = MOD(:p_question,10000)
+      AND  a.period = :h_prev_period
+      AND  a.acell != 'N'
+      AND  a.contributor_reference = b.contributor_reference
+      AND  a.period = b.period;
+
+  ENDIF;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed to access previous value on cqpv.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN 9;
+  ELSEIF h_return = 1
+  THEN
+    h_prev_found = 'n';
+  ELSE
+    h_prev_found = 'y';
+  ENDIF;
+
+  IF MOD(p_question,10) = 5 
+  OR MOD(p_question,10) = 6
+  OR MOD(p_question,10) = 8
+  THEN
+    IF h_prev_value = 0
+    THEN
+      h_prev_found = 'n';
+    ENDIF;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    If it's a volume, get the most recent Unit Value you can.
+    This means looking back on cqpv over the span looking for where
+    both the value and the volume are non-zero.
+  ------------------------------------------------------------------*/
+
+  IF  (MOD(p_question,10) = 2 OR MOD(p_question,10) = 4) 
+  AND h_prev_found = 'y'
+  THEN
+
+    h_span_start = :p_period - 100;
+
+    h_prev_value = -1;
+    h_prev_value_of_01 = -1;
+
+    SELECT a.avalue as h_old_value,
+           b.avalue as h_old_volume,
+           a.period AS h_old_period
+    FROM   cqpv a,
+           cqpv b
+    WHERE  a.contributor_reference = :p_contributor_reference
+      AND  a.contributor_reference = b.contributor_Reference
+      AND  a.question = b.question / 10 * 10 + 1
+      AND  b.question = :p_question
+      AND  a.period = b.period
+      AND  a.period BETWEEN :h_span_start AND :h_prev_period
+      AND  a.period >= :h_unit_changed_period
+
+    UNION
+
+    SELECT a.avalue as h_old_value,
+           b.avalue as h_old_volume,
+           a.period AS h_old_period
+    FROM   cqpv a,
+           cqpv b,
+           question_history c
+    WHERE  a.contributor_reference = :p_contributor_reference
+      AND  a.contributor_reference = b.contributor_Reference
+      AND  a.question = b.question / 10 * 10 + 1
+      AND  b.question = c.old_question
+      AND  c.new_question = :p_question
+      AND  a.period = b.period
+      AND  a.period BETWEEN :h_span_start AND :h_prev_period
+      AND  a.period >= :h_unit_changed_period
+      AND  c.rep_type = 1
+
+    UNION
+
+    SELECT SUM(a.avalue) AS h_old_value,
+           SUM(b.avalue) AS h_old_volume,
+           a.period      AS h_old_period
+    FROM   cqpv a,
+           cqpv b,
+           question_history c
+    WHERE  a.contributor_reference = :p_contributor_reference
+      AND  a.contributor_reference = b.contributor_Reference
+      AND  a.question = b.question / 10 * 10 + 1
+      AND  b.question = c.old_question
+      AND  c.new_question = :p_question
+      AND  a.period = b.period
+      AND  a.period BETWEEN :h_span_start AND :h_prev_period
+      AND  a.period >= :h_unit_changed_period
+      AND  c.rep_type = 2
+
+    GROUP BY a.period 
+    ORDER BY h_old_period DESC
+    BEGIN
+
+      IF (h_old_value != 0 AND h_old_volume != 0)
+      OR (h_old_value  = 0 AND h_old_volume  = 0)
+      THEN
+        h_prev_value = h_old_volume;
+        h_prev_value_of_01 = h_old_value;
+        ENDLOOP;
+      ENDIF;
+
+    END;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return > 1
+    THEN
+      h_debug = 'ERROR: Failed to select old values from cqpv.';
+      CALLPROC write_to_process_log
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+      RETURN 9;
+    ELSEIF h_return = 1
+    THEN
+      h_prev_found = 'n';
+    ENDIF;
+
+    /*--------------------------------------------------------------
+        If no matching >0 value and volume are found, then there's no
+        UV checking to be done
+    --------------------------------------------------------------*/
+
+    IF h_prev_value       = -1 
+    OR h_prev_value_of_01 = -1
+    THEN
+      h_prev_found = 'n';
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    If it's the employment question, get the previous period's
+    TOTAL SALES value for the SPH checks
+  ------------------------------------------------------------------*/
+
+  IF p_quest_order = 10
+  THEN
+
+    SELECT avalue       AS h_prev_tot_sales,
+           register_emp AS h_prev_emp
+    FROM   cqpv a,
+           contributor_period b
+    WHERE  a.contributor_reference = :p_contributor_reference
+      AND  a.quest_order = 10
+      AND  a.avalue != 0
+      AND  a.period = :h_prev_period
+      AND  b.period = :h_prev_period
+      AND  a.contributor_reference = b.contributor_reference;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return > 1
+    THEN
+      h_debug = 'ERROR: Failed to select total sales from cqpv.';
+      CALLPROC write_to_process_log
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+      RETURN 9;
+    ELSEIF h_return = 1
+    THEN
+      h_prev_found = 'n';
+      ENDIF;
+    ENDIF;
+
+  /*------------------------------------------------------------------
+    Find if contributor is key to this question.
+  ------------------------------------------------------------------*/
+
+  h_key_responder = 'n';
+
+  IF MOD(p_question,10) > 1
+  THEN
+    h_search_question = :p_question / 10 * 10 + 1;
+  ELSE
+    h_search_question = :p_question;
+  ENDIF;
+
+  SELECT question AS h_search_question
+  FROM   key_responder_data
+  WHERE  contributor_reference = :p_contributor_reference
+    AND  question   = :h_search_question
+    AND  for_period = :p_period;    
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 0);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed selecting from key_responder_data.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN 9;
+  ELSEIF h_return = 1
+  THEN
+    h_key_responder = 'y';
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    If it is a New contributor, make the form fail. Value must be 
+    confirmed before form can be cleared.
+  ------------------------------------------------------------------*/
+
+  SELECT output_category AS h_output_category
+  FROM   contributor_period
+  WHERE  contributor_reference = :p_contributor_reference
+    AND  period = :p_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed selecting from output_category.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN 9;
+  ENDIF;
+
+  IF (p_question = 285109401 AND h_output_category = 'C' AND p_avalue > 0)
+  OR (p_question = 285109401 AND h_output_category = 'G' AND p_avalue > 0)
+  OR (p_question = 285109401 AND h_output_category = 'W' AND p_avalue > 0)
+  THEN
+    p_acell = 'U';
+    RETURN 0;
+  ENDIF;
+       
+  /*------------------------------------------------------------------
+	A SPECIAL WASTE PRODUCT question is available to contributors
+	in the industries below:
+	15310, 15320, 15330, 15610, 15970, 20100, 20200, 20300, 
+	20400, 20510, 25130, 26110, 26120, 26130, 26140 and 26150
+	Here the standard waste products question is forced to 
+ 	fail when a value exists for those industries.
+  ------------------------------------------------------------------*/
+
+  IF  mod(p_question,10000) = 9501
+  AND p_avalue > 0
+  THEN
+
+    SELECT industry as h_waste_ind
+    FROM special_waste_inds
+    WHERE industry = :p_question/10000;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 0);
+
+    IF h_return > 1
+    THEN
+      h_debug = 'ERROR: Failed selecting from special_waste_inds.';
+      CALLPROC write_to_process_log
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+      RETURN 9;
+    ELSEIF h_return = 1
+    THEN
+      p_acell = 'U';
+      RETURN 0;
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Get Credibility Values
+  ------------------------------------------------------------------*/
+
+  h_minimum_change     = 0;
+  h_maximum_value      = 0;
+  h_increase           = 0;
+  h_decrease           = 0;
+  h_uv_increase        = 0;
+  h_uv_decrease        = 0;
+  h_sph_increase       = 0;
+  h_sph_decrease       = 0;
+  h_new_uv_range_from  = 0;
+  h_new_uv_range_to    = 0;
+  h_new_sph_range_from = 0;
+  h_new_sph_range_to   = 0;
+
+  IF h_key_responder = 'y'
+  THEN
+
+    SELECT key_minimum_change     AS h_minimum_change,
+           key_maximum_value      AS h_maximum_value,
+           key_increase           AS h_increase,
+           key_decrease           AS h_decrease,
+           key_uv_increase        AS h_uv_increase,
+           key_uv_decrease        AS h_uv_decrease,
+           sph_increase           AS h_sph_increase,
+           sph_decrease           AS h_sph_decrease,
+           new_uv_range_from      AS h_new_uv_range_from,
+           new_uv_range_to        AS h_new_uv_range_to,
+           new_sph_range_from     AS h_new_sph_range_from,
+           new_sph_range_to       AS h_new_sph_range_to
+    FROM   credibility
+    WHERE  question = :p_question;
+
+  ELSE
+
+    SELECT minimum_change     AS h_minimum_change,
+           maximum_value      AS h_maximum_value,
+           increase           AS h_increase,
+           decrease           AS h_decrease,
+           uv_increase        AS h_uv_increase,
+           uv_decrease        AS h_uv_decrease,
+           sph_increase       AS h_sph_increase,
+           sph_decrease       AS h_sph_decrease,
+           new_uv_range_from  AS h_new_uv_range_from,
+           new_uv_range_to    AS h_new_uv_range_to,
+           new_sph_range_from AS h_new_sph_range_from,
+           new_sph_range_to   AS h_new_sph_range_to
+    FROM   credibility
+    WHERE  question = :p_question;
+
+  ENDIF;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed selecting from credibility.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN
+
+    /*--------------------------------------------------------------
+        If the question does not exist, put out an error message
+    --------------------------------------------------------------*/
+
+    h_debug = 'NOTE: Failed to find question ' +:p_question +' '
+            + 'on credibility table.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+    p_acell = 'U';
+
+    RETURN 0;
+
+  ENDIF;
+
+
+  /*------------------------------------------------------------------
+    Zero Total Sales replaced by sum of totals. 
+    This will be P marked and used for validation. If validation fails,
+    the total will be reset to zero and the U mark and p_acell_type
+    applied as appropriate.
+  ------------------------------------------------------------------*/
+
+  IF p_quest_order = 10 AND p_avalue = 0
+  THEN
+    p_acell_type = '0';
+    p_acell = 'P';
+    p_avalue = :p_total_of_01;
+    p_total_sales = :p_total_of_01;
+    p_new_total_sales = :p_total_of_01;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    If still zero (genuine zero) then mark as uncleared and exit.
+  ------------------------------------------------------------------*/
+
+  IF p_quest_order = 10 AND p_avalue = 0
+  THEN
+    p_acell = 'U';
+    p_acell_type = '0';
+    RETURN 0;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    If returned value is obviously 1000 to big, then devide down as 
+    very likely exact value returned in place of pound thousands.
+
+    If that returns a zero, treat as genuine zero as above.
+  ------------------------------------------------------------------*/
+
+  h_rounded = 'N';
+  h_fvalue  = :p_avalue;
+
+  IF  h_prev_found = 'y'
+  AND MOD(p_question,10) != 2 
+  AND MOD(p_question,10) != 4  
+	  
+  THEN
+
+    IF  p_avalue > (650 * :h_prev_value) 
+    AND p_avalue < (1350 * :h_prev_value) 
+    AND p_avalue != 0
+    THEN
+      
+      p_avalue = int8((:p_avalue/1000)+0.5);
+
+      h_rounded = 'Y';
+
+      h_return = CALLPROC lp_insert_autoedit
+                 (p_text = 'Devided by 1000 to convert to pound thousands.');
+
+      IF h_return  != 0
+      THEN
+        /* Error reporting handled by local procedure */
+        RETURN 9;
+      ENDIF;
+
+    ENDIF;
+
+  ENDIF;  
+
+  /*------------------------------------------------------------------
+    Volumes need to go both ways. If they are obviously about 1000 
+    times too small, then multiply up.
+  ------------------------------------------------------------------*/
+
+  IF  h_prev_found = 'y'
+  AND ( MOD(p_question,10) = 2 OR 
+        MOD(p_question,10) = 4 ) 
+  THEN
+
+    IF  p_avalue < ( :h_prev_value/650) 
+    AND p_avalue > (:h_prev_value/1350) 
+    AND p_avalue != 0
+    THEN
+        
+      p_avalue = int8((:p_avalue*1000));
+
+      h_rounded = 'Y';
+
+      h_return = CALLPROC lp_insert_autoedit
+                 (p_text = 'Multiplied by 1000 to convert volume units.');
+
+      IF h_return  != 0
+      THEN
+        /* Error reporting handled by local procedure */
+        RETURN 9;
+      ENDIF;
+	
+    ENDIF;  /* 650 - 1350 */
+
+  ENDIF;  /* Q type 2,4  - prev found = y */
+
+  /*------------------------------------------------------------------
+    If they are obviously about 1000 times too big, then devide down.
+  ------------------------------------------------------------------*/
+
+  IF  h_prev_found = 'y'
+  AND ( MOD(p_question,10) = 2 OR 
+        MOD(p_question,10) = 4 ) 
+  THEN
+
+    IF  p_avalue > (650 * :h_prev_value) 
+    AND p_avalue < (1350 * :h_prev_value) 
+    AND p_avalue != 0
+    THEN
+
+      p_avalue = int8((:p_avalue/1000));
+
+      h_rounded = 'Y';
+
+      h_return = CALLPROC lp_insert_autoedit
+                 (p_text = 'Devided by 1000 to convert volume units.'); 
+
+      IF h_return  != 0
+      THEN
+        /* Error reporting handled by local procedure */
+        RETURN 9;
+      ENDIF;
+	
+    ENDIF;  /* 650 - 1350 */
+
+  ENDIF;  /* Q type 2,4  - prev found = y */
+
+  /*------------------------------------------------------------------
+    Previous Value Exists - 9100 Employment
+    1. SPH Increase > Gate ---> 7
+    2. SPH Decrease > Gate ---> 8
+       & register_emp != returned_emp ---> '1' before cell code
+       & register_emp = returned_emp = 0 ---> '0'
+  ------------------------------------------------------------------*/
+
+  IF h_prev_found = 'y' AND p_quest_order = 10
+  THEN
+
+    IF p_register_emp = 0 OR p_total_sales = 0
+    THEN
+      h_curr_sph = 0;
+    ELSE
+      h_curr_sph = p_total_sales * 1.0 / p_register_emp;
+    ENDIF;
+
+    IF h_prev_emp = 0 OR h_prev_tot_sales = 0
+    THEN
+      h_prev_sph = 0;
+    ELSE
+      h_prev_sph = h_prev_tot_sales * 1.0 / h_prev_emp;
+    ENDIF;
+
+    h_difference = ABS(h_curr_sph - h_prev_sph);
+
+    IF h_difference != 0 and h_prev_sph != 0
+    THEN
+      h_perc = h_difference * 1.0 / h_prev_sph * 100 + 0.5;
+    ENDIF;
+
+    IF h_curr_sph > h_prev_sph
+    THEN
+
+      IF h_perc >= h_sph_increase
+      THEN
+
+        IF p_acell = 'P' 
+        THEN
+          p_avalue = 0; 
+
+          IF h_rounded = 'Y'
+          THEN
+            h_return = CALLPROC lp_delete_autoedit;
+
+            IF h_return  != 0
+            THEN
+              /* Error reporting handled by local procedure */
+              RETURN 9;
+            ENDIF;
+
+          ENDIF;   
+
+        ENDIF;  
+
+        p_acell = 'U';
+        p_acell_type = '7';
+
+      ENDIF; 
+
+    ELSE
+
+      IF h_perc >= h_sph_decrease
+      THEN
+
+        IF p_acell = 'P' 
+        THEN
+          p_avalue = 0; 
+
+          IF h_rounded = 'Y'
+          THEN
+            h_return = CALLPROC lp_delete_autoedit;
+
+            IF h_return  != 0
+            THEN
+              /* Error reporting handled by local procedure */
+              RETURN 9;
+            ENDIF;
+
+          ENDIF; 
+
+        ENDIF;  
+
+        p_acell = 'U';
+        p_acell_type = '8';
+
+      ENDIF; 
+
+    ENDIF; 
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    No Previous Value Exists - 9100 Employment
+    1. SPH under acceptable range ---> 9
+    2. SPH over acceptable range ---> 10
+       & register_emp != returned_emp ---> '1' before cell code
+       & register_emp = returned_emp = 0 ---> '0'
+  ------------------------------------------------------------------*/
+
+  IF h_prev_found = 'n' AND p_quest_order = 10
+  THEN
+
+    IF p_register_emp = 0 OR p_total_sales = 0
+    THEN
+      h_curr_sph = 0;
+    ELSE
+      h_curr_sph = p_total_sales / p_register_emp;
+    ENDIF;
+
+    IF h_curr_sph < h_new_sph_range_from
+    THEN
+
+      IF p_acell = 'P' 
+      THEN
+        p_avalue = 0; 
+
+        IF h_rounded = 'Y'
+        THEN
+          h_return = CALLPROC lp_delete_autoedit;
+
+          IF h_return  != 0
+          THEN
+            /* Error reporting handled by local procedure */
+            RETURN 9;
+          ENDIF;
+
+        ENDIF;
+
+      ENDIF; 
+
+      p_acell = 'U';
+      p_acell_type = '9';
+
+    ENDIF;
+
+    IF h_curr_sph > h_new_sph_range_to
+    THEN
+
+      IF p_acell = 'P' 
+      THEN
+        p_avalue = 0; 
+
+        IF h_rounded = 'Y'
+	THEN
+          h_return = CALLPROC lp_delete_autoedit;
+
+          IF h_return  != 0
+          THEN
+            /* Error reporting handled by local procedure */
+            RETURN 9;
+          ENDIF;
+
+        ENDIF;
+
+      ENDIF; 
+
+      p_acell = 'U';
+      p_acell_type = '10';
+
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Previous Value does not exist: Total Sales != Sum01s
+
+    If question you are on is 9200 then check to see the difference 
+    between total sales value - 'avalue' and the total of the 01 
+    questions. If the difference is 1 then make the total_sales equal 
+    the sum of the sales of 01 questions. Atypical column on cqpv is 
+    set to 'Y'
+  ------------------------------------------------------------------*/
+
+  IF  h_prev_found = 'n' 
+  AND p_quest_order = 10 
+  AND p_avalue != p_total_of_01
+  THEN
+    h_diff_01 = ABS(p_total_of_01 - p_avalue);
+     
+    IF h_diff_01 != 0 and p_total_of_01 != 0
+    THEN
+      h_perc_diff = float8(h_diff_01 * 1.0 / p_total_of_01 * 100);
+    ENDIF;
+
+    IF (h_diff_01 = 1) 
+    THEN
+      p_new_total_sales = p_total_of_01;
+      p_atypical = 'y';
+    ELSE
+      p_acell = '1V';
+      p_acell_type = '21';
+    ENDIF;
+
+    RETURN 0;
+
+  ENDIF;
+
+ /*------------------------------------------------------------------
+    No Previous Value Exists - 01 questions (not 9801s) and total sales
+    Just accept it
+  ------------------------------------------------------------------*/
+
+  IF   h_prev_found = 'n' 
+  AND (MOD(p_question,10) = 1 OR p_quest_order = 10)
+  AND p_quest_order != 8
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Previous Value Exists - 01 questions (not 9801s) and total sales
+    1. Retd 0 Previously & Difference > Min Change ---> 1
+    2. Difference > Min Change & Increase > Gate ---> 1
+    3. Difference > Min Change & Decrease > Gate ---> 2
+    4. Difference > Min Change & Decrease > Gate & Value = 0 ---> 0
+
+    plus: if it's total sales
+
+    4. Value != Sum of 01s ---> 21
+    5. Retd 0 Previously & Diff > Min Change & Value != SUm of 01s -> 22
+    6. Diff > Min Change & Increase > Gate & Value != Sum of 01s ---> 22
+    7. Diff > Min Change & Decrease > Gate & Value != Sum of 01s ---> 23
+  ------------------------------------------------------------------*/
+
+  IF   h_prev_found = 'y' 
+  AND (MOD(p_question,10) = 1 OR p_quest_order = 10)
+  AND p_quest_order != 8
+  THEN
+    h_difference = ABS(p_avalue - h_prev_value);
+
+    IF  h_prev_value = 0 
+    AND h_difference >= h_minimum_change
+    THEN
+      p_acell = 'U';
+      p_acell_type = '1';
+
+      IF p_acell = 'P' 
+      THEN
+        p_avalue = 0; 
+
+        IF h_rounded = 'Y'
+	THEN
+          h_return = CALLPROC lp_delete_autoedit;
+
+          IF h_return  != 0
+          THEN
+            /* Error reporting handled by local procedure */
+            RETURN 9;
+          ENDIF;
+
+        ENDIF;
+
+      ENDIF; 
+
+      IF  p_quest_order = 10 
+      AND p_avalue != p_total_of_01
+      THEN
+        h_diff_01 = ABS(p_total_of_01 - p_avalue);
+
+        IF  h_diff_01 != 0 
+        AND p_total_of_01 != 0
+	THEN
+          h_perc_diff = float8(h_diff_01 * 1.0 / p_total_of_01 * 100);
+	ENDIF; 
+
+        IF h_diff_01 = 1 
+        THEN
+          p_new_total_sales = p_total_of_01;
+          p_atypical = 'y';
+        ELSE
+          p_acell = '1' + p_acell;
+          p_acell_type = '22';
+        ENDIF;
+
+      ENDIF; /* End of  p_quest_order = 10 AND p_avalue != p_total_of_01 */ 
+
+      RETURN 0;
+
+    ENDIF; /* End of h_prev_value = 0 AND h_difference >= h_minimum_change */
+
+    IF h_difference >= h_minimum_change
+    THEN
+      h_perc = h_difference * 1.0 / h_prev_value * 100;
+
+      IF p_avalue > h_prev_value
+      THEN
+
+        IF h_perc >= h_increase
+        THEN
+          p_acell = 'U';
+          p_acell_type = '1';
+
+          IF p_acell = 'P' 
+	  THEN
+	    p_avalue = 0; 
+
+            IF h_rounded = 'Y'
+	    THEN
+              h_return = CALLPROC lp_delete_autoedit;
+
+              IF h_return  != 0
+              THEN
+                /* Error reporting handled by local procedure */
+                RETURN 9;
+              ENDIF;
+
+            ENDIF; /* Y */
+
+	  ENDIF; /* P */
+
+          IF  p_quest_order = 10 
+          AND p_avalue != p_total_of_01
+          THEN
+            h_diff_01 = ABS(p_total_of_01 - p_avalue);
+
+	    IF h_diff_01 != 0 AND p_total_of_01 != 0
+	    THEN
+              h_perc_diff = float8(h_diff_01 * 1.0 / p_total_of_01 * 100);
+	    ENDIF; 
+
+            IF h_diff_01 = 1 
+            THEN
+              p_new_total_sales = p_total_of_01;
+              p_atypical = 'y';
+            ELSE
+              p_acell = '1' + p_acell;
+              p_acell_type = '22';
+            ENDIF;
+
+          ENDIF; /* End of p_quest_order = 10 AND p_avalue != p_total_of_01 */
+
+          RETURN 0;
+
+        ENDIF; /* End of h_perc >= h_increase */
+
+      ELSE  /* p_avalue !> h_prev_value */
+
+        IF h_perc >= h_decrease
+        THEN
+
+          IF p_acell = 'P' 
+	  THEN
+	    p_avalue = 0; 
+
+            IF h_rounded = 'Y'
+            THEN
+              h_return = CALLPROC lp_delete_autoedit;
+
+              IF h_return  != 0
+              THEN
+                /* Error reporting handled by local procedure */
+                RETURN 9;
+              ENDIF;
+
+            ENDIF; /* Y */
+
+	  ENDIF; /* P */ 
+
+          p_acell = 'U';
+
+          IF p_avalue = 0
+          THEN
+            p_acell_type = '0';
+          ELSE
+            p_acell_type = '2';
+          ENDIF;
+
+          IF  p_quest_order = 10 
+          AND p_avalue != p_total_of_01
+          THEN
+            h_diff_01 = ABS(p_total_of_01 - p_avalue);
+
+            IF  h_diff_01 != 0 
+            AND p_total_of_01 != 0
+            THEN
+              h_perc_diff = float8(h_diff_01 * 1.0 / p_total_of_01 * 100);
+            ENDIF; 
+
+            IF h_diff_01 = 1 
+            THEN
+              p_new_total_sales = p_total_of_01;
+              p_atypical = 'y';
+            ELSE
+              p_acell = '1' + p_acell;
+              p_acell_type = '23';
+            ENDIF;
+
+          ENDIF; /* End of p_quest_order = 10 AND p_avalue != p_total_of_01 */
+
+          RETURN 0;
+
+        ENDIF; /* End of h_perc >= h_decrease */
+
+      ENDIF; /* End of p_avalue > h_prev_value */
+
+    ENDIF; /* End of h_difference >= h_minimum_change */
+
+    IF  p_quest_order = 10 
+    AND p_avalue != p_total_of_01
+    THEN
+      h_diff_01 = ABS(p_total_of_01 - p_avalue);
+
+      IF  h_diff_01 != 0 
+      AND p_total_of_01 != 0
+      THEN
+        h_perc_diff = float8(h_diff_01 * 1.0 / p_total_of_01 * 100);
+      ENDIF; 
+
+      IF h_diff_01 = 1 
+      THEN
+        p_new_total_sales = p_total_of_01;
+        p_atypical = 'y';
+      ELSE
+        p_acell = '1' + p_acell;
+        p_acell_type = '21';
+      ENDIF;
+
+    ENDIF; /* End of p_quest_order = 10 AND p_avalue != p_total_of_01 */
+
+    RETURN 0;
+
+  ENDIF; /* End of overall IF */
+
+  /*------------------------------------------------------------------
+    No Previous Value Exists - 05, 06 & 08 Volumes
+    Just accept it
+  ------------------------------------------------------------------*/
+
+  IF h_prev_found = 'n' 
+  AND ( MOD(p_question,10) = 5 OR 
+        MOD(p_question,10) = 6 OR 
+        MOD(p_question,10) = 8 )
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Previous Value Exists - 05, 06 & 08 Volumes
+    1. Increase > Gate ---> 1
+    2. Decrease > Gate ---> 2
+    3. Decrease > Gate & Value = 0 ---> 0
+  ------------------------------------------------------------------*/
+
+  IF  h_prev_found = 'y' 
+  AND ( MOD(p_question,10) = 5 OR 
+        MOD(p_question,10) = 6 OR 
+        MOD(p_question,10) = 8 )
+  THEN
+    h_difference = ABS(p_avalue - h_prev_value);
+
+    IF h_prev_value = 0 
+    OR h_difference = 0
+    THEN
+      h_perc = 0;
+    ELSE
+      h_perc = h_difference * 1.0 / h_prev_value * 100;
+    ENDIF;
+
+    IF p_avalue > h_prev_value
+    THEN
+
+      IF h_perc >= h_increase
+      THEN
+        p_acell = 'U';
+        p_acell_type = '1';
+        RETURN 0;
+      ENDIF;
+
+    ELSE
+
+      IF h_perc >= h_decrease
+      THEN
+        p_acell = 'U';
+
+        IF p_avalue = 0
+        THEN
+          p_acell_type = '0';
+        ELSE
+          p_acell_type = '2';
+        ENDIF;
+
+        RETURN 0;
+
+      ENDIF;
+
+    ENDIF; /* End of p_avalue > h_prev_value */
+
+    RETURN 0;
+
+  ENDIF; /* End of overall IF */
+
+  /*------------------------------------------------------------------
+    Previous Value Exists - 02 & 04 Volumes
+    1. UV Increase > Gate ---> 4
+    2. UV Decrease > Gate ---> 3
+  ------------------------------------------------------------------*/
+
+  IF  h_prev_found = 'y' 
+  AND ( MOD(p_question,10) = 2 OR
+        MOD(p_question,10) = 4 )
+  THEN
+
+    IF p_avalue = 0 
+    OR p_value_of_01 = 0
+    THEN
+      h_curr_uv = 0;
+    ELSE
+      h_curr_uv = p_value_of_01 * 1.0 / p_avalue * 1000;
+    ENDIF;
+
+    IF h_curr_uv = 0
+    THEN
+      RETURN 0;
+    ENDIF;
+
+    IF h_prev_value = 0 
+    OR h_prev_value_of_01 = 0
+    THEN
+      h_prev_uv = 0;
+    ELSE
+      h_prev_uv = h_prev_value_of_01 * 1.0 / h_prev_value * 1000;
+    ENDIF;
+
+    h_difference = ABS(h_curr_uv - h_prev_uv);
+
+    IF  h_prev_uv != 0 
+    AND h_difference != 0
+    THEN
+      h_perc = h_difference * 1.0 / h_prev_uv * 100;
+    ENDIF;
+
+    IF h_curr_uv > h_prev_uv
+    THEN
+
+      IF h_perc >= h_uv_increase
+      THEN
+        p_acell = 'U';
+        p_acell_type = '4';
+        RETURN 0;
+      ENDIF;
+
+    ELSE
+
+      IF h_perc >= h_uv_decrease
+      THEN
+        p_acell = 'U';
+        p_acell_type = '3';
+        RETURN 0;
+      ENDIF;
+
+    ENDIF; /* End of h_curr_uv > h_prev_uv */
+
+    RETURN 0;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    No Previous Value Exists - 02 & 04 Volumes
+    1. UV below acceptable range ---> 5
+    2. UV above acceptable range ---> 6
+  ------------------------------------------------------------------*/
+
+  IF  h_prev_found = 'n' 
+  AND ( MOD(p_question,10) = 2 OR 
+        MOD(p_question,10) = 4 )
+  THEN
+
+    IF  p_avalue = 0 
+    OR p_value_of_01 = 0
+    THEN
+      h_curr_uv = 0;
+    ELSE
+      h_curr_uv = p_value_of_01 * 1.0 / p_avalue * 1000;
+    ENDIF;
+
+    IF  h_curr_uv < h_new_uv_range_from 
+    AND h_curr_uv != 0
+    THEN
+      p_acell = 'U';
+      p_acell_type = '5';
+      RETURN 0;
+    ELSEIF h_curr_uv > h_new_uv_range_to
+    THEN
+      p_acell = 'U';
+      p_acell_type = '6';
+      RETURN 0;
+    ENDIF;
+
+    RETURN 0;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     No Previous Value Exists - 9801
+  ------------------------------------------------------------------*/
+
+  IF  h_prev_found = 'n' 
+  AND p_quest_order = 8
+  THEN
+
+    IF p_avalue >= h_maximum_value
+    THEN
+      p_acell = 'U';
+      p_acell_type = '11';
+      RETURN 0;
+    ENDIF;
+
+    RETURN 0;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Previous Value Exists - 9801
+  ------------------------------------------------------------------*/
+
+  IF  h_prev_found = 'y' 
+  AND p_quest_order = 8
+  THEN
+    h_difference = ABS(p_avalue - h_prev_value);
+
+    IF h_prev_value = 0 
+    THEN
+
+      IF h_difference >= h_minimum_change
+      THEN
+        p_acell = 'U';
+        p_acell_type = '1';
+
+        IF p_avalue >= h_maximum_value
+        THEN
+          p_acell_type = '12';
+        ENDIF;
+
+      ENDIF;
+
+      RETURN 0;
+
+    ENDIF; /* End of h_prev_value = 0 */
+
+    h_perc = h_difference * 1.0 / h_prev_value * 100;
+
+    IF p_avalue > h_prev_value
+    THEN
+
+      IF  h_perc >= h_increase 
+      AND h_difference >= h_minimum_change
+      THEN
+        p_acell = 'U';
+        p_acell_type = '1';
+
+        IF p_avalue >= h_maximum_value
+        THEN
+          p_acell_type = '12';
+        ENDIF;
+
+        RETURN 0;
+
+      ENDIF;
+
+    ELSE
+
+      IF  h_perc >= h_decrease 
+      AND h_difference >= h_minimum_change
+      THEN
+        p_acell = 'U';
+
+        IF p_avalue = 0
+        THEN
+          p_acell_type = '0';
+        ELSE
+          p_acell_type = '2';
+
+          IF p_avalue >= h_maximum_value
+          THEN
+            p_acell_type = '13';
+          ENDIF;
+
+        ENDIF;
+
+        RETURN 0;
+
+      ENDIF; /* h_perc >= h_decrease AND h_difference >= h_minimum_change */
+
+    ENDIF; /* End of p_avalue > h_prev_value */
+
+    IF p_avalue >= h_maximum_value
+    THEN
+      p_acell = 'U';
+      p_acell_type = '11';
+      RETURN 0;
+    ENDIF;
+
+    RETURN 0;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    If it's got to here and its not a P, it hasn't done any credibility
+  ------------------------------------------------------------------*/
+
+  IF p_acell = 'P' 
+  THEN 
+    RETURN 0; 
+  ENDIF; 
+
+  p_acell = 'U';
+
+  RETURN 0;
+
+}
+
+/************************** LOCAL PROCEDURES ***************************/
+
+/*=====================================================================
+     Local procedure to delete from avalue_autoedit. 
+======================================================================*/
+
+PROCEDURE lp_delete_autoedit ()=
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+BEGIN 
+
+  DELETE FROM avalue_autoedit
+  WHERE  contributor = :p_contributor_reference
+    AND  question = :p_question
+    AND  period = :p_period;
+                     
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0
+  THEN
+    h_debug = 'ERROR: Failed to delete from avalue_autoedit.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN lp_return;
+  ENDIF;
+
+  DELETE FROM audit_trail a
+  WHERE  a.contributor_reference = :p_contributor_reference
+    AND  a.question = :p_question
+    AND  a.period   = :p_period
+    AND  a.type     = 'AED'
+    AND  a.time     = (SELECT MAX(b.time)
+                       FROM   audit_trail b
+                       WHERE  b.contributor_reference = a.contributor_reference
+                         AND  b.question    = a.question
+                         AND  b.period      = a.period
+                         AND  b.type        = 'AED');
+                     
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0
+  THEN
+    h_debug = 'ERROR: Failed to delete last autoedit from audit trail.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN lp_return;
+  ENDIF;
+
+END
+
+/*=====================================================================
+     Local procedure to insert into avalue_autoedit. 
+======================================================================*/
+
+PROCEDURE lp_insert_autoedit (p_text = VARCHAR(80) NOT NULL WITH DEFAULT)=
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+BEGIN 
+
+  INSERT INTO avalue_autoedit
+  VALUES ( date('now'),
+           :p_contributor_reference,
+           :p_question,
+           :p_period,
+           :p_text);
+                     
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0
+  THEN
+    h_debug = 'ERROR: Unable to insert into avalue_autoedit.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN lp_return;
+  ENDIF;
+
+  lp_return = CALLPROC lp_write_to_audit_trail
+           ( p_contributor_reference = :p_contributor_reference,
+             p_question              = :p_question,
+             p_period                = :p_period,
+             p_val_1                 = :h_fvalue,
+             p_val_2                 = :p_avalue);
+
+  IF lp_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+
+/*=======================================================================
+    Local procedure to write to audit trail in batch run mode.
+=======================================================================*/
+
+PROCEDURE lp_write_to_audit_trail
+        ( p_contributor_reference = CHAR(11)    NOT NULL WITH DEFAULT,
+          p_question              = INTEGER4    NOT NULL WITH DEFAULT,
+          p_period                = INTEGER4    NOT NULL WITH DEFAULT,
+          p_code                  = INTEGER1    NOT NULL WITH DEFAULT,
+          p_val_1                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_val_2                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_frpr_name             = VARCHAR(36) NOT NULL WITH DEFAULT )=
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC write_to_audit_trail 
+            ( p_contributor_reference = :p_contributor_reference, 
+              p_question              = :p_question,
+              p_period                = :p_period,
+              p_code                  = 7, 
+              p_val_1                 = :p_val_1,
+              p_val_2                 = :p_val_2,
+              p_frpr_name             = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

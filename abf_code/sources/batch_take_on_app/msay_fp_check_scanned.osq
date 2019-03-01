@@ -1,0 +1,1645 @@
+/*----------------------------------------------------------------------
+Carries out checks on the scanned data.
+
+ A) Front Page Only returns are noted in bto_scanning_errors. (#7)
+
+ B) Makes a note of duplicate forms in scanning debug and error_log. (#8)
+
+Put forms directly into bto_scanning_errors if:
+
+ 1. The contributor_reference/period/inquiry/industry is invalid.
+
+Save contact info, then apply form status 1 to remaining forms, then
+
+Put forms into bto_scanning_errors if:
+
+ 2. Any duplicate questions are found.
+ 3. Code added to fail any previous periods forms before 199809 and
+    also 199700 due to new £000s forms going live
+ 4. Any question mismatches are found between cqpv & the scanned forms.
+ 5. Any invalid questions are found (they exist both on cqpv & the
+    scanned forms but shouldn't - i.e. they've been deleted from the
+    question_library after the forms have been sent out).
+ 6. A Euro form comes in for a period which does not have an exchange
+    rate.
+ 7+8  Moved from here. See A & B
+ 9. A completely blank form. This now needs to be a preval failure as
+    auto-confirm and zero-on-zero needs to be avoided in these cases.
+
+Finally, bto_duplicates and bto_scanning_errors feed in to a new table, 
+bto_unscored, before being truncated. This table, and its companion 
+bto_unscored_cleared are used to drive the new scanning_errors screen (that
+replaces the duplicates screen) and some counts on the management info screen.
+
+Added a debugging table so  we can track what is happening to specific
+references being processed as they are thrown out. Reason code
+correspons to above numbering. DF - June 2010
+----------------------------------------------------------------------*/
+
+PROCEDURE msay_fp_check_scanned () =
+
+DECLARE 
+  h_frpr_name      = VARCHAR(24)  NOT NULL,
+  h_temp_table     = VARCHAR(24)  NOT NULL,
+  h_input_table    = VARCHAR(24)  NOT NULL,
+  h_error_table    = VARCHAR(24)  NOT NULL,
+  h_mismatch_table = VARCHAR(24)  NOT NULL,
+  h_text           = VARCHAR(160) NOT NULL,
+  h_rows           = INTEGER4     NOT NULL,
+  h_num_rows       = INTEGER4     NOT NULL,
+  h_return         = INTEGER2     NOT NULL,
+  h_return2        = INTEGER2     NOT NULL,
+
+  lp_merge_tables         = PROCEDURE RETURNING INTEGER,
+  lp_error_check          = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_write_to_audit_trail = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name      = 'msay_fp_check_scanned';
+
+  h_temp_table     = 'temp_bto_errors';
+  h_input_table    = 'bto_scanned_input';
+  h_error_table    = 'bto_scanning_errors';
+  h_mismatch_table = 'bto_mismatches';
+
+  h_text = 'PRO: Running msay_fp_check_scanned.';
+  CALLPROC write_to_process_log 
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  /*------------------------------------------------------------------
+    A. Notes any Front Page Only returns in bto_scanning_debug and 
+       bto_scanning_errors.  This used to be at (7) but had to be moved.
+  ------------------------------------------------------------------*/
+
+  h_text = 'PRO: Checking for FPOs detected during data load.';
+  CALLPROC write_to_process_log 
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by external procedure */ 
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE :h_temp_table
+  AS 
+  SELECT a.contributor_reference,
+         a.period
+  FROM   bto_front_page_only a
+  WHERE  a.counter = :g_counter;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 0);
+
+  h_rows = :h_num_rows;
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create 7th instance of '+:h_temp_table+'.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+
+  ELSEIF h_return = 1
+  THEN
+
+    INSERT INTO bto_scanning_errors
+              ( time,
+                reason,
+                inquiry,
+                contributor_industry,
+                period,
+                contributor_reference,
+                phone_contact,
+                phone_area_code,
+                phone,
+                phone_extension,
+                fax_area_code,
+                fax,
+                email,
+                address_change,
+                lu_change,
+                comments,
+                extra_pages,
+                question,
+                avalue)
+    SELECT      'now',
+                'Front Page Only',
+                14,
+                00000,
+                a.period,
+                a.contributor_reference,
+                ' ',
+                ' ',
+                ' ',
+                ' ',
+                ' ',
+                ' ',
+                ' ',
+                ' ',
+                ' ',
+                ' ',
+                ' ',
+                000000000,
+                0
+    FROM        :h_temp_table a;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed on "A" stage insert into '+:h_error_table+'.';
+      CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    h_text = 'WARNING: ' +VARCHAR(:h_rows) +' ' 
+           + 'FRONT PAGE ONLY RETURNS DETECTED.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+    INSERT INTO bto_scanning_debug
+    SELECT 'now',
+           contributor_reference,
+           (period/100)*100,
+	   014,
+           7
+    FROM   :h_temp_table;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed on "A" stage insert into bto_scanning_debug';
+      CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    B. Make a note of duplicate forms in scanning debug and error_log 
+       This used to be at (8) but had to be moved.
+  ------------------------------------------------------------------*/
+
+  h_text = 'PRO: Checking for duplicate forms detected during data load.';
+  CALLPROC write_to_process_log 
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  INSERT INTO bto_scanning_debug
+  SELECT DISTINCT 'now',
+                  contributor_reference,
+                  (period/100)*100,
+	          014,
+	          8
+  FROM bto_duplicates; 
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed on "B" stage insert into '+:h_error_table+'.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_rows = :h_num_rows;
+
+  IF h_rows > 0
+  THEN
+    h_text = 'WARNING: ' + VARCHAR(:h_rows) 
+           + ' DUPLICATE RETURNS DETECTED.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    0. Delete any refs/periods that you're about to take on from the
+    bto_scanning_errors table
+  ------------------------------------------------------------------*/
+
+  h_text =  'PRO: Clearing error tables.';
+  CALLPROC write_to_process_log 
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE :h_temp_table
+  AS 
+  SELECT DISTINCT(contributor_reference),
+         period
+  FROM   :h_input_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text =  'ERROR: Failed to create original ' + :h_temp_table + '.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+
+  ELSEIF h_return = 1
+  THEN
+    h_text =  'BTO: No scanned references to take on.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+
+    h_return2 = CALLPROC lp_merge_tables ();
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed during lp_merge_tables (1). Exiting.';
+      CALLPROC write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN 9;
+    ENDIF;
+
+    h_text =  'PRO: Leaving msay_fp_check_scanning.';
+    CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+    RETURN 0;
+
+  ENDIF;
+
+  DELETE FROM :h_error_table a
+  WHERE  contributor_reference IN 
+         (SELECT contributor_reference
+          FROM   :h_temp_table b
+          WHERE  a.period = b.period);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text =  'ERROR: Failed whilst deleting from ' + :h_error_table +'.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    1. If any contributor/period/inquiry/industry scanned record does
+       not exist on contributor_period, lose them into an errorfile for
+       Control to look at.
+
+       Don't take on the data, don't receipt the form, don't update
+       any contact info or tick boxes. Don't pass go, don't collect
+       £200.
+  ------------------------------------------------------------------*/
+
+  h_text = 'PRO: Checking for invalid contributor/period/inquiry/industry.';
+  CALLPROC write_to_process_log 
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE :h_temp_table
+  AS 
+  SELECT DISTINCT(a.contributor_reference),
+         a.period
+  FROM   :h_input_table a
+  WHERE  a.contributor_reference NOT IN 
+         (SELECT contributor_reference
+          FROM   contributor_period b
+          WHERE  a.period = b.period
+            AND  a.inquiry = b.inquiry
+            AND  a.contributor_industry = b.contributor_industry);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 0);
+
+  h_rows = :h_num_rows;
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create 1st instance of '+:h_temp_table+'.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+
+  ELSEIF h_return = 1
+  THEN
+
+    INSERT INTO :h_error_table
+    SELECT DATE('now'),
+           'Invalid Ref Line',
+           a.*
+    FROM   :h_input_table a,
+           :h_temp_table b
+    WHERE  a.contributor_reference = b.contributor_reference
+      AND  a.period = b.period;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed on 1st stage insert into '
+             + :h_error_table + '.';
+      CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    INSERT INTO bto_scanning_debug
+    SELECT 'now',
+           contributor_reference,
+           (period/100)*100,
+           014,
+           1
+    FROM :h_temp_table;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 > 1 
+    THEN
+      h_text = 'ERROR: Failed to insert into bto_scanning_debug.';
+      CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    DELETE FROM :h_input_table a
+    WHERE  contributor_reference IN 
+           (SELECT contributor_reference
+            FROM   :h_temp_table b
+            WHERE  a.period = b.period);
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 > 1
+    THEN
+      h_text = 'ERROR: Failed on 1st stage delete from ' +:h_input_table +'.';
+      CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    h_text = 'WARNING: ' +VARCHAR(:h_rows) + ' INVALID REF/PER/IND/INQ.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  ENDIF;
+
+  /*..................................................................
+    Save the contact information & check boxes of all other forms
+    including the ones whose data will NOT be taken on because of 
+    data errors.
+  ..................................................................*/
+
+  h_text = 'PRO: Saving contact info.';
+  CALLPROC write_to_process_log 
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  h_return = CALLPROC msay_fp_up_contact_info ();
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN h_return;
+  ENDIF;
+
+  /*..................................................................
+    Mark all forms entering the main prevalidation checks (ie those not 
+    invalid refs, duplicates or front page only returns) with form status 
+    of 1. 
+  ..................................................................*/
+
+  h_text = 'PRO: Assigning form status 1 as appropriate.';
+  CALLPROC write_to_process_log 
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+
+  MESSAGE 'Assigning form status 1 . . .';
+
+  UPDATE contributor_period a
+  FROM   :h_input_table b
+  SET    form_status = 1
+  WHERE  a.contributor_reference = b.contributor_reference 
+    AND  a.period = b.period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  h_rows = :h_num_rows;
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed whilst updating with form status 1 ' 
+           + 'on contributor_period.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN 9;
+  ENDIF;
+
+  h_rows = :h_num_rows;
+
+  IF h_rows > 0
+  THEN
+    h_text = 'PRO: ' + VARCHAR(:h_rows) +' Forms assigned form status 1.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    2. If there are any duplicate questions within a form then lose
+       everything.
+  ------------------------------------------------------------------*/
+
+  h_text = 'PRO: Checking for duplicates.';
+  CALLPROC write_to_process_log 
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE :h_temp_table
+  AS 
+  SELECT DISTINCT a.contributor_reference,
+                  a.period
+  FROM  :h_input_table a
+  WHERE a.contributor_reference IN 
+      ( SELECT contributor_reference
+        FROM   :h_input_table b
+        WHERE  a.period = b.period
+          AND  a.question = b.question
+          AND  a.tid > b.tid);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 0);
+
+  h_rows = :h_num_rows;
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create 2nd instance of ' +:h_temp_table +'.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+
+  ELSEIF h_return = 1
+  THEN
+    INSERT INTO :h_error_table
+    SELECT DATE('now'),
+           'Duplicate Quests',
+           a.*
+    FROM   :h_input_table a,
+           :h_temp_table b
+    WHERE  a.contributor_reference = b.contributor_reference
+      AND  a.period = b.period;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 = 9
+    THEN
+      h_text = 'ERROR: Failed on 2nd stage insert into ' +:h_error_table + '.';
+      CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    INSERT INTO bto_scanning_debug
+    SELECT 'now',
+           contributor_reference,
+           (period/100)*100,
+           014,
+           2
+           FROM :h_temp_table;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 > 1
+    THEN
+      h_text = 'ERROR: Failed insert into bto_scanning_debug.';
+      CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    DELETE FROM :h_input_table a
+    WHERE  contributor_reference IN 
+        (  SELECT contributor_reference
+           FROM   :h_temp_table b
+           WHERE  a.period = b.period);
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed on 2nd stage delete from '
+             + :h_input_table + '.';
+      CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    h_text = 'WARNING: ' + VARCHAR(:h_rows) +' ' 
+           + 'REFERENCES WITH DUPLICATE QUESTIONS.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    3) Any forms from 199806 and before have to be failed and not
+       validated because FDU did not change the formtype number
+       when 199809 forms had £000s added to them.
+  ------------------------------------------------------------------*/
+
+  h_text = 'PRO: Checking for obsolete form types.';
+  CALLPROC write_to_process_log 
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_temp_table
+  AS 
+  SELECT DISTINCT contributor_reference,
+                  period
+  FROM   :h_input_table
+  WHERE  period <= 199806
+    AND  period != 199800;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 0);
+
+  h_rows = :h_num_rows;
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR Failed to create 3rd instance of '
+           + :h_temp_table + '.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+
+  ELSEIF h_return = 1
+  THEN
+
+    INSERT INTO :h_error_table
+    SELECT DATE('now'),
+           'Obsolete Form Type',
+           a.*
+    FROM   :h_input_table a,
+           :h_temp_table b
+    WHERE  a.contributor_reference = b.contributor_reference
+      AND  a.period = b.period;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 > 1
+    THEN
+      h_text = 'ERROR: Failed on 3rd stage insert into '
+             + :h_error_table + '.';
+      CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    INSERT INTO bto_scanning_debug
+    SELECT 'now',
+           contributor_reference,
+           (period/100)*100,
+           014,
+           3
+    FROM :h_temp_table;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed on 3rd stage insert into bto_scanning_debug';
+      CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    DELETE FROM :h_input_table a
+    WHERE  contributor_reference IN 
+        ( SELECT contributor_reference
+          FROM   :h_temp_table b
+          WHERE  a.period = b.period);
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed on 3rd stage delete from '
+             + :h_input_table + '.';
+      CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    h_text = 'WARNING: ' +VARCHAR(:h_rows) +' OBSOLETE FORMS FAILED.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+
+  ENDIF;
+
+  /*..................................................................
+     Modify
+  ..................................................................*/
+
+  MODIFY :h_input_table TO BTREE UNIQUE 
+      ON contributor_reference,
+         period,
+         question;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed whilst modifying ' + :h_input_table + '.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     4. Compare cqpv with the scanned forms to see if there are any
+        discrepancies. If cpqv has questions that aren't on the forms
+        OR the forms have questions that aren't on cqpv then DON'T
+        take the forms on. (Ignore uncoded entries).
+  ------------------------------------------------------------------*/
+
+  h_text = 'PRO: Checking for mismatches with cqpv.';
+  CALLPROC write_to_process_log 
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = :h_mismatch_table);
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_mismatch_table
+  AS 
+  SELECT a.contributor_reference,
+         a.contributor_industry,
+         a.period,
+         a.question,
+         'N' AS from_cqpv,
+         'N' AS from_scanned
+  FROM   cqpv a
+  WHERE  contributor_reference IN 
+      (  SELECT contributor_reference
+         FROM   :h_input_table b
+         WHERE  a.period = b.period);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create ' + :h_mismatch_table +'.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  MESSAGE 'Mismatches: from ' + :h_input_table + ' . . .';
+
+  INSERT INTO :h_mismatch_table
+  SELECT contributor_reference,
+         contributor_industry,
+         period,
+         question,
+         'N' AS from_cqpv,
+         'N' AS from_scanned
+  FROM   :h_input_table a
+  WHERE  contributor_reference NOT IN 
+      (  SELECT contributor_reference
+         FROM   :h_mismatch_table b
+         WHERE  a.period   = b.period
+           AND  a.question = b.question);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed inserting into ' + :h_mismatch_table +'.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  MESSAGE 'Mismatches: Modifying . . .';
+
+  MODIFY    :h_mismatch_table TO BTREE UNIQUE 
+      ON contributor_reference, period, question;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed whilst modifying ' +:h_mismatch_table +'.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  MESSAGE 'Mismatches: Deleting Uncoded Entries . . .';
+
+  DELETE FROM :h_mismatch_table
+  WHERE  question BETWEEN (contributor_industry * 10000 + 9701)
+                  AND     (contributor_industry * 10000 + 9791);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed whilst deleting uncoded entries from '
+           + :h_mismatch_table +'.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*..................................................................
+    Mark table if the question is on cqpv
+  ..................................................................*/
+
+  MESSAGE 'Mismatches: Updating from cqpv . . .';
+
+  UPDATE :h_mismatch_table a
+  FROM   cqpv b
+  SET    from_cqpv = 'Y'
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.period = b.period
+    AND  a.question = b.question;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed whilst updating from cqpv to ' 
+           + :h_mismatch_table +'.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*..................................................................
+    Mark table if the question is on :h_input_table
+  ..................................................................*/
+
+  MESSAGE 'Mismatches: Updating from ' + :h_input_table + ' . . .';
+
+  UPDATE :h_mismatch_table a
+  FROM   :h_input_table b
+  SET    from_scanned = 'Y'
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.period = b.period
+    AND  a.question = b.question;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed whilst updating ' +:h_mismatch_table +' ' 
+           + 'from ' +:h_input_table +'.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*..................................................................
+    Delete the questions that are on both cqpv and the scanned table.
+    This will leave the mis-matches.
+  ..................................................................*/
+
+  MESSAGE 'Mismatches: deleting matches . . .';
+
+  DELETE FROM :h_mismatch_table
+  WHERE  from_cqpv = 'Y'
+    AND  from_scanned = 'Y';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR Failed whilst deleting matches from '
+           + :h_mismatch_table + '.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*..................................................................
+    Lose any mismatches
+  ..................................................................*/
+
+  MESSAGE 'Mismatches: deleting mismatches . . .';
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE :h_temp_table
+  AS 
+  SELECT DISTINCT contributor_reference,
+                  period
+  FROM   :h_mismatch_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 0);
+
+  h_rows = :h_num_rows;
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed whilst creating 4th instance of '
+           + :h_temp_table + '.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+
+  ELSEIF h_return = 1
+  THEN
+
+    INSERT INTO :h_error_table
+    SELECT DATE('now'),
+           'Mismatch Quests',
+           a.*
+    FROM   :h_input_table a,
+           :h_temp_table b
+    WHERE  a.contributor_reference = b.contributor_reference
+      AND  a.period = b.period;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed on 4th stage insert into '
+             + :h_error_table + '.';
+      CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    INSERT INTO bto_scanning_debug
+    SELECT 'now',
+           contributor_reference,
+           (period/100)*100,
+           014,
+           4
+    FROM   :h_temp_table;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed on 4th stage insert into bto_scanning_debug.';
+      CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    DELETE FROM :h_input_table a
+    WHERE  contributor_reference IN 
+        (  SELECT contributor_reference
+           FROM   :h_temp_table b
+           WHERE  a.period = b.period);
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed on 4th stage delete from '
+             + :h_input_table + '.';
+      CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    h_text = 'WARNING: ' + VARCHAR(:h_rows) 
+                         + ' REFERENCES WITH QUESTION MISMATCHES.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  ENDIF;
+
+  /*..................................................................
+     Create bto_question from the scanned data.
+     bto_question will be used for all subsequent processing.
+  ..................................................................*/
+
+  MESSAGE 'Creating bto_question . . .';
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = 'bto_question');
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE bto_question
+  AS 
+  SELECT contributor_reference,
+         contributor_industry,
+         inquiry,
+         period,
+         question,
+         avalue,
+         INT4(0) AS evalue,
+         'N ' AS acell,
+         '  ' AS acell_type,
+         ' ' AS confirmation_code,
+         INT1(0) AS quest_order,
+         INT4(0) AS question_industry,
+         INT1(0) AS question_inquiry,
+         ' ' AS atypical,
+         avalue AS fvalue
+  FROM   :h_input_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create bto_question.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  MODIFY bto_question TO BTREE 
+      ON contributor_reference,question,period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to modify storage structure of bto_question.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*..................................................................
+     Update the bto_question with annual question details
+  ..................................................................*/
+
+  MESSAGE 'Updating bto_question with question details . . .';
+
+  UPDATE bto_question a
+  FROM   question_library b
+  SET    quest_order = b.quest_order,
+         question_industry = b.question_industry,
+         question_inquiry = b.inquiry
+  WHERE  a.question = b.question
+    AND  a.period = b.period
+    AND  a.inquiry = 14;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update bto_question with QL details.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*..................................................................
+     Update the bto_question for Uncoded Entries
+  ..................................................................*/
+
+  MESSAGE 'Uncoded Entries . . .';
+
+  UPDATE bto_question
+  SET    quest_order = 9,
+         acell = 'W',
+         acell_type = '0',
+         question_industry = contributor_industry
+  WHERE  question BETWEEN (contributor_industry * 10000 + 9701)
+                  AND     (contributor_industry * 10000 + 9791);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update bto_question with uncoded entries.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*..................................................................
+     Update the bto_question for 9100 questions on old forms
+  ..................................................................*/
+
+  UPDATE bto_question 
+  SET    quest_order = 11,
+         question_industry = int4(left(varchar(question),5))
+  WHERE  mod(question,10000) = 9100;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return = 9
+  THEN
+    h_text = 'ERROR: Failed to update bto_question with 9100 details';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    5. Invalid Questions: This is when the scanned questions match
+       what's on cqpv, but there are invalid questions on cqpv.
+       (This happens when questions are deleted from question_library
+        after the forms have been printed.)
+  ------------------------------------------------------------------*/
+
+  h_text = 'PRO: Checking for invalid questions.';
+  CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_temp_table
+  AS 
+  SELECT DISTINCT contributor_reference,
+                  period
+  FROM   bto_question
+  WHERE  quest_order = 0
+    AND  MOD(question,10000) != 9100;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 0);
+
+  h_rows = :h_num_rows;
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create 5th instance of ' 
+           + :h_temp_table +'.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+
+  ELSEIF h_return = 1
+  THEN
+    INSERT INTO :h_error_table
+    SELECT DATE('now'),
+           'Invalid Quests',
+           a.*
+    FROM   :h_input_table a,
+           :h_temp_table b
+    WHERE  a.contributor_reference = b.contributor_reference
+      AND  a.period = b.period;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 > 1
+    THEN
+      h_text = 'ERROR: Failed on 5th stage insert into '
+             + :h_error_table +'.';
+      CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    INSERT INTO bto_scanning_debug
+    SELECT 'now',
+           contributor_reference,
+           (period/100)*100,
+           014,
+           5
+    FROM   :h_temp_table;
+
+    DELETE FROM bto_question a
+    WHERE  contributor_reference IN 
+        (  SELECT contributor_reference
+           FROM   :h_temp_table b
+           WHERE  a.period = b.period);
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 > 1
+    THEN
+      h_text = 'ERROR: Failed on 5th stage insert into '
+             + :h_error_table +'.';
+      CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    h_text = 'WARNING: ' +VARCHAR(:h_rows) + ' '
+           + 'REFERENCES WITH INVALID QUESTIONS.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    6. If the form is a Euro form but there is no exchange rate for
+       the period of the form.
+  ------------------------------------------------------------------*/
+
+  h_text = 'PRO: Checking Euro exchange rates available.';
+  CALLPROC write_to_process_log 
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_temp_table
+  AS 
+  SELECT DISTINCT a.contributor_reference,
+                  a.period
+  FROM   bto_question a,
+         contributor_period b
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.period = b.period
+    AND  b.currency = 'E'
+    AND  a.period NOT IN 
+      (  SELECT period
+         FROM   euro_exchange_rate
+         WHERE  fixed = 'Y');
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 0);
+
+  h_rows = :h_num_rows;
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create 6th instance of ' +:h_temp_table +'.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+
+  ELSEIF h_return = 1
+  THEN
+
+    INSERT INTO :h_error_table
+    SELECT DATE('now'),
+           'No Exchange Rate',
+           a.*
+    FROM   :h_input_table a,
+           :h_temp_table b
+    WHERE  a.contributor_reference = b.contributor_reference
+      AND  a.period = b.period;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed on 6th stage insert into ' 
+             + :h_error_table +'.';
+      CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    INSERT INTO bto_scanning_debug
+    SELECT 'now',
+           contributor_reference,
+           (period/100)*100,
+           014,
+           6
+    FROM  :h_temp_table;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed on 6th stage insert into bto_scanning_debug.'; 
+      CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    DELETE FROM bto_question a
+    WHERE  contributor_reference IN 
+        (  SELECT contributor_reference
+           FROM   :h_temp_table b
+           WHERE  a.period = b.period);
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed on 6th stage delete from bto_question.';
+      CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    h_text = 'WARNING: ' + VARCHAR(:h_rows) +' ' 
+           + 'EURO FORMS WITH NO EXCHANGE RATE.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    9. If the form is completely blank, it is unscorable to protect it
+       from zero-on-zero and auto-confirm combinations.
+  ------------------------------------------------------------------*/
+
+  h_text = 'PRO: Checking for blank forms.';
+  CALLPROC write_to_process_log 
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_temp_table
+  AS 
+  SELECT DISTINCT contributor_reference,
+                  period
+  FROM   bto_question 
+  GROUP 
+     BY  contributor_reference, 
+         period
+  HAVING SUM(avalue) = 0;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 0);
+              
+  h_rows = :h_num_rows;
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create 9th instance of ' 
+           + :h_temp_table +'.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+
+  ELSEIF h_return = 1
+  THEN
+
+    INSERT INTO :h_error_table
+    SELECT DATE('now'),
+           'Blank Form',
+           a.*
+    FROM   :h_input_table a,
+           :h_temp_table b
+    WHERE  a.contributor_reference = b.contributor_reference
+      AND  a.period                = b.period;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed on 9th stage insert into ' 
+             + :h_error_table +'.';
+      CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    INSERT INTO bto_scanning_debug
+    SELECT 'now',
+           contributor_reference,
+           (period/100)*100,
+           014,
+           9
+    FROM :h_temp_table;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed on 9th stage insert into bto_scanning_debug.';
+      CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    DELETE FROM bto_question a
+    WHERE  contributor_reference IN 
+        (  SELECT contributor_reference
+           FROM   :h_temp_table b
+           WHERE  a.period = b.period);
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed on 9th stage delete from bto_question.';
+      CALLPROC write_to_process_log 
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN h_return2;
+    ENDIF;
+
+    h_text = 'WARNING: ' + VARCHAR(:h_rows) +' ' 
+           + 'BLANK FORMS WITH NO DATA OR ALL ZERO RETURNS.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Calls merge tables prior to leaving check_scanned.
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC lp_merge_tables ();
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed during lp_merge_tables (2). Exiting.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Th..th..thats all folks, return zero. Keep calm and carry on...
+  ------------------------------------------------------------------*/
+
+  h_text =  'PRO: Leaving check_scanning.';
+  CALLPROC write_to_process_log 
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  RETURN 0;
+
+}
+
+/*************************** LOCAL PROCEDURES *******************************/
+
+
+  /*==================================================================
+      Local procedure to create bto_unscored and tidy up temp tables. 
+
+      Finally, bto_duplicates and bto_scanning_errors feed in to a new 
+      table, bto_unscored, before being truncated. This table, and its 
+      companion bto_unscored_cleared are used to drive the new scanning 
+      errors screen (that replaces the duplicates screen) and some counts 
+      on the management info screen.
+  ==================================================================*/
+
+PROCEDURE lp_merge_tables () =
+
+DECLARE   lp_return                = INTEGER4    NOT NULL WITH DEFAULT,
+          lp_return2               = INTEGER4    NOT NULL WITH DEFAULT,
+          lp_period                = INTEGER4    NOT NULL WITH DEFAULT,
+          lp_form_status           = INTEGER1    NOT NULL WITH DEFAULT,
+          lp_contributor_reference = VARCHAR(11) NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = 0;
+
+  h_text = 'PRO: Merging bto_duplicates and bto_scanning_errors.';
+  CALLPROC write_to_process_log 
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  lp_return = CALLPROC batch_fp_drop_table (p_table = :h_temp_table);
+
+  IF lp_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN lp_return;
+  ENDIF;
+
+  CREATE TABLE :h_temp_table
+  AS
+  SELECT DISTINCT contributor_reference,
+                  period,
+                  contributor_industry,
+                  reason,
+                  time
+  FROM  bto_scanning_errors
+
+  UNION
+
+  SELECT DISTINCT contributor_reference,
+                  period,
+                  contributor_industry,
+                  'Duplicate Form' AS reason,
+                  time
+  FROM bto_duplicates; 
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to merge bto_duplicates and '
+           + 'bto_scanning_errors into '+:h_error_table+'.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN lp_return;
+  ENDIF;
+
+  h_text = 'PRO: Inserting merged data into bto_unscored.';
+  CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+
+  INSERT INTO bto_unscored
+  SELECT *
+  FROM   :h_temp_table; 
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to insert into bto_unscored from '
+           + :h_error_table +'.'; 
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN lp_return;
+
+  ELSEIF lp_return = 1
+  THEN
+    h_text = 'PRO: No data to insert into bto_unscored '
+           + '(All forms scorable).';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=0);
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Tidy up the tables.
+  ------------------------------------------------------------------*/
+
+  UPDATE bto_unscored a
+  FROM   contributor_period b
+  SET    contributor_industry = b. contributor_industry,
+         period = INTEGER(LEFT(VARCHAR(a.period),4)) * 100 
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  b.period = INTEGER(LEFT(VARCHAR(a.period),4)) * 100 
+    AND  a.reason = 'Front Page Only';
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to tidy up front paqe only on bto_unscored. ';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN lp_return;
+  ENDIF;
+
+  MODIFY bto_scanning_errors TO TRUNCATED; 
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to modify bto_scanning_errors to truncated.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN lp_return;
+  ENDIF;
+
+  MODIFY bto_duplicates TO TRUNCATED; commit;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to modify bto_duplicates to truncated.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN lp_return;
+  ENDIF;
+
+  MODIFY bto_unscored TO BTREE 
+      ON period, contributor_reference, time; 
+    
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to modify bto_unscored to btree.';
+    CALLPROC write_to_process_log 
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN lp_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Write prevalidation fails to audit trail.
+  ------------------------------------------------------------------*/
+
+  SELECT DISTINCT a.contributor_reference AS lp_contributor_reference,
+                  a.period                AS lp_period,
+                  b.form_status           AS lp_form_status
+  FROM   bto_unscored a,
+         contributor_period b
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.period = b.period
+    AND  a.time > :g_batch_date
+  BEGIN 
+
+    lp_return2 = CALLPROC lp_write_to_audit_trail
+              ( p_contributor_reference = :lp_contributor_reference,
+                p_period                = :lp_period,
+                p_val_2                 = :lp_form_status,
+                p_code                  = 4);
+
+    IF lp_return2 != 0
+    THEN
+      /* Error reported by external procedure */
+      RETURN 9;
+    ENDIF;
+
+  END; 
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to select for audit trail loop.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:lp_return);
+    RETURN lp_return;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_num_row    = BYREF(:h_num_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+
+/*=======================================================================
+    Local procedure to write to audit trail.
+=======================================================================*/
+
+PROCEDURE lp_write_to_audit_trail
+        ( p_contributor_reference = CHAR(11)    NOT NULL WITH DEFAULT,
+          p_question              = INTEGER4    NOT NULL WITH DEFAULT,
+          p_period                = INTEGER4    NOT NULL WITH DEFAULT,
+          p_code                  = INTEGER1    NOT NULL WITH DEFAULT,
+          p_val_1                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_val_2                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_val_3                 = VARCHAR(20) NOT NULL WITH DEFAULT,
+          p_frpr_name             = VARCHAR(36) NOT NULL WITH DEFAULT )=
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC write_to_audit_trail 
+            ( p_contributor_reference = :p_contributor_reference, 
+              p_question              = :p_question,
+              p_period                = :p_period,
+              p_code                  = :p_code, 
+              p_val_1                 = :p_val_1,
+              p_val_2                 = :p_val_2,
+              p_val_3                 = :p_val_3,
+              p_frpr_name             = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+

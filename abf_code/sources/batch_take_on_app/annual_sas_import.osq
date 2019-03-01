@@ -1,0 +1,1552 @@
+
+PROCEDURE annual_sas_import () =
+
+DECLARE h_frpr_name             = VARCHAR(24)  NOT NULL WITH DEFAULT,
+        h_reset                 = INTEGER1     NOT NULL WITH DEFAULT,
+        h_return                = INTEGER1     NOT NULL WITH DEFAULT,
+        h_return_2              = INTEGER1     NOT NULL WITH DEFAULT,
+        h_retries_allowed       = INTEGER1     NOT NULL WITH DEFAULT,
+        h_retries               = INTEGER1     NOT NULL WITH DEFAULT,
+        h_retry_or_not          = CHAR(5)      NOT NULL WITH DEFAULT,
+        h_param_list            = VARCHAR(200) NOT NULL WITH DEFAULT,
+        h_varchar_variable      = VARCHAR(200) NOT NULL WITH DEFAULT,
+        h_integer_variable      = INTEGER2     NOT NULL WITH DEFAULT,
+        h_param1                = VARCHAR(10)  NOT NULL WITH DEFAULT,
+        h_text                  = VARCHAR(160) NOT NULL WITH DEFAULT,
+        h_filename              = VARCHAR(160) NOT NULL WITH DEFAULT,
+        h_prompt                = CHAR(6)      NOT NULL WITH DEFAULT,
+        h_period                = INTEGER4     NOT NULL WITH DEFAULT,
+        h_prev_period           = INTEGER4     NOT NULL WITH DEFAULT,
+        h_next_period           = INTEGER4     NOT NULL WITH DEFAULT,
+        h_count                 = INTEGER4     NOT NULL WITH DEFAULT,
+        h_loop                  = INTEGER1     NOT NULL WITH DEFAULT,
+        h_strata_min            = INTEGER2     NOT NULL WITH DEFAULT,
+        h_strata_max            = INTEGER4     NOT NULL WITH DEFAULT,
+
+        lp_error_check          = PROCEDURE RETURNING INTEGER,
+        lp_full_error_check     = PROCEDURE RETURNING INTEGER,
+        lp_drop_table           = PROCEDURE RETURNING INTEGER,
+        lp_write_to_process_log = PROCEDURE ,
+
+{
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  h_frpr_name = 'annual_sas_import';
+  h_retries_allowed = 3;
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_procs (p_frpr_name = :h_frpr_name);
+
+  IF h_return != 0
+  THEN
+  CALLPROC lp_write_to_process_log
+         ( p_frpr      = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'WARNING: ACCESS CONTROL BLOCKED ATTEMPT TO RUN BY '
+                       + UPPER(:g_user_id) +'.');
+    EXIT;
+  ENDIF;
+  
+  /*-------------------------------------------------------------------------
+      Logging start in asi_process_log
+  -------------------------------------------------------------------------*/
+
+  CALLPROC lp_write_to_process_log
+         ( p_frpr = :h_frpr_name,
+           p_code      = 0,
+           p_text      = '*SIGNON*');
+
+  CALLPROC lp_write_to_process_log
+         ( p_frpr = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'STARTING: ANNUAL SAS IMPORT PROCESS.');
+
+  /*----------------------------------------------------------------------
+     Use h_reset = 1 to force overwrite of the periods data from file.
+  ----------------------------------------------------------------------*/
+
+  h_reset = 1;
+
+  IF h_reset = 1
+  THEN
+    h_text = 'NOTE: h_reset set to 1. Existing data will be overwritten.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+  ELSE
+    h_text = 'NOTE: h_reset set to 0. Existing data will be preserved.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Select the parameters from the UNIX line
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[1/13] Getting parameters...';
+  SLEEP 1;
+
+  h_param_list = CALLPROC COMMANDLINEPARAMETERS();
+
+  h_varchar_variable = SQUEEZE (h_param_list);
+
+  h_integer_variable = LOCATE (h_varchar_variable, ' ');
+  h_param1           = LEFT   (h_varchar_variable,h_integer_variable - 1);
+
+  h_period    = INT4(:h_param1);
+
+  h_prev_period = :h_period - 100;
+  h_next_period = :h_period + 100;
+
+  
+  /*----------------------------------------------------------------------
+      Validate h_period
+  ----------------------------------------------------------------------*/
+
+  MESSAGE '[2/13] Validating parameters...';
+  SLEEP 1;
+  
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT period AS h_period
+    FROM   inquiry_period
+    WHERE  period = :h_period
+      AND  inquiry = 14;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    h_text = 'ERROR: Invalid period recieved as p_period parameter.';
+    CALLPROC lp_write_to_process_log
+           ( p_frpr = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+
+  ELSEIF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to select from the inquiry_period table.';
+    CALLPROC lp_write_to_process_log
+           ( p_frpr = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+
+  ENDIF;
+ 
+  h_text = 'Successfully validated ' + VARCHAR(:h_period) +' '
+         + 'as h_period.'; 
+  CALLPROC lp_write_to_process_log
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+  h_text = 'Successfully validated ' + VARCHAR(:h_prev_period) +' '
+         + 'as h_prev_period.'; 
+  CALLPROC lp_write_to_process_log
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+  h_text = 'Successfully validated ' + VARCHAR(:h_next_period) +' '
+         + 'as h_next_period.'; 
+  CALLPROC lp_write_to_process_log
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+  /*-------------------------------------------------------------------------
+      Creating first working table for uvs and gross queston totals.
+  -------------------------------------------------------------------------*/
+
+  MESSAGE '[3/13] Creating first temp table . . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table ( p_table_name = 'tt_sas_import_1');
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop tt_sas_import_1. Aborting run.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+    EXIT;
+  ELSE
+    h_text = 'Successfully dropped tt_sas_import_1.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+  ENDIF;
+
+  CREATE TABLE tt_sas_import_1
+             ( question      CHAR(10),
+               period        INTEGER4 WITH DEFAULT :h_prev_period, 
+               uv            FLOAT(8) WITH DEFAULT 0.0,
+               gross_total   FLOAT(8) WITH DEFAULT 0.0);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create tt_sas_import_1. Aborting run.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+    EXIT;
+  ELSE
+    h_text = 'Successfully created tt_sas_import_1.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+  ENDIF;
+
+  h_filename = '/prodcom/live5/files/sas/uv_gtot_'+VARCHAR(:h_prev_period); 
+
+  COPY TABLE tt_sas_import_1
+           ( question    = c0comma,
+             uv          = c0comma,
+             gross_total = c0nl)
+  FROM :h_filename;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to populate tt_sas_import_1 from '
+            + VARCHAR(:h_filename) +'. Aborting run.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+    EXIT;
+  ELSE
+    h_text = 'Successfully populated tt_sas_import_1.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+  ENDIF;
+
+  MODIFY tt_sas_import_1 TO BTREE UNIQUE ON question, period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify tt_sas_import_1. Aborting run.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+    EXIT;
+  ELSE
+    h_text = 'Successfully modified tt_sas_import_1.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+  ENDIF;
+
+
+  /*-------------------------------------------------------------------------
+      Creating second working table for contributor industries and sph.
+  -------------------------------------------------------------------------*/
+
+  MESSAGE '[4/13] Creating second temp table . . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = 'tt_sas_import_2');
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop tt_sas_import_2. Aborting run.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+    EXIT;
+  ELSE
+    h_text = 'Successfully dropped tt_sas_import_2.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+  ENDIF;
+
+  CREATE TABLE tt_sas_import_2
+             ( question      CHAR(10),
+               period        INTEGER4 WITH DEFAULT :h_prev_period, 
+               contr_ind     INTEGER4 NOT NULL WITH DEFAULT,
+               sph           FLOAT(8) NOT NULL WITH DEFAULT);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create tt_sas_import_2. Aborting run.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+    EXIT;
+  ELSE
+    h_text = 'Successfully created tt_sas_import_2.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+  ENDIF;
+
+  h_filename = '/prodcom/live5/files/sas/contrind_sph_'
+             + VARCHAR(:h_prev_period); 
+
+  COPY TABLE tt_sas_import_2
+           ( question    = c0comma,
+             contr_ind   = c0comma,
+             sph         = c0nl)
+  FROM :h_filename;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to populate tt_sas_import_2 from '
+            + VARCHAR(:h_filename) +'. Aborting run.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+    EXIT;
+  ELSE
+    h_text = 'Successfully populated tt_sas_import_2.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+  ENDIF;
+
+  MODIFY tt_sas_import_2 TO BTREE UNIQUE ON question, period, contr_ind;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify tt_sas_import_2. Aborting run.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+    EXIT;
+  ELSE
+    h_text = 'Successfully modified tt_sas_import_2.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+      Creating third working table for sample_weights.
+  -------------------------------------------------------------------------*/
+
+  MESSAGE '[5/13] Creating third temp table . . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = 'tt_sas_import_3');
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop tt_sas_import_3. Aborting run.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+    EXIT;
+  ELSE
+    h_text = 'Successfully dropped tt_sas_import_3.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+  ENDIF;
+
+  CREATE TABLE tt_sas_import_3
+             ( contr_ind     INTEGER4,
+               period        INTEGER4 WITH DEFAULT :h_period, 
+               strata        INTEGER1,
+               weight        FLOAT(8));
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create tt_sas_import_3. Aborting run.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+    EXIT;
+  ELSE
+    h_text = 'Successfully created tt_sas_import_3.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+  ENDIF;
+
+  h_filename = '/prodcom/live5/files/sas/sample_weights_'+VARCHAR(:h_period); 
+
+  COPY TABLE tt_sas_import_3
+           ( contr_ind   = c0comma,
+             period      = d0comma,
+             strata      = c0comma,
+             weight      = c0nl)
+  FROM :h_filename;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to populate tt_sas_import_3 from '
+            + VARCHAR(:h_filename) +'. Aborting run.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+    EXIT;
+  ELSE
+    h_text = 'Successfully populated tt_sas_import_3.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+  ENDIF;
+
+  MODIFY tt_sas_import_3 TO BTREE UNIQUE ON contr_ind, period, strata;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify tt_sas_import_3. Aborting run.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+    EXIT;
+  ELSE
+    h_text = 'Successfully modified tt_sas_import_3.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+      Checks if gross_question_totals has data for :h_prev_period 
+      and inserts from tt_sas_import_1 if not there.
+  -------------------------------------------------------------------------*/
+
+  MESSAGE '[6/13] Processing gross_question_totals table . . .';
+  SLEEP 1;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT COUNT (question) AS h_count
+    FROM   gross_question_totals
+    WHERE  period = :h_prev_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to count from gross_question_totals. '
+            + 'Aborting run.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+    EXIT;
+  ENDIF;
+
+  IF h_count > 0 AND h_reset = 1
+  THEN
+
+    h_text = 'NOTE: Resetting data on gross_question_totals. '
+           + '(Count = ' +VARCHAR(:h_count) +').';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      DELETE
+      FROM gross_question_totals
+      WHERE period = :h_prev_period;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return > 1
+    THEN
+      h_text = 'ERROR: Failed to reset gross_question_totals. '
+              + 'Aborting run.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+      EXIT;
+    ENDIF;
+
+  ENDIF;
+
+  IF h_count = 0 OR h_reset = 1  
+  THEN
+    
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      INSERT INTO gross_question_totals
+                ( question,
+                  period,
+                  gross_total)
+           SELECT question,
+                  period,
+                  gross_total
+             FROM tt_sas_import_1
+            WHERE period = :h_prev_period;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to insert new data into gross_question_totals. '
+              + 'Aborting run.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+      EXIT;
+    ELSE
+      h_text = 'Successfully inserted new data into gross_question_totals.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+    ENDIF;
+
+    MODIFY gross_question_totals TO BTREE UNIQUE ON question, period;
+    
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to modify gross_question_totals '
+              + 'to btree unique. Aborting run.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+      EXIT;
+    ELSE
+      h_text = 'Successfully modified gross_question_totals.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+    ENDIF
+
+  ELSE  /* Data already exists for period */
+
+    h_text = 'NOTE: Skipping as gross_question_totals '
+            + 'has already been updated.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+      Checks if agg_unit_values has data for :h_prev_period 
+      and inserts from tt_sas_import_1 then modifies if not there.
+  -------------------------------------------------------------------------*/
+
+  MESSAGE '[7/13] Processing agg_unit_values table . . .';
+  SLEEP 1;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT COUNT (question) AS h_count
+    FROM   agg_unit_values
+    WHERE  period = :h_prev_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to count from agg_unit_values. '
+            + 'Aborting run.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+    EXIT;
+  ENDIF;
+
+  IF h_count > 0 AND h_reset = 1
+  THEN
+
+    h_text = 'NOTE: Resetting data on agg_unit_values. '
+           + '(Count = ' +VARCHAR(:h_count) +').';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      DELETE
+      FROM agg_unit_values
+      WHERE period = :h_prev_period;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return > 1
+    THEN
+      h_text = 'ERROR: Failed to reset agg_unit_values. '
+             + 'Aborting run.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+      EXIT;
+    ENDIF;
+
+  ENDIF;
+
+  IF h_count = 0 OR h_reset = 1  
+  THEN
+    
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      INSERT INTO agg_unit_values
+                ( question,
+                  period,
+                  agg_uv)
+           SELECT question,
+                  period,
+                  uv
+             FROM tt_sas_import_1
+            WHERE period = :h_prev_period;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to insert new data into agg_unit_values. '
+              + 'Aborting run.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+      EXIT;
+
+    ELSE
+      h_text = 'Successfully inserted new data into agg_unit_values.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+    ENDIF;
+
+    MODIFY agg_unit_values TO BTREE UNIQUE ON question, period;
+    
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to modify agg_unit_values to btree unique. '
+              + 'Aborting run.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+      EXIT;
+
+    ELSE
+      h_text = 'Successfully modified agg_unit_values.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+    ENDIF;
+
+    UPDATE agg_unit_values 
+       SET agg_uv = 0
+     WHERE agg_uv <= 0 OR agg_uv IS NULL; 
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to update agg_unit_values with zeros. '
+              + 'Aborting run.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+      EXIT;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      UPDATE agg_unit_values a
+      FROM   agg_unit_values b
+      SET    agg_uv = b.agg_uv
+      WHERE  RIGHT(VARCHAR(a.question),1) = 2
+        AND b.question = a.question - 1
+        AND a.period = b.period;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to update agg_unit_values on volumes. '
+              + 'Aborting run.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+      EXIT;
+
+    ELSE
+      h_text = 'Successfully updated agg_unit_values on volumes.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+    ENDIF;
+
+  ELSE  /* Data already exists for period */
+
+    h_text = 'NOTE: Skipping as agg_unit_values has already been updated.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+      Checks if question_contrind_sph has data for :h_prev_period 
+      and inserts from tt_sas_import_2 if not there.
+  -------------------------------------------------------------------------*/
+
+  MESSAGE '[8/13] Processing question_contrind_sph table . . .';
+  SLEEP 1;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT COUNT (question) AS h_count
+    FROM   question_contrind_sph
+    WHERE  period = :h_prev_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to count from question_contrind_sph. '
+            + 'Aborting run.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+    EXIT;
+  ENDIF;
+
+  IF h_count > 0 AND h_reset = 1
+  THEN
+
+    h_text = 'NOTE: Resetting data on question_contrind_sph. '
+           + '(Count = ' +VARCHAR(:h_count) +').';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      DELETE
+      FROM question_contrind_sph
+      WHERE period = :h_prev_period;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return > 1
+    THEN
+      h_text = 'ERROR: Failed to reset question_contrind_sph. '
+              + 'Aborting run.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+      EXIT;
+    ENDIF;
+
+  ENDIF;
+
+  IF h_count = 0 OR h_reset = 1  
+  THEN
+    
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      INSERT INTO question_contrind_sph
+                ( question,
+                  period,
+                  contr_ind,
+                  sph)
+           SELECT question,
+                  period,
+                  contr_ind,
+                  sph
+             FROM tt_sas_import_2
+            WHERE period = :h_prev_period;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to insert new data into question_contrind_sph. '
+              + 'Aborting run.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+      EXIT;
+
+    ELSE
+      h_text = 'Successfully inserted new data into question_contrind_sph.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+    ENDIF;
+
+    MODIFY question_contrind_sph TO BTREE UNIQUE 
+        ON question, period, contr_ind;
+    
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to modify question_contrind_sph '
+              + 'to btree unique. Aborting run.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+      EXIT;
+
+    ELSE
+      h_text = 'Successfully modified question_contrind_sph.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+    ENDIF
+
+  ELSE  /* Data already exists for period */
+
+    h_text = 'NOTE: Skipping as question_contrind_sph has '
+           + 'already been updated.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+      Checks if sample_weights has data for :h_period 
+      and inserts from tt_sas_import_3 if not there.
+  -------------------------------------------------------------------------*/
+
+  MESSAGE '[9/13] Processing sample_weights table . . .';
+  SLEEP 1;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT COUNT (weight) AS h_count
+    FROM   sample_weights
+    WHERE  period = :h_period;
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to count from sample_weights. Aborting run.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+    EXIT;
+  ENDIF;
+
+  IF h_count > 0 AND h_reset = 1
+  THEN
+
+    h_text = 'NOTE: Resetting data on sample_weights. '
+           + '(Count = ' +VARCHAR(:h_count) +').';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      DELETE
+      FROM sample_weights
+      WHERE period = :h_period;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return > 1
+    THEN
+      h_text = 'ERROR: Failed to reset sample_weights. '
+              + 'Aborting run.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+      EXIT;
+    ENDIF;
+
+  ENDIF;
+
+  IF h_count = 0 OR h_reset = 1  
+  THEN
+    
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      INSERT INTO sample_weights
+                ( contr_ind,
+                  period,
+                  strata,
+                  weight)
+           SELECT contr_ind,
+                  period,
+                  strata,
+                  weight
+             FROM tt_sas_import_3
+            WHERE period = :h_period;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to insert new data into sample_weights. '
+              + 'Aborting run.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+      EXIT;
+
+    ELSE
+      h_text = 'Successfully inserted new data into sample_weights.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+    ENDIF;
+
+    MODIFY sample_weights TO BTREE UNIQUE ON contr_ind, period, strata;
+    
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to modify sample_weights to btree unique. '
+              + 'Aborting run.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+      EXIT;
+
+    ELSE
+      h_text = 'Successfully modified sample_weights to btree unique.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+    ENDIF
+
+  ELSE  /* Data already exists for period */
+
+    h_text = 'NOTE: Skipping as sample_weights has already been updated.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+      Updates the permanent reference table contributor_industry_strata 
+      by getting the regemp from contributor period.
+  -------------------------------------------------------------------------*/
+
+  MESSAGE '[10/13] Processing contributor_industry_strata table . . .';
+  SLEEP 1;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT COUNT (period) AS h_count
+    FROM   contributor_industry_strata
+    WHERE  period = :h_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to count from contributor_industry_strata. ' 
+            + 'Aborting run.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+    EXIT;
+  ENDIF;
+
+  IF h_count > 0 AND h_reset = 1
+  THEN
+
+    h_text = 'NOTE: Resetting data on contributor_industry_strata. '
+           + '(Count = ' +VARCHAR(:h_count) +').';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      DELETE
+      FROM contributor_industry_strata
+      WHERE period = :h_period;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return > 1
+    THEN
+      h_text = 'ERROR: Failed to reset contributor_industry_strata. '
+              + 'Aborting run.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+      EXIT;
+    ENDIF;
+
+  ENDIF;
+
+  IF h_count = 0 OR h_reset = 1  
+  THEN
+    
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      INSERT INTO contributor_industry_strata
+                ( contributor_reference,
+                  period,
+                  contributor_industry,
+                  register_emp,
+                  strata)
+           SELECT contributor_reference,
+                  period,
+                  contributor_industry,
+                  register_emp,
+                  0 AS strata
+             FROM contributor_period
+            WHERE period = :h_period;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to insert new periods data into '
+              + 'contributor_industry_strata. Aborting run.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+      EXIT;
+
+    ELSE
+      h_text = 'Successfully inserted new periods data into '
+              + 'contributor_industry_strata.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+
+    ENDIF;
+
+    MODIFY contributor_industry_strata TO BTREE UNIQUE 
+        ON contributor_reference, period, contributor_industry;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to modify contributor_industry_strata '
+              + 'to btree unique. Aborting run.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+      EXIT;
+
+    ELSE
+      h_text = 'Successfully modified contributor_industry_strata ' 
+             + 'to btree unique.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+    ENDIF
+
+  ELSE  /* Data already exists for period */
+
+    h_text = 'NOTE: Skipping as sample_weights has already been updated.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+      Checks if any rows on contributor_industry_strata have a 0 strata 
+      and if so loops through to update the table.
+  -------------------------------------------------------------------------*/
+
+  MESSAGE '[11/13] Checking for zero strata . . .';
+  SLEEP 1;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT COUNT (strata) AS h_count
+    FROM   contributor_industry_strata
+    WHERE  strata = 0;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to count zero strata on '
+            + 'contributor_industry_strata. Aborting run.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+    EXIT;
+  ENDIF;
+
+  IF h_count > 0  
+  THEN
+
+    h_text = 'Zero strata entries detected. Initiating repair loops. '
+           + '(Count = ' +VARCHAR(:h_count) +').';
+    CALLPROC lp_write_to_process_log
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+    h_loop = 1;
+    
+    WHILE h_loop < 6 
+    DO
+
+      h_text = '   Repairing strata ' + VARCHAR(:h_loop) +'.';
+      CALLPROC lp_write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+      MESSAGE '[11/13] Repairing strata ' + VARCHAR(:h_loop) +' of 6.';
+      SLEEP 1;
+
+      SELECT emp_min AS h_strata_min,
+             emp_max AS h_strata_max
+        FROM employment_strata_lookup
+       WHERE emp_strata = :h_loop; 
+
+      h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return != 0
+      THEN
+        h_text = '   ERROR: Failed to select strata data from '
+                + 'employment_strata_lookup. Aborting run.';
+        CALLPROC lp_write_to_process_log
+                 (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+        EXIT;
+      ENDIF;
+
+      UPDATE contributor_industry_strata
+         SET strata = :h_loop
+       WHERE register_emp BETWEEN :h_strata_min AND :h_strata_max
+         AND strata = 0;
+
+      h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return > 1
+      THEN
+        h_text = '   ERROR: Failed to update contributor_industry_strata '
+                + 'with strata ' +VARCHAR(:h_loop) +'. Aborting run.';
+        CALLPROC lp_write_to_process_log
+                 (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+        EXIT;
+      ENDIF;
+      
+      h_loop = :h_loop + 1;
+         
+    ENDWHILE;
+
+    h_text = 'Successfully completed repair loops.';
+    CALLPROC lp_write_to_process_log
+           (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+      Checks if any rows on contributor_industry_strata still have 
+      a 0 strata and if so throws an error and exits. 
+  -------------------------------------------------------------------------*/
+
+  MESSAGE '[12/13] Final check for zero strata . . .';
+  SLEEP 1;
+
+  SELECT COUNT (strata) AS h_count
+  FROM   contributor_industry_strata
+  WHERE  strata = 0;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed on final count for zero strata on '
+            + 'contributor_industry_strata. Aborting run.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+    EXIT;
+  ENDIF;
+
+  IF h_count > 0  
+  THEN
+    h_text = 'SERIOUS ERROR: There are still zero strata rows on '
+            + 'contributor_industry_strata. This should not be possible. '
+            + 'Aborting run.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=:h_return);
+    EXIT;
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+     Tidy up temp tables.
+  -------------------------------------------------------------------------*/
+
+  MESSAGE '[13/13] Clearing up temp tables . . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table ( p_table_name = 'tt_sas_import_1');
+
+  IF h_return != 0
+  THEN
+    h_text = 'WARNING: Failed to tidy up tt_sas_import_1.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+  ENDIF;
+
+  h_return = CALLPROC lp_drop_table ( p_table_name = 'tt_sas_import_2');
+
+  IF h_return != 0
+  THEN
+    h_text = 'WARNING: Failed to tidy up tt_sas_import_2.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+  ENDIF;
+
+  h_return = CALLPROC lp_drop_table ( p_table_name = 'tt_sas_import_3');
+
+  IF h_return != 0
+  THEN
+    h_text = 'WARNING: Failed to tidy up tt_sas_import_3.';
+    CALLPROC lp_write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_code=0);
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+      Logging end of process
+  -------------------------------------------------------------------------*/
+
+  MESSAGE 'Process completed successfully.';
+  SLEEP 1;
+
+  CALLPROC lp_write_to_process_log
+         ( p_frpr = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'COMPLETE: PROCESS COMPLETED OK.');
+
+  CALLPROC lp_write_to_process_log
+         ( p_frpr = :h_frpr_name,
+           p_code      = 0,
+           p_text      = '*SIGNOFF*');
+
+}
+
+
+/************************* LOCAL PROCEDURES *********************************/
+
+/*===========================================================================
+    Local procedure to call error check.
+============================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck = INTEGER1 NOT NULL WITH DEFAULT) =
+
+DECLARE
+          lp_return = INTEGER1 NOT NULL WITH DEFAULT
+
+BEGIN
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN :lp_return
+
+END
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+                  h_num_row_ck = :p_num_row_ck,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table (p_table_name = CHAR(36) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(36) NOT NULL
+
+{
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name  = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    RETURN 6;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return != 0 
+  THEN 
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/*========================================================================
+  Local procedure to write process feedback to rwn_process_log.
+  Part of a change to move generic process feedback out of error_log
+  and into process specific permanent tables.
+  (Usually an external procedure, left the p_ variables in place.)
+========================================================================*/
+
+PROCEDURE lp_write_to_process_log (
+
+        p_frpr = VARCHAR(36) NOT NULL WITH DEFAULT,
+        p_code      = INTEGER1    NOT NULL WITH DEFAULT,
+        p_text      = VARCHAR(70) NOT NULL WITH DEFAULT ) =
+
+DECLARE lp_table     = VARCHAR(36) NOT NULL WITH DEFAULT,
+        lp_top       = VARCHAR(70) NOT NULL WITH DEFAULT 
+
+{
+ lp_table = 'asi_process_log';
+ lp_top ='*******************************************************************';
+
+ IF p_text = '*SIGNON*'
+ THEN
+   MODIFY :lp_table TO TRUNCATED; 
+   COMMIT;
+   INSERT INTO :lp_table 
+   VALUES    ( 'now',
+               0,
+               0,
+               :lp_top,
+               :p_frpr);
+   COMMIT;
+   RETURN; 
+ ENDIF;
+
+ IF p_text = '*SIGNOFF*'
+ THEN
+   p_text = :lp_top;
+ ENDIF;
+
+ g_log_no = g_log_no +1;
+
+ INSERT INTO :lp_table 
+ VALUES    ( 'now',
+             :g_log_no,
+             :p_code,
+             :p_text,
+             :p_frpr);
+ COMMIT;
+
+ RETURN;
+}
+

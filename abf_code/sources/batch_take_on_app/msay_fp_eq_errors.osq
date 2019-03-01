@@ -1,0 +1,188 @@
+/*----------------------------------------------------------------------
+EQ - Lose any errors from the tables
+----------------------------------------------------------------------*/
+
+PROCEDURE msay_fp_eq_errors () =
+
+DECLARE h_frpr_name   = VARCHAR(24) NOT NULL,
+        h_error_table = VARCHAR(24) NOT NULL,
+        h_debug       = VARCHAR(160) NOT NULL,
+        h_temp_table  = VARCHAR(24) NOT NULL,
+        h_table       = VARCHAR(24) NOT NULL,
+        h_counter     = INTEGER4 NOT NULL,
+        h_rows        = INTEGER4 NOT NULL,
+        ret_val       = INTEGER1 NOT NULL
+{
+    h_frpr_name = 'msay_fp_eq_errors';
+    h_error_table = 'eq_data_errors';
+    h_temp_table = 'temp_eq_errors';
+
+    /*------------------------------------------------------------------
+    Clear Error Table
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Clearing ' + :h_error_table + ' . . .';
+
+    DELETE FROM :h_error_table a
+    WHERE       a.contributor_reference IN (
+                SELECT contributor_reference
+                FROM   bto_eq_contributor b
+                WHERE  a.period = b.period
+                AND    a.contributor_industry = b.contributor_industry);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+	h_debug = 'ERROR: Failed to clear ' + :h_error_table +'.';
+	CALLPROC batch_fp_error_log
+		 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:ret_val);
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Create temporary error table of ref/inq/ind/per combinations
+    that don't exist on contributor_period
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Creating ' + :h_temp_table + ' . . .';
+
+    ret_val = CALLPROC batch_fp_drop_table ( h_table = :h_temp_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_temp_table
+    AS SELECT    DISTINCT(a.contributor_reference),
+                 a.period
+    FROM         bto_eq_contributor a
+    WHERE        a.contributor_reference NOT IN (
+                 SELECT contributor_reference
+                 FROM   contributor_period b
+                 WHERE  a.period = b.period
+                 AND    a.inquiry = b.inquiry
+                 AND    a.contributor_industry = b.contributor_industry);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(:h_rows),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+	h_debug = 'ERROR: Failed to create ' + :h_error_table +'.';
+	CALLPROC batch_fp_error_log
+		 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:ret_val);
+        RETURN ret_val;
+    ENDIF;
+
+    IF h_rows = 0
+    THEN
+        RETURN 0;
+    ENDIF;
+
+    h_debug = 'BTO: EQ ' + VARCHAR(h_rows) + ' Invalid Ref/Per/Ind/Inq';
+    CALLPROC batch_fp_error_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:ret_val);
+
+    /*------------------------------------------------------------------
+    Store bto_eq_contributor failures onto the error table
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Saving Errors . . .';
+
+    INSERT INTO :h_error_table (
+                time,
+                reason,
+                inquiry,
+                contributor_industry,
+                contributor_reference,
+                period,
+                question,
+                avalue,
+                acell)
+    SELECT      'now',
+                'Invalid Ref/Per/Ind/Inq',
+                a.inquiry,
+                a.contributor_industry,
+                a.contributor_reference,
+                a.period,
+                0,
+                0,
+                ''
+    FROM        bto_eq_contributor a,
+                :h_temp_table b
+    WHERE       a.contributor_reference = b.contributor_reference
+    AND         a.period = b.period;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+	h_debug = 'ERROR: Failed to insert into ' + :h_error_table +'.';
+	CALLPROC batch_fp_error_log
+		 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:ret_val);
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Delete invalid references from all four tables
+    ------------------------------------------------------------------*/
+
+    h_counter = 1;
+    WHILE h_counter <= 4
+    DO
+
+        IF h_counter = 1
+        THEN
+            h_table = 'bto_eq_contributor';
+        ELSEIF h_counter = 2
+        THEN
+            h_table = 'bto_eq_question';
+        ELSEIF h_counter = 3
+        THEN
+            h_table = 'bto_eq_comment';
+        ELSE
+            h_table = 'bto_eq_lu';
+        ENDIF;
+
+        MESSAGE 'Deleting Errors from ' + :h_table + ' . . .';
+    
+        DELETE FROM :h_table a
+        WHERE       contributor_reference IN (
+                    SELECT contributor_reference 
+                    FROM   :h_temp_table b
+                    WHERE  a.period = b.period);
+    
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+	  h_debug = 'ERROR: Failed to delete from ' + :h_error_table +'.';
+	  CALLPROC batch_fp_error_log
+	  	   (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:ret_val);
+          RETURN ret_val;
+        ENDIF;
+
+        h_counter = h_counter + 1;
+
+    ENDWHILE;
+
+    RETURN 0;
+}

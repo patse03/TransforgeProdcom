@@ -1,0 +1,299 @@
+PROCEDURE msal_fp_despatch () =
+
+DECLARE ret_val            = INTEGER4 NOT NULL,
+        report_name        = VARCHAR(35) NOT NULL,
+        h_frpr_name        = VARCHAR(24) NOT NULL,
+        print_name         = VARCHAR(35) NOT NULL,
+        file_name1         = VARCHAR(50) NOT NULL,
+	latest_period      = INTEGER4 NOT NULL,
+        region             = VARCHAR(2) NOT NULL,
+        region1            = VARCHAR(2) NOT NULL,
+        region2            = VARCHAR(2) NOT NULL,
+        h_table1           = VARCHAR(24) NOT NULL,
+        h_table2           = VARCHAR(24) NOT NULL,
+        h_table3           = VARCHAR(24) NOT NULL
+
+{
+    h_frpr_name = 'msal_fp_despatch';
+
+    h_table1 = 'temp_scot_despatch';
+    h_table2 = 'contributor_period';
+    h_table3 = 'contributor';
+
+    file_name1 = :g_path_name1 + '/scot_despatch' + ASCII(:g_period) + '.txt ';
+
+
+    /*-s----------------------------------------------------------------
+    Check period being run is the latest period held on table 
+    country_contrib_period
+    ----------------------------------------------------------------e-*/
+    SELECT max(period) AS latest_period,
+	   region AS region
+    FROM :g_sel_table
+    GROUP BY region;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error selecting latest period from ' + :g_sel_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    IF :latest_period <> :g_period
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error process 1 has not run for latest period - please check',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Select regions to be used in the report writer
+    ----------------------------------------------------------------e-*/
+
+    SELECT DISTINCT region as region1
+    FROM :g_sel_table
+    WHERE region = 'WW';
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error selecting region1 - Wales',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+
+    SELECT DISTINCT region as region2
+    FROM :g_sel_table
+    WHERE region = 'XX';
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error selecting region2 - scotland',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+
+    /*-s----------------------------------------------------------------
+    Produce separate Despatch List for each Region
+    ----------------------------------------------------------------e-*/
+
+    report_name = 'msal_rw_desp_list.rw';
+    
+
+    /*****************************************************************
+
+    Welsh despatch lst not required until further notice
+
+                      *********************                            
+
+
+    MESSAGE 'Processing Region ' + :region1 + ' . . .';
+
+    print_name = 'despatch_' + VARCHAR(:g_period) + '_wales' ;
+
+    ret_val = CALLPROC msa_cp_callsys (
+                  'report ' +
+                  :g_database + ' ' +
+                  '''(period = ' + VARCHAR(:g_period) +
+		  ',table_name = "'+ :g_sel_table + '"' +
+                  ', region = "' + :region1 + '"' +
+                  ')''' +
+                  ' -f$PRINTOUT/' + :print_name +
+                  ' -i$REPORTS/' + :report_name +
+                  '> $PRINTOUT/report.output');
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error calling ' + :report_name + ' for' +
+                        ' Region ' + :region1,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+
+    **********************************************************************/
+
+
+    MESSAGE 'Processing Region ' + :region2 + ' . . .';
+
+    print_name = 'despatch_' + VARCHAR(:g_period) + '_scotland' ;
+    
+    ret_val = CALLPROC msa_cp_callsys (
+                  'report ' +
+                  :g_database + ' ' +
+                  '''(period = ' + VARCHAR(:g_period) +
+		  ',table_name = "' + :g_sel_table + '"' +
+                  ', region = "' + :region2 + '"' +
+                  ')''' +
+                  ' -f$PRINTOUT/' + :print_name +
+                  ' -i$REPORTS/' + :report_name +
+                  '>> $PRINTOUT/report.output');
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error calling ' + :report_name + ' for' +
+                        ' Region ' + :region2,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+
+/*-------------------------------------------------------------------
+ Create temporary table for Scottish despatch list
+ ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table1);
+
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+
+    CREATE TABLE :h_table1 AS
+    SELECT a.contributor_industry,
+	   a.contributor_reference,
+	   a.period,
+	   a.region,
+	   a.enterprise,
+	   a.register_emp,
+	   c.add_name1,
+           b.percentage
+    FROM   :h_table2 a,
+           :g_sel_table b,
+           :h_table3 c
+    WHERE  a.period = VARCHAR(:g_period)
+    AND    a.period = b.period
+    AND    a.contributor_industry = b.contributor_industry
+    AND    b.region = 'XX'
+    AND    a.contributor_reference = b.contributor_reference
+    AND    a.contributor_reference = c.contributor_reference;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+                       h_num_row_ck = 1,
+                       h_commit     = 'Y',
+                       h_frpr_name  = :h_frpr_name,
+                       h_rollback   = 'Y');
+
+    IF ret_val = 9
+    THEN
+       INSERT INTO error_log
+       VALUES(   'now',
+                 'Error creating table ' + :h_table1,
+                 :h_frpr_name,
+                 :ret_val,
+                 :g_user_id);
+       COMMIT;
+       RETURN 9;
+    ENDIF;
+
+
+   /*-----------------------------------------------------------------
+    Modify table
+   -----------------------------------------------------------------*/
+
+    MODIFY :h_table1 TO BTREE
+    UNIQUE ON contributor_industry,
+              contributor_reference;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error modifying ' + :h_table1,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+    /*-----------------------------------------------------------------
+    Copy temporary table to CSV file
+    ---------------------------------------------------------------*/
+
+    COPY :h_table1 (
+	 contributor_industry  = c0comma,
+	 contributor_reference = c0comma,
+	 enterprise            = c0comma,
+	 register_emp          = c0comma,
+	 add_name1             = c0comma,
+         percentage            = c0nl)
+    INTO :file_name1;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+                       h_num_row_ck = 1,
+                       h_commit     = 'Y',
+                       h_frpr_name  = :h_frpr_name,
+                       h_rollback   = 'Y');
+
+    IF ret_val = 9
+    THEN
+       INSERT INTO error_log
+       VALUES(   'now',
+                 'Error copying table ' + :h_table1 + ' to flat file',
+                 :h_frpr_name,
+                 :ret_val,
+                 :g_user_id);
+       COMMIT;
+       RETURN 9;
+    ENDIF;
+
+ RETURN 0;
+}

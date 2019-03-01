@@ -1,0 +1,1090 @@
+/*----------------------------------------------------------------------
+ Loads up IQ data
+----------------------------------------------------------------------*/
+
+PROCEDURE msay_fp_load_iq () =
+
+DECLARE h_frpr_name        = VARCHAR(24) NOT NULL,
+        h_save_name        = VARCHAR(24) NOT NULL,
+        h_now              = VARCHAR(24) NOT NULL,
+        h_directory        = VARCHAR(50) NOT NULL,
+        h_rows             = INTEGER4 NOT NULL,
+        h_num_comments     = INTEGER4 NOT NULL,
+        h_lines_q          = INTEGER4 NOT NULL,
+        h_lines_c          = INTEGER4 NOT NULL,
+        ret_val            = INTEGER1 NOT NULL
+
+{
+    h_frpr_name = 'msay_fp_load_iq';
+
+    SELECT DBMSINFO('database') AS g_database;
+
+    IF :g_database = 'prodlivedb'
+    THEN
+        h_directory = '/home/prodcom/admin/prodlive/bto/';
+    ELSE
+        h_directory = '/home/prodcom/admin/prodlive/bto/produser/';
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Check if there's anything to process.
+    Check both files just in case there is a mismatch and there are
+    lines on one file, but no lines on the other.
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Counting Input Lines . . .';
+
+    SELECT COUNT(*) AS h_lines_c
+    FROM   iq_returned_contributor;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error accessing iq_returned_contributor',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    SELECT COUNT(*) AS h_lines_q
+    FROM   iq_returned_question;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error accessing iq_returned_question',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    IF h_lines_c + h_lines_q = 0
+    THEN
+        /*Nothing to Take On (IQ files empty) - Processing Stops*/
+        RETURN 1;
+    ENDIF;
+
+    INSERT INTO bto_error_log
+    VALUES (    'now',
+                'BTO Starts IQ',
+                :h_frpr_name,
+                0,
+                :g_user_id);
+    COMMIT;
+
+    /*------------------------------------------------------------------
+    Saving the original files:
+    --------------------------
+    If it's 10:50am on 22 Sep 1999, copy the:
+    1. Contributor level table to a file called iqc_19990922_1050.
+    2. Question level table to a file called    iqq_19990922_1050.
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Saving Input to Files . . .';
+
+    h_now = VARCHAR(DATE('now'));
+
+    h_save_name = VARCHAR(DATE_PART('year','now')) +
+                  RIGHT(LEFT(h_now,5),2) +
+                  LEFT(h_now,2) + '_' +
+                  RIGHT(LEFT(h_now,13),2) +
+                  RIGHT(LEFT(h_now,16),2);
+
+    COPY TABLE iq_returned_contributor (
+        contributor_reference = 'c0$',
+        period                = 'c0$',
+        addressee             = 'c0$',
+        add_name1             = 'c0$',
+        add_name2             = 'c0$',
+        add_name3             = 'c0$',
+        for_name1             = 'c0$',
+        for_name2             = 'c0$',
+        for_name3             = 'c0$',
+        add_line1             = 'c0$',
+        add_line2             = 'c0$',
+        add_line3             = 'c0$',
+        add_line4             = 'c0$',
+        add_line5             = 'c0$',
+        add_postcode          = 'c0$',
+        address_changed       = 'c0$',
+        phone_contact         = 'c0$',
+        phone_area_code       = 'c0$',
+        phone                 = 'c0$',
+        phone_extension       = 'c0$',
+        fax_area_code         = 'c0$',
+        fax                   = 'c0$',
+        email                 = 'c0$',
+        comments              = 'c0nl')
+    INTO VARCHAR(:h_directory) + 'iqc_' + :h_save_name;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error copying out contributor-level table',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    COPY TABLE iq_returned_question (
+        contributor_reference = 'c0$',
+        period                = 'c0$',
+        question              = 'c0$',
+        returned_value        = 'c0$',
+        comments              = 'c0nl')
+    INTO VARCHAR(:h_directory) + 'iqq_' + :h_save_name;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error copying out question-level table',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Removing spaces in 3 parts (separated by ";"):
+
+     1. Remove spaces at the end of a field (before a "$")
+     2. Remove spaces at the beginning of a field (after a "$")
+     3. Convert multiple spaces into one space.
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msay_cp_callsys (
+              'sed -e"s/  *\\$/\$/g;s/\$  */\$/g;s/  */ /g" ' +
+              VARCHAR(:h_directory) + 'iqc_' + VARCHAR(:h_save_name) +
+              ' > ' + VARCHAR(:h_directory) + 'iq_edit.tmp;' +
+              'mv ' + VARCHAR(:h_directory) + 'iq_edit.tmp ' +
+              VARCHAR(:h_directory) + 'iqc_' + VARCHAR(:h_save_name));
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error removing spaces from contributor file',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC msay_cp_callsys (
+              'sed -e"s/  *\\$/\$/g;s/\$  */\$/g;s/  */ /g" ' +
+              VARCHAR(:h_directory) + 'iqq_' + VARCHAR(:h_save_name) +
+              ' > ' + VARCHAR(:h_directory) + 'iq_edit.tmp;' +
+              'mv ' + VARCHAR(:h_directory) + 'iq_edit.tmp ' +
+              VARCHAR(:h_directory) + 'iqq_' + VARCHAR(:h_save_name));
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error removing spaces from question file',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    INSERT INTO bto_error_log
+    VALUES (    'now',
+                'BTO: Input = ' +
+                VARCHAR(h_lines_c) + ' Contributor rows, ' +
+                VARCHAR(h_lines_q) + ' Question rows',
+                :h_frpr_name,
+                0,
+                :g_user_id);
+    COMMIT;
+
+    /*------------------------------------------------------------------
+    Delete the first of any duplicates from both tables (assuming that
+    subsequent insertions into the input tables are the good ones).
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Deleting Duplicates . . .';
+
+    DELETE FROM iq_returned_contributor a
+    WHERE       contributor_reference IN (
+                SELECT contributor_reference
+                FROM   iq_returned_contributor b
+                WHERE  a.period = b.period
+                AND    a.tid < b.tid);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(h_rows),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error deleting duplicates from iq_returned_contributor',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    IF h_rows <> 0
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    VARCHAR(h_rows) + ' duplicate forms deleted from ' +
+                    'iq_returned_contributor',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+    ENDIF;
+
+    DELETE FROM iq_returned_question a
+    WHERE       contributor_reference IN (
+                SELECT contributor_reference
+                FROM   iq_returned_question b
+                WHERE  a.period = b.period
+                AND    a.question = b.question
+                AND    a.tid < b.tid);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(h_rows),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error deleting duplicates from iq_returned_question',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    IF h_rows <> 0
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    VARCHAR(h_rows) + ' duplicate questions deleted from ' +
+                    'iq_returned_question',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Store in a comments table the comments, which appear on both tables:
+         contributor_level comments on iq_returned_contributor
+         question_level comments on iq_returned_question
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'IQ Comments . . .';
+
+    ret_val = CALLPROC batch_fp_drop_table (
+                       h_table = 'temp_iq_comments');
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE temp_iq_comments (
+        contributor_reference CHAR(11) NOT NULL,
+        period                INTEGER4 NOT NULL,
+        comments              VARCHAR(1000) NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error creating temp_iq_comments',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    INSERT INTO temp_iq_comments
+    SELECT      contributor_reference,
+                period,
+                SQUEEZE(comments)
+    FROM        iq_returned_contributor
+    WHERE       comments <> '';
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(h_rows),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error inserting contributor-level comments',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    h_num_comments = h_rows;
+
+    INSERT INTO temp_iq_comments
+    SELECT      contributor_reference,
+                period,
+                SQUEEZE(VARCHAR(question) + ' - ' + comments)
+    FROM        iq_returned_question
+    WHERE       comments <> '';
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(h_rows),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error inserting question-level comments',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    h_num_comments = h_num_comments + h_rows;
+
+    /*------------------------------------------------------------------
+    Store the original name & address details.
+    Don't update these fields on contributor as they will be amended
+    manually by the DCU (who have to keep the IDBR in line), so store
+    them in iq_contributor_address.
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Deleting Old Name & Address Details . . .';
+
+    DELETE FROM iq_contributor_address a
+    WHERE       contributor_reference IN (
+                SELECT contributor_reference
+                FROM   iq_returned_contributor b
+                WHERE  a.period = b.period);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error deleting old name & address details',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    MESSAGE 'Storing Name & Address Details . . .';
+
+    INSERT INTO iq_contributor_address (
+                contributor_reference,
+                period,
+                addressee,
+                add_name1,
+                add_name2,
+                add_name3,
+                for_name1,
+                for_name2,
+                for_name3,
+                add_line1,
+                add_line2,
+                add_line3,
+                add_line4,
+                add_line5,
+                add_postcode)
+    SELECT      contributor_reference,
+                period,
+                UPPERCASE(addressee),
+                UPPERCASE(add_name1),
+                UPPERCASE(add_name2),
+                UPPERCASE(add_name3),
+                UPPERCASE(for_name1),
+                UPPERCASE(for_name2),
+                UPPERCASE(for_name3),
+                UPPERCASE(add_line1),
+                UPPERCASE(add_line2),
+                UPPERCASE(add_line3),
+                UPPERCASE(add_line4),
+                UPPERCASE(add_line5),
+                UPPERCASE(add_postcode)
+    FROM        iq_returned_contributor;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error storing name & address details',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Combine the rest of the 2 input tables into an input table which
+    is in the same format as the original BTO (Scanning) input table.
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Merging Input Tables . . .';
+
+    ret_val = CALLPROC batch_fp_drop_table (
+                       h_table = 'bto_scanned_input');
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE bto_scanned_input
+    AS SELECT    INT1(0) AS inquiry,
+                 INT4(0) AS contributor_industry,
+                 a.period,
+                 a.contributor_reference,
+                 a.phone_contact,
+                 a.phone_area_code,
+                 a.phone,
+                 a.phone_extension,
+                 a.fax_area_code,
+                 a.fax,
+                 a.email,
+                 a.address_changed AS address_change,
+                 'N' AS lu_change,
+                 'N' AS comments,
+                 'N' AS extra_pages,
+                 b.question,
+                 b.returned_value AS avalue
+    FROM         iq_returned_contributor a,
+                 iq_returned_question b
+    WHERE        a.contributor_reference = b.contributor_reference
+    AND          a.period = b.period;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error creating bto_scanned_input',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     It is conceivable that the 2 input tables may not be linked
+     correctly: i.e. there may be records on one table which have no
+     corresponding records on the other table.  Such records would not
+     have been picked up by the previous "CREATE TABLE" command, so
+     insert them manually from each table.
+
+     They will be flagged as errors by the standard checking later on.
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Inserting Mismatches from iq_returned_contributor . . .';
+
+    /*------------------------------------------------------------------
+    Where a contributor has address data but NO question data.
+    ------------------------------------------------------------------*/
+
+    INSERT INTO bto_scanned_input (
+                inquiry,
+                contributor_industry,
+                period,
+                contributor_reference,
+                phone_contact,
+                phone_area_code,
+                phone,
+                phone_extension,
+                fax_area_code,
+                fax,
+                email,
+                address_change,
+                lu_change,
+                comments,
+                extra_pages,
+                question,
+                avalue)
+    SELECT      0,
+                0,
+                period,
+                contributor_reference,
+                phone_contact,
+                phone_area_code,
+                phone,
+                phone_extension,
+                fax_area_code,
+                fax,
+                email,
+                address_changed,
+                'N',
+                'N',
+                'N',
+                0,
+                0
+    FROM        iq_returned_contributor a
+    WHERE       contributor_reference NOT IN (
+                SELECT contributor_reference
+                FROM   bto_scanned_input b
+                WHERE  a.period = b.period);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error inserting contributor-level mismatches',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Where a contributor has question data but NO address data.
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Inserting Mismatches from iq_returned_question . . .';
+
+    INSERT INTO bto_scanned_input (
+                inquiry,
+                contributor_industry,
+                period,
+                contributor_reference,
+                phone_contact,
+                phone_area_code,
+                phone,
+                phone_extension,
+                fax_area_code,
+                fax,
+                email,
+                address_change,
+                lu_change,
+                comments,
+                extra_pages,
+                question,
+                avalue)
+    SELECT      0,
+                0,
+                0,
+                '',
+                '',
+                '',
+                '',
+                '',
+                '',
+                '',
+                '',
+                'N',
+                'N',
+                'N',
+                'N',
+                question,
+                returned_value
+    FROM        iq_returned_question a
+    WHERE       contributor_reference NOT IN (
+                SELECT contributor_reference
+                FROM   bto_scanned_input b
+                WHERE  a.period = b.period);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error inserting contributor-level mismatches',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Update with the inquiry & contributor_industry from
+     contributor_period.
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Updating Industry/Inquiry Details . . .';
+
+    UPDATE bto_scanned_input a
+    FROM   contributor_period b
+    SET    inquiry = b.inquiry,
+           contributor_industry = b.contributor_industry
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.period = b.period;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error updating inquiry/industry on bto_scanned_input',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Set the comment_marker if the reference/period has an entry on
+    temp_iq_comments.
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Setting Comment Markers . . .';
+
+    UPDATE bto_scanned_input a
+    SET    comments = 'Y'
+    WHERE  contributor_reference IN (
+           SELECT contributor_reference
+           FROM   temp_iq_comments b
+           WHERE  a.period = b.period);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error setting comment markers on bto_scanned_input',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+  
+    /*------------------------------------------------------------------
+    Delete from the input files
+    ------------------------------------------------------------------*/
+
+    DELETE FROM iq_returned_contributor;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error deleting from iq_returned_contributor',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    DELETE FROM iq_returned_question;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error deleting from iq_returned_question',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Load the Comments
+    ------------------------------------------------------------------*/
+
+    IF h_num_comments > 0
+    THEN
+        ret_val = CALLPROC msay_fp_iq_comments ();
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Make fields the right case
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Uppercasing Contributor Details . . .';
+
+    UPDATE bto_scanned_input
+    SET    phone_contact    = UPPERCASE(phone_contact),
+           phone_area_code  = UPPERCASE(phone_area_code),
+           phone            = UPPERCASE(phone),
+           phone_extension  = UPPERCASE(phone_extension),
+           fax              = UPPERCASE(fax),
+           fax_area_code    = UPPERCASE(fax_area_code),
+           address_change   = UPPERCASE(address_change),
+           lu_change        = UPPERCASE(lu_change),
+           comments         = UPPERCASE(comments),
+           extra_pages      = UPPERCASE(extra_pages);
+
+	   /*
+	   this was taken out as some contributors wanted uppercase
+	   letters in their email address.
+           email            = LOWERCASE(email),
+	   */
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error upper/lower-casing bto_scanned_input',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Normally, any forms that have already been taken-on are NOT
+    batch-taken-on again; they are inserted into bto_duplicates later
+    in this program.
+
+    However, if g_reset_forms has been set to 'y', it will re-take-on
+    again any forms in the input table that have already been taken-on
+    but are not yet cleared.
+
+    The procedure msay_fp_reset_forms:
+
+    1. Deletes from bto_scanned_input all forms that are already
+       cleared (leaving the input file containing only uncleared forms).
+
+    2. Blanks out any existing data on cqpv & contributor_period
+       for the remaining (uncleared) forms.
+
+    ------------------------------------------------------------------*/
+
+    IF :g_reset_forms = 'y'
+    THEN
+
+        /*--------------------------------------------------------------
+        Create a table of the distinct forms for use by
+        msay_fp_reset_forms
+        --------------------------------------------------------------*/
+
+        ret_val = CALLPROC batch_fp_drop_table (
+                           h_table = 'temp_bto_scanned_input');
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+        CREATE TABLE temp_bto_scanned_input
+        AS SELECT    DISTINCT contributor_reference,
+                     period
+        FROM         bto_scanned_input;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO bto_error_log
+            VALUES (    'now',
+                        'Error creating temp_bto_scanned_input',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+
+        ENDIF;
+
+        ret_val = CALLPROC msay_fp_reset_forms(
+                  h_input_table = 'bto_scanned_input',
+                  h_temp_input_table = 'temp_bto_scanned_input');
+
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+        ret_val = CALLPROC batch_fp_drop_table (
+                           h_table = 'temp_bto_scanned_input');
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    If any form has already been taken on before, don't take it on again
+    but put it into the bto_duplicates table
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Checking Forms already taken on . . .';
+
+    ret_val = CALLPROC batch_fp_drop_table (
+                       h_table = 'temp_bto_dups');
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE temp_bto_dups
+    AS SELECT    DISTINCT(contributor_reference),
+                 period
+    FROM         bto_scanned_input a
+    WHERE        contributor_reference IN (
+                 SELECT contributor_reference
+                 FROM   contributor_period b
+                 WHERE  a.period = b.period
+                 AND    b.form_status >= 2);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(h_rows),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error creating temp_bto_dups',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+
+    ELSEIF ret_val = 1
+    THEN
+        RETURN 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    There are duplicates, so insert into bto_duplicates
+    ------------------------------------------------------------------*/
+
+    INSERT INTO bto_error_log
+    VALUES (    'now',
+                VARCHAR(h_rows) + ' Forms already Taken On',
+                :h_frpr_name,
+                0,
+                :g_user_id);
+    COMMIT;
+
+    MESSAGE 'Inserting Forms already taken on . . .';
+
+    INSERT INTO bto_duplicates  (
+                time,
+                inquiry,
+                contributor_industry,
+                period,
+                contributor_reference,
+                phone_contact,
+                phone_area_code,
+                phone,
+                phone_extension,
+                fax_area_code,
+                fax,
+                email,
+                address_change,
+                lu_change,
+                comments,
+                extra_pages,
+                question,
+                avalue)
+    SELECT      'now',
+                a.inquiry,
+                a.contributor_industry,
+                a.period,
+                a.contributor_reference,
+                a.phone_contact,
+                a.phone_area_code,
+                a.phone,
+                a.phone_extension,
+                a.fax_area_code,
+                a.fax,
+                a.email,
+                a.address_change,
+                a.lu_change,
+                a.comments,
+                a.extra_pages,
+                a.question,
+                a.avalue
+    FROM        bto_scanned_input a,
+                temp_bto_dups b
+    WHERE       a.contributor_reference = b.contributor_reference
+    AND         a.period = b.period;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error inserting into bto_duplicates',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Delete these already-taken-on-forms from the input table
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Deleting Forms already taken on . . .';
+
+    DELETE FROM bto_scanned_input a
+    WHERE       contributor_reference IN (
+                SELECT contributor_reference
+                FROM   temp_bto_dups b
+                WHERE  a.period = b.period);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error deleting from temp_bto_dups',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table ( h_table = 'temp_bto_dups');
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    RETURN 0;
+}

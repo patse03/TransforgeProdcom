@@ -1,0 +1,332 @@
+/*----------------------------------------------------------------------
+  Converts evalue to avalue for Euro forms
+----------------------------------------------------------------------*/
+
+PROCEDURE msay_fp_convert_euro () =
+
+DECLARE 
+  h_frpr_name             = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_temp_table            = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_debug                 = VARCHAR(160) NOT NULL WITH DEFAULT,
+  h_rows                  = INTEGER4     NOT NULL WITH DEFAULT,
+  h_num_rows              = INTEGER4     NOT NULL WITH DEFAULT,
+  h_return                = INTEGER2     NOT NULL WITH DEFAULT,
+  h_return2               = INTEGER2     NOT NULL WITH DEFAULT,
+  h_contributor_reference = VARCHAR(11)  NOT NULL WITH DEFAULT,
+  h_question              = INTEGER4     NOT NULL WITH DEFAULT,
+  h_period                = INTEGER4     NOT NULL WITH DEFAULT,
+  h_avalue                = INTEGER4     NOT NULL WITH DEFAULT,
+  h_evalue                = INTEGER4     NOT NULL WITH DEFAULT,
+  h_svalue                = INTEGER4     NOT NULL WITH DEFAULT,
+
+
+  lp_error_check          = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_write_to_audit_trail = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name = 'msay_fp_convert_euro';
+  h_temp_table = 'temp_bto_euros';
+
+  MESSAGE 'Updating Euro forms . . .';
+
+  h_debug =  'PRO: Checking for Euro forms to convert.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  /*------------------------------------------------------------------
+    All forms have their values (sterling or euros) loaded originally
+    into the column avalue.
+
+    For Euro forms:
+
+       (1) Convert avalue (of euros) into sterling and leave in avalue.
+       (2) Put the original avalue (of euros) into evalue.
+  ------------------------------------------------------------------*/
+
+  UPDATE bto_question a
+  FROM   contributor_period b,
+         euro_exchange_rate c
+  SET    avalue = (a.avalue * 1.0 / c.euros) + 0.5,
+         evalue = avalue
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.period = b.period
+    AND  a.period = c.period
+    AND  b.currency = 'E'
+    AND  (MOD(a.question,10) = 1 OR MOD(a.question,10000) = 9200);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  h_rows = :h_num_rows;
+
+  IF h_return > 1
+  THEN
+    h_debug =  'ERROR: Failed whilst updating Euro values.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    If there are no Euro forms, then stop.
+  ------------------------------------------------------------------*/
+
+  IF h_rows = 0
+  THEN
+    h_debug =  'PRO: No Euro forms to convert.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+    RETURN 0;
+  ENDIF;
+
+  /*--------------------------------------------------------------------
+      If there were changes made, log them in the audit trail.
+  --------------------------------------------------------------------*/
+
+  SELECT a.contributor_reference AS h_contributor_reference,
+         a.question              AS h_question,
+         a.period                AS h_period,
+         a.evalue                AS h_evalue,
+         a.avalue                AS h_avalue
+  FROM   bto_question a,
+         contributor_period b
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.period = b.period
+    AND  b.currency = 'E'
+    AND  (MOD(a.question,10) = 1 OR MOD(a.question,10000) = 9200)
+  BEGIN
+   
+    h_return2 = CALLPROC lp_write_to_audit_trail
+              ( p_contributor_reference = :h_contributor_reference,
+                p_question              = :h_question,
+                p_period                = :h_period,
+                p_val_1                 = :h_evalue,
+                p_val_2                 = :h_avalue,
+                p_code                  = 10);
+
+    IF h_return2 != 0
+    THEN
+      /* Error reporting handled by local procedure */
+      RETURN :h_return2;
+    ENDIF;
+    
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug =  'ERROR: Failed to select for auidit trail loop.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Rounding problems: If £1 = E1.4, then
+
+    Euro form                           £ form
+    ---------                           ------
+    10 questions of evalue 10    -----> 10 questions of avalue 7
+    9200 question of evalue 100  -----> 9200 question of avalue 71
+
+    And the total 01s (£ 70) does not match the 9200 (£ 71).
+
+    To get around this,
+
+    1. Compare the total 01s (euro) with the 9200 (euro).
+    2. If they match, then set the 9200 (£) to the total 01s (£).
+
+    So, in the example above, the £ 9200 question would be set to
+    10-questions-of-avalue-7 = 70.
+    ------------------------------------------------------------------*/
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Create sum-of-01s for avalue and evalue
+  ------------------------------------------------------------------*/
+
+  CREATE TABLE :h_temp_table
+  AS 
+  SELECT  a.contributor_reference,
+          a.period,
+          SUM(a.avalue) AS sum_avalue,
+          SUM(a.evalue) AS sum_evalue,
+          INT4(0) AS evalue_9200
+  FROM    bto_question a,
+          contributor_period b
+  WHERE   a.period = b.period
+    AND   a.contributor_reference = b.contributor_reference
+    AND   b.currency = 'E'
+    AND   MOD(a.question,10) = 1
+  GROUP 
+     BY   a.contributor_reference,
+          a.period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug =  'ERROR: Failed to create ' + :h_temp_table + '.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Put the evalue 9200 (euro) figure on.
+  ------------------------------------------------------------------*/
+
+  UPDATE :h_temp_table a
+  FROM   bto_question b
+  SET    evalue_9200 = b.evalue
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.period = b.period
+    AND  MOD(b.question,10000) = 9200;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_debug = 'ERROR: Failed whilst updating evalue_9200s on ' 
+	      + :h_temp_table + '.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    If the evalue-sum-of-01s matches the evalue-9200, then set the
+    avalue-9200 to the avalue-sum-of-01s
+  ------------------------------------------------------------------*/
+
+  UPDATE bto_question a
+  FROM   :h_temp_table b
+  SET    avalue = b.sum_avalue
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.period = b.period
+    AND  MOD(a.question,10000) = 9200
+    AND  b.sum_evalue = b.evalue_9200;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed whilst updating 9200s on bto_question.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Note the retotalling on the audit trail.
+  ------------------------------------------------------------------*/
+
+  SELECT a.contributor_reference AS h_contributor_reference,
+         a.question              AS h_question,
+         a.period                AS h_period,
+         b.sum_avalue            AS h_svalue
+  FROM   bto_question a,
+         :h_temp_table b
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.period = b.period
+    AND  MOD(a.question,10000) = 9200
+    AND  b.sum_evalue = b.evalue_9200
+  BEGIN
+
+    h_return2 = CALLPROC lp_write_to_audit_trail
+              ( p_contributor_reference = :h_contributor_reference,
+                p_question              = :h_question,
+                p_period                = :h_period,
+                p_val_1                 = :h_evalue,
+                p_code                  = 6);
+
+    IF h_return2 != 0
+    THEN
+      /* Error reporting handled by local procedure */
+      RETURN :h_return2;
+    ENDIF;
+    
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed to select for retotaling loop.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_debug =  'PRO: Finished converting Euro forms.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  RETURN 0;
+
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_num_row    = BYREF(:h_num_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+
+/*=======================================================================
+    Local procedure to write to audit trail in batch run mode.
+=======================================================================*/
+
+PROCEDURE lp_write_to_audit_trail
+        ( p_contributor_reference = CHAR(11)    NOT NULL WITH DEFAULT,
+          p_question              = INTEGER4    NOT NULL WITH DEFAULT,
+          p_period                = INTEGER4    NOT NULL WITH DEFAULT,
+          p_code                  = INTEGER1    NOT NULL WITH DEFAULT,
+          p_val_1                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_val_2                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_frpr_name             = VARCHAR(36) NOT NULL WITH DEFAULT )=
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC write_to_audit_trail 
+            ( p_contributor_reference = :p_contributor_reference, 
+              p_question              = :p_question,
+              p_period                = :p_period,
+              p_code                  = :p_code, 
+              p_val_1                 = :p_val_1,
+              p_val_2                 = :p_val_2,
+              p_frpr_name             = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

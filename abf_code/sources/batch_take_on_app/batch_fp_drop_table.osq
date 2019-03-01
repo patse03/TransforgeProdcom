@@ -1,0 +1,89 @@
+/*----------------------------------------------------------------------
+ Batch version (no popups) of dropping a table - if it exists
+
+ Calls batch_check_inq_ing and inserts into bto_error_log
+----------------------------------------------------------------------*/
+
+PROCEDURE batch_fp_drop_table (p_table = VARCHAR(40) NOT NULL,
+                               h_table = VARCHAR(40) NOT NULL) =
+
+DECLARE 
+  h_check_table     = VARCHAR(40) NOT NULL WITH DEFAULT,
+  h_frpr_name       = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_debug           = VARCHAR(90) NOT NULL WITH DEFAULT,
+  h_user_id         = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_return          = INTEGER1    NOT NULL WITH DEFAULT,
+  h_return2         = INTEGER1    NOT NULL WITH DEFAULT,
+
+  lp_error_check      = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name = 'batch_fp_drop_table';
+
+  SELECT DBMSINFO('username') AS h_user_id;
+
+  IF  p_table  = ''
+  AND h_table != ''  
+  THEN
+    p_table = :h_table;
+  ENDIF;
+
+  SELECT table_name AS h_check_table
+  FROM   iitables
+  WHERE  table_name  = :p_table
+  AND    table_owner = :h_user_id;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 0);
+
+  IF h_return > 1
+  THEN
+    h_debug =  'SYSTEM ERROR: Unable to access iitables.';
+ /*   CALLPROC write_to_error_log */
+    CALLPROC write_to_process_log
+           ( p_text=:h_debug, p_frpr=:h_frpr_name, p_h_return=:h_return);
+      RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN
+
+    DROP :p_table;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      h_debug =  'ERROR: Failed to drop ' + :p_table +'.';
+     /* CALLPROC write_to_error_log*/
+      CALLPROC write_to_process_log
+             ( p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return2);
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+  RETURN 0;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

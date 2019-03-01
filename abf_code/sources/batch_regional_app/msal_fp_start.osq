@@ -1,0 +1,393 @@
+/*-S--------------------------------------------------------------------
+ Procedure msal_fp_start - Start of Application
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msal_fp_start () =
+
+DECLARE start_proc           = INTEGER1 NOT NULL,
+        end_proc             = INTEGER1 NOT NULL,
+        h_span_end           = INTEGER4 NOT NULL,
+        h_param_list         = VARCHAR(100) NOT NULL,
+        h_varchar_variable   = VARCHAR(100) NOT NULL,
+        h_integer_variable   = INTEGER1 NOT NULL,
+        h_param1             = VARCHAR(20) NOT NULL,
+        h_param2             = VARCHAR(20) NOT NULL,
+        h_param3             = VARCHAR(20) NOT NULL,
+        h_param4             = VARCHAR(20) NOT NULL,
+        ret_val              = INTEGER1 NOT NULL,
+        h_frpr_name          = VARCHAR(24) NOT NULL
+
+{
+    SELECT DBMSINFO('username') AS g_user_id;
+    SELECT DBMSINFO('database') AS g_database;
+
+    IF g_database = 'prodlivedb'
+    THEN
+	g_path_name1 = '/prodcom/live5/files/text';
+    ELSE
+	g_path_name1 = '/prodcom/source/produser/files/text';
+    ENDIF;
+
+    h_frpr_name        = 'msal_fp_start';
+    h_param_list       = CALLPROC CommandLineParameters();
+    h_varchar_variable = squeeze (h_param_list);
+
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param1           = left (h_varchar_variable,h_integer_variable - 1);
+
+    h_varchar_variable = shift (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param2           = left (h_varchar_variable,h_integer_variable - 1);
+
+    h_varchar_variable = shift (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param3           = left (h_varchar_variable,h_integer_variable - 1);
+
+    h_varchar_variable = shift (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param4           = left (h_varchar_variable,h_integer_variable - 1);
+
+    g_inquiry   = INT1(:h_param1);
+    g_period    = INT4(:h_param2);
+    start_proc  = INT1(:h_param3);
+    end_proc    = INT1(:h_param4);
+
+    IF :g_inquiry <> 14 AND :g_inquiry <> 15
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid Inquiry = ' + VARCHAR(:g_inquiry),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF :start_proc < 1 OR :start_proc > 6
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid Start = ' + VARCHAR(:start_proc),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF :end_proc < 1 OR :end_proc > 6
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid End = ' + VARCHAR(:end_proc),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF :start_proc > :end_proc
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid Start = ' + VARCHAR(:start_proc) +
+                    ', End = ' + VARCHAR(:end_proc),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     This calculates the previous 5 periods for quarterly and 4 for
+     annual
+    ----------------------------------------------------------------e-*/
+    IF g_inquiry = 14
+    THEN
+        ret_val = CALLPROC msa_fp_prev_periods (
+                  inquiry      = :g_inquiry,
+                  period       = :g_period,
+                  prev_period1 = BYREF(:g_prev_period1),
+                  prev_period2 = BYREF(:g_prev_period2),
+                  prev_period3 = BYREF(:g_prev_period3),
+                  prev_period4 = BYREF(:g_prev_period4));
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error calling for previous periods',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+
+
+    ELSE
+
+        ret_val = CALLPROC msa_fp_prev_periods (
+                  inquiry      = :g_inquiry,
+                  period       = :g_period,
+                  prev_period1 = BYREF(:g_prev_period1),
+                  prev_period2 = BYREF(:g_prev_period2),
+                  prev_period3 = BYREF(:g_prev_period3),
+                  prev_period4 = BYREF(:g_prev_period4),
+                  prev_period5 = BYREF(:g_prev_period5));
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error calling for previous periods',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+ 
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Assign correct table
+    ----------------------------------------------------------------e-*/
+
+    g_sel_table = 'country_contrib_period';
+
+    INSERT INTO error_log
+    VALUES(     'now',
+                'Selection Starts: Inquiry = ' + VARCHAR(:g_inquiry) +
+                ', Start = ' + VARCHAR(:start_proc) +
+                ', End = ' + VARCHAR(:end_proc),
+                :h_frpr_name,
+                0,
+                :g_user_id);
+    COMMIT;
+
+    /*------------------------------------------------------------------
+     Process 1 - create table of new periods regional data
+    ------------------------------------------------------------------*/
+
+    IF :start_proc = 1
+    THEN
+    /*------------------------------------------------------------------
+    Get latest period for this Inquiry - 
+    which must be the period supplied
+    ------------------------------------------------------------------*/
+
+    SELECT span_end AS h_span_end
+    FROM   inquiry
+    WHERE  inquiry = :g_inquiry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error selecting from inquiry',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF h_span_end <> g_period
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    VARCHAR(:g_period) + ' is not the span end (' +
+                    VARCHAR(:h_span_end) + ') creation cannot run',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+        ret_val = CALLPROC msal_fp_cr_data ();
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Regional_app Fails in Process 1',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ELSE
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Regional_app - Process 1 ends OK',
+                        :h_frpr_name,
+                        0,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Process 2 - Run gains and losses for Wales and Scotland
+    ------------------------------------------------------------------*/
+
+    IF :start_proc <= 2 AND :end_proc >= 2
+    THEN
+
+        ret_val = CALLPROC msal_fp_gains_losses ();
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Regional_app Fails in Process 2',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ELSE
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Regional_app - Process 2 ends OK',
+                        :h_frpr_name,
+                        0,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Process 3 - Produce despatch lists for Wales and Scotland
+    ------------------------------------------------------------------*/
+
+    IF :start_proc <= 3 AND :end_proc >= 3
+    THEN
+        ret_val = CALLPROC msal_fp_despatch();
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Regional_app Fails in Process 3',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ELSE
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Regional_app - Process 3 ends OK',
+                        :h_frpr_name,
+                        0,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Process 4 - Create tables of Welsh Sales data and copy to flat file
+    ------------------------------------------------------------------*/
+
+    IF :start_proc <= 4 AND :end_proc >= 4
+    THEN
+        ret_val = CALLPROC msal_fp_wales_sales ();
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Regional_app Fails in Process 4',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ELSE
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Regional_app - Process 4 ends OK',
+                        :h_frpr_name,
+                        0,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Process 5 - Create tables of Scottish Sales data and copy to flat file
+    ------------------------------------------------------------------*/
+
+    IF :start_proc <= 5 AND :end_proc >= 5
+    THEN
+        ret_val = CALLPROC msal_fp_scot_sales ();
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Regional_app Fails in Process 5',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ELSE
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Regional_app - Process 5 ends OK',
+                        :h_frpr_name,
+                        0,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Process 6 - Create table of Scottish QRPs for 35110 & 35120 
+     produce paper prints and copy to a flat file.
+    ------------------------------------------------------------------*/
+
+    IF :start_proc <= 6 AND :end_proc >= 6
+    THEN
+        ret_val = CALLPROC msal_fp_scot_qrp ();
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Regional_app Fails in Process 6',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ELSE
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Regional_app - Process 6 ends OK',
+                        :h_frpr_name,
+                        0,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+    ENDIF;
+
+
+    /*------------------------------------------------------------------
+     End
+    ------------------------------------------------------------------*/
+
+    RETURN 0;
+}

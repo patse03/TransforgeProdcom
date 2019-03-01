@@ -1,0 +1,473 @@
+/*****************************************************************************
+ Start of SAS scottish input/output file creation.
+
+ Written to replace ad-hoc script job that was called for every year which 
+ provided scottish input and output data for SAS.
+
+ DF 2012.
+
+  One mandatory parameter (usually passed from PPC program):
+    *  g_annual_period: yyyy00
+
+  e.g. Normal run called by PPC:
+       $IMAGES/batch_regional_app regional_03_pr -dprodlivedb -a 201200 
+
+  e.g. Test run called manually on ProdDev
+       $DIMAGES/batch_regional_app regional_03_pr -dproddevd1 -a 201200 
+*****************************************************************************/
+
+PROCEDURE regional_03_pr () =
+
+DECLARE h_param_list         = VARCHAR(100) NOT NULL,
+        h_varchar_variable   = VARCHAR(100) NOT NULL,
+        h_integer_variable   = INTEGER1 NOT NULL,
+        h_param1             = VARCHAR(20) NOT NULL,
+        h_return             = INTEGER1 NOT NULL,
+        h_retries_allowed    = INTEGER1 NOT NULL,
+        h_retries            = INTEGER1 NOT NULL,
+        h_retry_or_not       = CHAR(5) NOT NULL,
+        h_span_end           = INTEGER4 NOT NULL,
+        h_prev_period1       = INTEGER4 NOT NULL,
+        h_frpr_name          = VARCHAR(24) NOT NULL,
+        h_filename           = VARCHAR(43) NOT NULL,
+        h_text               = VARCHAR(60) NOT NULL,
+        h_dummy              = VARCHAR(60) NOT NULL,
+
+        lp_error_check       = PROCEDURE RETURNING INTEGER NOT NULL,
+        lp_full_error_check  = PROCEDURE RETURNING INTEGER NOT NULL,
+        lp_drop_table        = PROCEDURE RETURNING INTEGER NOT NULL,
+
+{
+  h_frpr_name = 'regional_03_pr';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  h_retries_allowed = 3;
+
+  h_param_list = CALLPROC CommandLineParameters();
+
+  h_varchar_variable = SQUEEZE (h_param_list);
+
+  h_integer_variable = LOCATE (h_varchar_variable, ' ');
+  h_param1         =   LEFT (h_varchar_variable,h_integer_variable - 1);
+
+  g_period = INT4(:h_param1);
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_procs (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    h_text = 'ALERT: Unauthorised attempt to run by user_id ' +:g_user_id +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 9,
+             p_text      = :h_text);
+    EXIT;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+  /*------------------------------------------------------------------
+     Log start of process
+  ------------------------------------------------------------------*/
+
+  SELECT MAX(log_no) AS g_log_no
+  FROM   rgn_process_log;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select log number from process log table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  h_text = 'STARTING: Process 3 started.';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  /*------------------------------------------------------------------
+     Validate the period called.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[1/5] Validating parameters. . .';
+  SLEEP 1;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT span_end AS h_span_end
+    FROM   inquiry
+    WHERE  inquiry = 14;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select span end from table inquiry.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  IF h_span_end != g_period
+  THEN
+    h_text = 'ERROR: Period parameter does not match the span end.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Set prev period variable.
+  ------------------------------------------------------------------*/
+
+  h_prev_period1 = :g_period - 100;
+
+  h_filename = '/prodcom/live5/files/sas/scot_io_'
+             + VARCHAR(:h_prev_period1) +'.txt';
+
+  /*------------------------------------------------------------------
+     Delete any existing rows on rgn_scot_info for this period.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[2/5] Deleting any existing records for ' 
+        + VARCHAR(:h_prev_period1) + '. . .';
+  SLEEP 1;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+     DELETE FROM rgn_scot_io
+     WHERE  period = :h_prev_period1;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 0);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to delete existing data from rgn_scot_io.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     First insert into rgn_scot_io.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[3/5] Performing first insert. . .';
+  SLEEP 1;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO rgn_scot_io
+    SELECT b.inquiry,
+           a.lu_region,
+           b.contributor_industry,
+           a.contributor_reference,
+           a.period,
+           ( ( SUM(a.register_emp) * 1.00 ) / b.register_emp ),
+           b.register_emp,
+           b.structure
+    FROM   contributor_luaddress a,
+           contributor_period b
+    WHERE  a.contributor_reference = b.contributor_reference
+      AND  a.period                = b.period
+      AND  a.lu_region             = 'XX'
+      AND  b.structure             = 'L'
+      AND  b.period                = :h_prev_period1
+
+    GROUP BY b.inquiry,
+             a.lu_region,
+             b.contributor_industry,
+             a.contributor_reference,
+             a.period,
+             b.structure,
+             b.register_emp;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    h_text = 'ERROR: Failed on find data for first insert into rgn_scot_io.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+
+  ELSEIF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed on first insert into rgn_scot_io table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Second insert into rgn_scot_io.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[4/5] Performing second insert. . .';
+  SLEEP 1;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO rgn_scot_io
+    SELECT inquiry,
+           region,
+           contributor_industry,
+           contributor_reference,
+           period,
+           1.00,
+           register_emp,
+           structure
+    FROM   contributor_period
+    WHERE  structure = 'E'
+      AND  region    = 'XX'
+      AND  period    = :h_prev_period1;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    h_text = 'ERROR: Failed on find data for second insert into rgn_scot_io.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+
+  ELSEIF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed on second insert into rgn_scot_io table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Create file for SAS.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[5/5] Creating output file. . .';
+  SLEEP 1;
+
+  COPY TABLE rgn_scot_io
+           ( inquiry               = c0$,
+             region                = c0$,
+             contributor_industry  = c0$,
+             contributor_reference = c0$,
+             period                = c0$,
+             percentage            = c0$,
+             register_emp          = c0$,
+             structure             = c0nl)
+  INTO :h_filename;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to crate the output file in $SAS.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Log end of process
+  ------------------------------------------------------------------*/
+
+  h_text = 'COMPLETE: Process 3 completed.';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  h_text = '*SIGNOFF*';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  RETURN 0;
+
+}
+
+/************************* LOCAL PROCEDURES ***************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+                  h_num_row_ck = :p_num_row_ck,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(36) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name  = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  h_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF h_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+

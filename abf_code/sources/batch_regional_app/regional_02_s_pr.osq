@@ -1,0 +1,959 @@
+/*----------------------------------------------------------------------
+ Scottish regional process.
+
+ Rewritten to out of necessity. Removing obsolete code and welsh processes.
+ Updating to modern ons coding standards. Will also remove code relating 
+ to quarterly that is no longer relevant. DF 2012.
+
+----------------------------------------------------------------------*/
+
+PROCEDURE regional_02_s_pr () =
+
+DECLARE h_param_list         = VARCHAR(100) NOT NULL,
+        h_varchar_variable   = VARCHAR(100) NOT NULL,
+        h_integer_variable   = INTEGER1 NOT NULL,
+        h_param1             = VARCHAR(20) NOT NULL,
+        h_param2             = VARCHAR(20) NOT NULL,
+        h_temp_table         = VARCHAR(36) NOT NULL,
+        h_main_table         = VARCHAR(36) NOT NULL,
+        h_table_1            = VARCHAR(36) NOT NULL,
+        h_table_2            = VARCHAR(36) NOT NULL,
+        h_table_3            = VARCHAR(36) NOT NULL,
+        h_table_4            = VARCHAR(36) NOT NULL,
+        h_lgr_table          = VARCHAR(36) NOT NULL,
+        h_return             = INTEGER1 NOT NULL,
+        h_retries_allowed    = INTEGER1 NOT NULL,
+        h_retries            = INTEGER1 NOT NULL,
+        h_retry_or_not       = CHAR(5) NOT NULL,
+        h_span_end           = INTEGER4 NOT NULL,
+        h_prev_period1       = INTEGER4 NOT NULL,
+        h_prev_period2       = INTEGER4 NOT NULL,
+        h_prev_period3       = INTEGER4 NOT NULL,
+        h_prev_period4       = INTEGER4 NOT NULL,
+        h_prev_period5       = INTEGER4 NOT NULL,
+        h_frpr_name          = VARCHAR(36) NOT NULL,
+        h_text               = VARCHAR(60) NOT NULL,
+        h_dummy              = VARCHAR(60) NOT NULL,
+        h_output_location    = VARCHAR(80) NOT NULL,
+        h_backup_location    = VARCHAR(80) NOT NULL,
+        h_lgr_output         = VARCHAR(80) NOT NULL,
+        h_lgr_report         = VARCHAR(80) NOT NULL,
+        h_sls_output         = VARCHAR(80) NOT NULL,
+        h_dsp_output         = VARCHAR(80) NOT NULL,
+        h_lgr_file_backup    = VARCHAR(80) NOT NULL,
+        h_lgr_rprt_backup    = VARCHAR(80) NOT NULL,
+        h_region_code        = CHAR(2) NOT NULL,
+
+        lp_error_check       = PROCEDURE RETURNING INTEGER NOT NULL,
+        lp_full_error_check  = PROCEDURE RETURNING INTEGER NOT NULL,
+        lp_drop_table        = PROCEDURE RETURNING INTEGER NOT NULL,
+
+{
+  h_frpr_name = 'regional_02_s_pr';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  h_retries_allowed = 3;
+
+  h_param_list = CALLPROC CommandLineParameters();
+
+  h_main_table  = 'tt_regional_01';
+  h_temp_table  = 'tt_regional_02';
+  h_lgr_table   = 'rgn_lgr_' +LOWER(:g_region) 
+                + '_' +VARCHAR(:g_period);
+  h_table_1     = 'tt_regional_contribs_'+VARCHAR(:g_prev_period1);
+  h_table_2     = 'tt_regional_contribs_'+VARCHAR(:g_period);
+  h_table_3     = 'tt_regional_losses_'  +VARCHAR(:g_period);
+  h_table_4     = 'tt_regional_gains_'   +VARCHAR(:g_period);
+
+  h_output_location = '/admin/scratch/';
+  h_backup_location = '/home/prodcom/admin/prodlive/gains_losses/';
+
+  h_lgr_output = :h_output_location + 'scottish_lgr_' 
+               + VARCHAR(:g_period) + '.txt';
+
+  h_lgr_report = :h_output_location + 'scottish_lgr_rprt_' 
+               + VARCHAR(:g_period) + '.txt';
+
+  h_sls_output = :h_output_location + 'scottish_sls_' 
+               + VARCHAR(:g_period) + '.txt';
+
+  h_dsp_output = :h_output_location + 'scottish_dsp_' 
+               + VARCHAR(:g_period) + '.txt';
+
+  h_lgr_file_backup = :h_backup_location + 'scottish_lgr_' 
+                    + VARCHAR(:g_period) + '.txt';
+
+  h_lgr_rprt_backup = :h_backup_location + 'scottish_lgr_rprt_' 
+                    + VARCHAR(:g_period) + '.txt';
+
+
+  /*------------------------------------------------------------------
+     Log start of process
+  ------------------------------------------------------------------*/
+
+  h_text = 'STARTING: Process 2 started.';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  /*------------------------------------------------------------------
+   Recalculate Losses and gains for Scotland.
+
+   This needs to be done to take into account the deselections and 
+   additions made during the main selection contributor losses and gains
+   exercise.
+  ------------------------------------------------------------------*/
+
+  /*..................................................................
+    Drop then create table of pervious period contributor references.
+  ..................................................................*/
+
+  MESSAGE '[8/23] Creating ' +:h_table_1 +'. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop ' +:h_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  CREATE TABLE :h_table_1 
+  AS 
+  SELECT       contributor_reference,
+               contributor_industry,
+               register_emp,
+               percentage,
+               structure,
+               contributor_name
+  FROM         :h_main_table
+  WHERE        period = :g_prev_period1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  MODIFY :h_table_1 TO BTREE UNIQUE 
+  ON contributor_reference, contributor_industry; 
+ 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify ' +:h_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  /*..................................................................
+    Drop then create table of current period contributor references.
+  ..................................................................*/
+
+  MESSAGE '[9/23] Creating ' +:h_table_2 +'. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_2);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop ' +:h_table_2 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  CREATE TABLE :h_table_2 
+  AS 
+  SELECT       contributor_reference,
+               contributor_industry,
+               register_emp,
+               percentage,
+               structure,
+               contributor_name
+  FROM         :h_main_table
+  WHERE        period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_table_2 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  MODIFY :h_table_2 TO BTREE UNIQUE 
+  ON contributor_reference, contributor_industry; 
+ 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify ' +:h_table_2 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  /*..................................................................
+    Drop then create table of losses based on tables 1 and 2
+  ..................................................................*/
+
+  MESSAGE '[10/23] Creating ' +:h_table_2 +'. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_3);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop ' +:h_table_3 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  CREATE TABLE :h_table_3 
+  AS 
+  SELECT a.contributor_reference,
+         a.contributor_industry,
+         a.register_emp,
+         a.percentage,
+         a.structure,
+         'L' AS type,
+         contributor_name
+  FROM   :h_table_1 a
+  WHERE  a.contributor_reference NOT IN
+      (  SELECT b.contributor_reference
+         FROM   :h_table_2 b
+         WHERE  b.contributor_reference = a.contributor_reference);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_table_3 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  MODIFY :h_table_3 TO BTREE UNIQUE 
+  ON contributor_reference, contributor_industry; 
+ 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify ' +:h_table_3 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  /*..................................................................
+    Drop then create table of gains based on tables 2 and 1
+  ..................................................................*/
+
+  MESSAGE '[11/23] Creating ' +:h_table_4 +'. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_4);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop ' +:h_table_4 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  CREATE TABLE :h_table_4 
+  AS 
+  SELECT a.contributor_reference,
+         a.contributor_industry,
+         a.register_emp,
+         a.percentage,
+         a.structure,
+         'G' AS type,
+         contributor_name
+  FROM   :h_table_2 a
+  WHERE  a.contributor_reference NOT IN
+      (  SELECT b.contributor_reference
+         FROM   :h_table_1 b
+         WHERE  b.contributor_reference = a.contributor_reference);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_table_4 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  MODIFY :h_table_4 TO BTREE UNIQUE 
+  ON contributor_reference, contributor_industry; 
+ 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify ' +:h_table_4 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  /*..................................................................
+    Drop then create regional losses, gains and reclass table as
+    union of tables 3 and 4 and reclasses.
+  ..................................................................*/
+
+  MESSAGE '[12/23] Creating ' +:h_lgr_table +'. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_lgr_table);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop ' +:h_lgr_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  CREATE TABLE :h_lgr_table
+  AS 
+    SELECT a.contributor_reference,
+           'L' AS type,
+           a.contributor_industry AS prev_sic,
+           0 AS curr_sic,
+           a.register_emp AS prev_emp,
+           0 AS curr_emp,
+           a.percentage,
+           a.structure,
+           a.contributor_name
+    FROM   :h_table_3 a
+  UNION
+    SELECT b.contributor_reference,
+           'G' AS type,
+           0 AS prev_sic,
+           b.contributor_industry AS curr_sic,
+           0 AS prev_emp,
+           b.register_emp AS curr_emp,
+           b.percentage,
+           b.structure,
+           b.contributor_name
+    FROM   :h_table_4 b
+  UNION
+    SELECT c.contributor_reference,
+           'R' AS type,
+           d.contributor_industry AS prev_sic,
+           c.contributor_industry AS curr_sic,
+           d.register_emp AS prev_emp,
+           c.register_emp AS curr_emp,
+           c.percentage,
+           c.structure,
+           c.contributor_name
+    FROM   :h_table_2 c,
+           :h_table_1 d
+    WHERE  c.contributor_reference = d.contributor_reference
+      AND  c.contributor_industry  != d.contributor_industry;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_lgr_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  MODIFY :h_lgr_table TO BTREE UNIQUE 
+  ON contributor_reference, curr_sic; 
+ 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify ' +:h_lgr_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  /*..................................................................
+      Create .txt file for data output, and back up.
+  ..................................................................*/
+
+  MESSAGE '[13/23] Creating Scottish LGR data file. . .';
+  SLEEP 1;
+
+  COPY TABLE :h_lgr_table
+           ( prev_sic              = c0comma,
+             curr_sic              = c0comma,
+             contributor_reference = c0comma,
+             type                  = c0comma,
+             prev_emp              = c0comma,
+             curr_emp              = c0comma,
+             percentage            = c0nl)
+  INTO :h_lgr_output;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create Scottish LGR output file.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  IF g_database != 'proddevdb'
+  THEN
+    MESSAGE '[14/23] SKIPPING: No backup as not live run. . .';
+    SLEEP 1;
+
+  ELSE
+    MESSAGE '[14/23] Backing up Scottish LGR data file. . .';
+    SLEEP 1;
+
+    COPY TABLE :h_lgr_table
+           ( prev_sic              = c0comma,
+             curr_sic              = c0comma,
+             contributor_reference = c0comma,
+             type                  = c0comma,
+             prev_emp              = c0comma,
+             curr_emp              = c0comma,
+             percentage            = c0nl)
+    INTO :h_lgr_file_backup;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to create Scottish LGR backup file.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN :h_return;
+    ENDIF;
+
+  ENDIF;
+
+  /*......................................................................
+      Create .txt file (tab delimiter) for report output, and back up.
+  ......................................................................*/
+
+  MESSAGE '[15/23] Creating Scottish LGR report file. . .';
+  SLEEP 1;
+
+  COPY TABLE :h_lgr_table
+           ( prev_sic              = c0tab,
+             curr_sic              = c0tab,
+             contributor_reference = c0tab,
+             type                  = c0tab,
+             prev_emp              = c0tab,
+             curr_emp              = c0tab,
+             percentage            = c0tab,
+             contributor_name      = c0nl)
+  INTO :h_lgr_report;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create Scottish LGR report file.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  IF g_database != 'proddevdb'
+  THEN
+    MESSAGE '[16/23] SKIPPING: No backup as not live run. . .';
+    SLEEP 1;
+
+  ELSE
+    MESSAGE '[16/23] Backing up Scottish LGR report file. . .';
+    SLEEP 1;
+
+    COPY TABLE :h_lgr_table
+           ( prev_sic              = c0tab,
+             curr_sic              = c0tab,
+             contributor_reference = c0tab,
+             type                  = c0tab,
+             prev_emp              = c0tab,
+             curr_emp              = c0tab,
+             percentage            = c0tab,
+             contributor_name      = c0nl)
+    INTO :h_lgr_rprt_backup;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to create Scottish LGR report backup.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN :h_return;
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+   Produce sales and employment file.
+  ------------------------------------------------------------------*/
+
+  IF :g_stage = 1
+  THEN
+
+    MESSAGE '[17/23] SKIPPING: No need for sales data this run. . .';
+    SLEEP 1;
+
+    MESSAGE '[18/23] SKIPPING: No need for sales data this run. . .';
+    SLEEP 1;
+
+  ELSE
+
+    /*......................................................................
+      Drop then create table of sales and employment to cover 5 year span.
+    .......................................................................*/
+
+    MESSAGE '[17/23] Creating ' +:h_temp_table +'. . .';
+    SLEEP 1;
+
+    h_return = CALLPROC lp_drop_table (p_table_name = :h_temp_table);
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to drop ' +:h_temp_table +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN :h_return;
+    ENDIF;
+
+    CREATE TABLE :h_temp_table
+    AS
+    SELECT contributor_industry,
+           contributor_reference,
+           period,
+           percentage,
+           avalue,
+           register_emp,
+           acell,
+           contributor_name
+    FROM   :h_main_table;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to create ' +:h_temp_table +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN :h_return;
+    ENDIF;
+
+    MODIFY :h_temp_table TO BTREE UNIQUE 
+    ON contributor_industry, contributor_reference, period; 
+   
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to modify ' +:h_temp_table +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN :h_return;
+    ENDIF;
+
+    /*......................................................................
+        Create .txt file (tab delimiter) for sales and employment output.
+    ......................................................................*/
+
+    MESSAGE '[18/23] Creating Scottish sales output file. . .';
+    SLEEP 1;
+
+    COPY :h_temp_table 
+       ( contributor_industry  = c0tab,
+         contributor_reference = c0tab,
+         period                = c0tab,
+         percentage            = c0tab,
+         avalue                = c0tab,
+         register_emp          = c0tab,
+         acell                 = c0tab,
+         contributor_name      = c0nl)
+    INTO :h_sls_output;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to create Scottish sales and emp output file.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN :h_return;
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Produce despatch list on first run only.
+  ------------------------------------------------------------------*/
+
+  IF g_stage = 2
+  THEN
+
+    MESSAGE '[19/23] SKIPPING: Despatch list not needed for this stage. . .';
+    SLEEP 1;
+
+    MESSAGE '[20/23] SKIPPING: Despatch list not needed for this stage. . .';
+    SLEEP 1;
+
+    MESSAGE '[21/23] SKIPPING: Despatch list not needed for this stage. . .';
+    SLEEP 1;
+
+  ELSE
+
+    /*......................................................................
+        Drop then create table for despatch list print.
+    .......................................................................*/
+
+    MESSAGE '[19/23] Creating despatch list table. . .';
+    SLEEP 1;
+
+    h_return = CALLPROC lp_drop_table (p_table_name = :h_temp_table);
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to drop ' +:h_temp_table +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN :h_return;
+    ENDIF;
+
+    CREATE TABLE :h_temp_table 
+    AS
+    SELECT a.contributor_industry,
+           a.contributor_reference,
+           b.enterprise,
+           a.register_emp,
+           a.percentage,
+           a.contributor_name
+    FROM   :h_main_table a,
+           contributor_period b
+    WHERE  a.period = VARCHAR(:g_period)
+      AND  b.period = a.period
+      AND  b.contributor_industry  = a.contributor_industry
+      AND  b.contributor_reference = a.contributor_reference;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to create despatch list table.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN :h_return;
+    ENDIF;
+
+    /*......................................................................
+        Modify despatch list table.
+    .......................................................................*/
+
+    MESSAGE '[20/23] Modifying despatch list table. . .';
+    SLEEP 1;
+
+    MODIFY :h_temp_table TO BTREE UNIQUE
+    ON     contributor_industry, contributor_reference;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to modify despatch list table.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN :h_return;
+    ENDIF;
+
+    /*......................................................................
+        Output despatch list to file. 
+    .......................................................................*/
+
+    MESSAGE '[21/23] Creating despatch list file. . .';
+    SLEEP 1;
+
+    COPY :h_temp_table 
+       ( contributor_industry  = c0comma,
+         contributor_reference = c0comma,
+         enterprise            = c0comma,
+         register_emp          = c0comma,
+         percentage            = c0comma, 
+         contributor_name      = c0nl)
+    INTO :h_dsp_output;     
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to output despatch list to file.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN :h_return;
+    ENDIF;
+
+  ENDIF;
+
+  
+  /*------------------------------------------------------------------
+   Tidy up temp tables.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[22/23] Tidying up temp tables. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to tidy up ' +:h_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_2);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to tidy up ' +:h_table_2 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_3);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to tidy up ' +:h_table_3 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_4);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to tidy up ' +:h_table_4 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to tidy up ' +:h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Log end of process
+  ------------------------------------------------------------------*/
+
+  h_text = 'COMPLETE: Process 2 completed.';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+
+  RETURN 0;
+
+}
+
+/************************* LOCAL PROCEDURES ***************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+                  h_num_row_ck = :p_num_row_ck,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(36) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name  = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  h_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF h_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+

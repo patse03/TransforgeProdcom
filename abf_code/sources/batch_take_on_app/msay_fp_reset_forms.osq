@@ -1,0 +1,558 @@
+/*----------------------------------------------------------------------
+In a normal run of batch-take-on, if any form has been taken-on before,
+it is NOT taken-on again, but is just inserted into bto_duplicates for
+the DCU's attention.
+
+However, if g_reset_forms is set to 'y', then this procedure is called,
+which allows the re-taking-on of already-taken-on forms.
+
+It does the following: 
+
+(1) deletes from the input tables any forms that are already cleared
+    (but only if running on live database),
+
+(2) blanks out the cqpv/contributor_period records for any forms
+    left on the input table.
+
+(3) deletes from bto_reference_score, bto_reference_acu, bto_question_score, 
+    bto_unscored, bto_unscored_cleared for any forms left on the input table.
+
+(4) deletes the all but current entry in bto_front_page_only for any forms 
+    left on the input table.
+
+NB: Test database needs a full reset as we want to compare all input
+file against output on multiple run throughs. This is dealt with by 
+h_reset flag in the main process. - DF 2010
+----------------------------------------------------------------------*/
+
+PROCEDURE msay_fp_reset_forms 
+        ( p_input_table      = VARCHAR(24) NOT NULL,
+          p_temp_input_table = VARCHAR(24) NOT NULL)=
+
+DECLARE 
+  h_frpr_name             = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_debug                 = VARCHAR(80) NOT NULL WITH DEFAULT,
+  h_return                = INTEGER1    NOT NULL WITH DEFAULT,
+  h_return2               = INTEGER1    NOT NULL WITH DEFAULT,
+  h_rows                  = INTEGER4    NOT NULL WITH DEFAULT,
+  h_counter               = INTEGER4    NOT NULL WITH DEFAULT,
+  h_contributor_reference = VARCHAR(80) NOT NULL WITH DEFAULT,
+  h_period                = INTEGER4    NOT NULL WITH DEFAULT,
+
+  lp_error_check          = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_write_to_audit_trail = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name = 'msay_fp_reset_forms';
+  h_rows = 0;
+
+  h_debug = 'PRO: Starting reset process.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  /*-------------------------------------------------------------------
+    (1) If running on live database, any forms that have already been 
+        cleared are deleted from the input table
+ -------------------------------------------------------------------*/
+
+  IF g_database = 'prodlivedb' 
+  THEN
+
+  h_debug = 'RESET: Deleting forms already fully cleared from temp table.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  DELETE FROM :p_temp_input_table a
+  WHERE  contributor_reference IN
+         (SELECT contributor_reference
+          FROM   contributor_period b
+          WHERE  form_status = 4
+            AND  a.period = b.period);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed whilst deleting cleared forms '
+            + 'from ' + :p_temp_input_table +'.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_debug = 'RESET: '+VARCHAR(:h_rows) + ' cleared forms deleted.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  h_debug = 'RESET: Removing forms already fully cleared from input table.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  DELETE FROM :p_input_table a
+  WHERE  contributor_reference IN
+         (SELECT contributor_reference
+          FROM   contributor_period b
+          WHERE  form_status = 4
+            AND  a.period = b.period);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed whilst removing cleared forms '
+            + 'from ' +:p_input_table +'.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_debug = 'RESET: '+VARCHAR(:h_rows) + ' previously cleared forms removed.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+ ENDIF;   /* on live database */ 
+
+ /*-------------------------------------------------------------------
+    (2) All data for uncleared forms on cqpv and contributor_period has to
+        be blanked out as if form has never been received, after
+	marking up the data audit trail.
+ -------------------------------------------------------------------*/
+    
+  IF g_database = 'prodlivedb' 
+  THEN
+    h_debug = 'RESET: Reseting uncleared forms on cqpv and '
+            + 'contributor_period.';
+  ELSE
+    h_debug = 'RESET: Reseting all forms on cqpv and '
+            + 'contributor_period for testing.';
+  ENDIF;
+
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  DELETE FROM cqpv a
+  WHERE  acell = 'W'
+    AND  contributor_reference IN
+         (SELECT contributor_reference
+          FROM   :p_temp_input_table b
+          WHERE  a.period = b.period);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed whilst deleting from cqpv.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  UPDATE cqpv a
+  FROM   :p_temp_input_table b
+  SET    acell = 'N',
+         avalue = 0,
+         acell_type = '',
+         aconstruction_type = 0,
+         fcell = 'N',
+         fvalue = 0,
+         fcell_type = '',
+         fconstruction_type = 0,
+         confirmation_code = '',
+         confirmation_date = ''
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.period = b.period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed to reset cqpv after deletion.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  UPDATE contributor_period a
+  FROM   :p_temp_input_table b
+  SET    receipt_date   = '',
+         correct_date   = '',
+         rec_week_no    = 0,
+         corr_week_no   = 0,
+         form_received  = 'N',
+         form_taken_on  = 'N',
+         f9_count       = 0,
+         user_id        = '',
+         form_status    = 0
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.period = b.period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed to reset contributor_period.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+    
+  IF g_database = 'prodlivedb' 
+  THEN
+    h_debug = 'RESET: '+VARCHAR(:h_rows) + ' uncleared forms reset.';
+  ELSE
+    h_debug = 'RESET: '+VARCHAR(:h_rows) + ' forms reset.';
+  ENDIF;
+
+  CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  /*-------------------------------------------------------------------
+    (3) Deleting from bto_reference_score, bto_reference_acu, 
+        bto_question_score, bto_unscored, bto_unscored_cleared,
+        audit_trail for any forms left on the input table.
+  -------------------------------------------------------------------*/
+  /*..................................................................
+      (a) bto_reference_score
+  ..................................................................*/
+    
+  h_debug = 'RESET: Deleting from bto_reference_score as apropriate.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  DELETE FROM bto_reference_score a
+  WHERE  a.contributor_reference IN  
+         (SELECT contributor_reference
+          FROM   :p_temp_input_table b
+          WHERE  a.period = b.period);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed whilst deleting from bto_reference_score.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_debug = 'RESET: '+VARCHAR(:h_rows) + ' forms deleted '
+          + 'from bto_reference_score.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  /*..................................................................
+      (b) bto_reference_acu
+  ..................................................................*/
+    
+  h_debug = 'RESET: Deleting from bto_reference_acu as apropriate.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  DELETE FROM bto_reference_acu a
+  WHERE  a.contributor IN  
+         ( SELECT contributor_reference
+           FROM   :p_temp_input_table b
+           WHERE  a.period = b.period);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed whilst deleting from bto_reference_acu.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_debug = 'RESET: '+VARCHAR(:h_rows) + ' marker rows deleted '
+          + 'from bto_reference_acu.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  /*..................................................................
+      (c) bto_question_score
+  ..................................................................*/
+    
+  h_debug = 'RESET: Deleting from bto_question_score as apropriate.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  DELETE FROM bto_question_score a
+  WHERE  a.contributor_reference IN  
+         (SELECT contributor_reference
+          FROM   :p_temp_input_table b
+          WHERE  a.period = b.period);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed whilst deleting from bto_question_score.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_debug = 'RESET: '+VARCHAR(:h_rows) + ' questions deleted '
+          + 'from bto_question_score.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  /*..................................................................
+      (d) bto_unscored
+  ..................................................................*/
+    
+  h_debug = 'RESET: Deleting from bto_unscored as apropriate.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  DELETE FROM bto_unscored a
+  WHERE  a.contributor_reference IN
+         (SELECT contributor_reference
+          FROM   :p_temp_input_table b
+          WHERE  a.period = b.period);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed whilst deleting from bto_unscored.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_debug = 'RESET: '+VARCHAR(:h_rows) + ' forms deleted '
+          + 'from bto_unscored.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  /*..................................................................
+      (e) bto_unscored_cleared
+  ..................................................................*/
+    
+  h_debug = 'RESET: Deleting from bto_unscored_cleared as apropriate.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  DELETE FROM bto_unscored_cleared a
+  WHERE  a.contributor_reference IN  
+         (SELECT contributor_reference
+          FROM   :p_temp_input_table b
+          WHERE  a.period = b.period);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed whilst deleting from bto_unscored_cleared.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_debug = 'RESET: '+VARCHAR(:h_rows) + ' forms deleted '
+          + 'from bto_unscored_cleared.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  /*..................................................................
+      (f) bto_front_page_only 
+  ..................................................................*/
+    
+  h_debug = 'RESET: Deleting from bto_front_page_only as apropriate.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  DELETE FROM bto_front_page_only a
+  WHERE  a.contributor_reference IN  
+         (SELECT contributor_reference
+          FROM   :p_temp_input_table b
+          WHERE  b.period = ((a.period/100)*100)
+            AND  a.time != :g_batch_date )  
+    AND  a.counter =  
+         (SELECT MAX(c.counter)
+          FROM   bto_front_page_only c 
+          WHERE  a.contributor_reference = c.contributor_reference
+            AND  a.period = c.period
+            AND  c.counter < :g_counter);
+                              
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed whilst deleting from bto_front_page_only.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_debug = 'RESET: '+VARCHAR(:h_rows) + ' returns deleted '
+          + 'from bto_front_page_only.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  /*..................................................................
+      (g) audit_trail
+  ..................................................................*/
+    
+  h_debug = 'RESET: Deleting from audit_trail as apropriate.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  DELETE FROM audit_trail a
+  WHERE  a.time < :g_batch_date 
+    AND  a.contributor_reference IN  
+         (SELECT contributor_reference
+          FROM   :p_temp_input_table b
+          WHERE  a.period = b.period);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed whilst deleting from audit_trail.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_debug = 'RESET: '+VARCHAR(:h_rows) + ' entries deleted '
+          + 'from audit_trail.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  /*..................................................................
+      (h) avalue_autoedit
+  ..................................................................*/
+    
+  h_debug = 'RESET: Deleting from avalue_autoedit as apropriate.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  DELETE FROM avalue_autoedit a
+  WHERE  a.contributor IN  
+         (SELECT contributor_reference
+          FROM   :p_temp_input_table b
+          WHERE  a.period = b.period);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed whilst deleting from avalue_autoedit.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  h_debug = 'RESET: '+VARCHAR(:h_rows) + ' forms deleted '
+          + 'from audit_trail.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  /*------------------------------------------------------------------
+      Noting reset in audit trail.
+  ------------------------------------------------------------------*/
+    
+  h_debug = 'RESET: Noting reset forms in audit trail.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  SELECT DISTINCT contributor_reference AS h_contributor_reference,
+                  period                AS h_period
+  FROM   :p_temp_input_table 
+  BEGIN
+
+    h_return2 = CALLPROC lp_write_to_audit_trail
+               ( p_contributor_reference = :h_contributor_reference,
+                 p_period                = :h_period,
+                 p_code                  = 19);
+
+    IF h_return2 != 0
+    THEN
+      /* Error reported by external procedure */
+      RETURN 9;
+    ENDIF;
+
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_debug = 'ERROR: Failed to select for audit trail noting loop.';
+    CALLPROC write_to_process_log
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN h_return;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+     Finishing up.
+  ----------------------------------------------------------------------*/
+
+  h_debug = 'PRO: Finished reset process.';
+  CALLPROC write_to_process_log
+           (p_text=:h_debug, p_frpr=:h_frpr_name, p_return=0);
+
+  RETURN 0;
+
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_num_row    = BYREF(:h_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+
+/*=======================================================================
+    Local procedure to write to audit trail in batch run mode.
+=======================================================================*/
+
+PROCEDURE lp_write_to_audit_trail
+        ( p_contributor_reference = CHAR(11)    NOT NULL WITH DEFAULT,
+          p_question              = INTEGER4    NOT NULL WITH DEFAULT,
+          p_period                = INTEGER4    NOT NULL WITH DEFAULT,
+          p_code                  = INTEGER1    NOT NULL WITH DEFAULT,
+          p_val_1                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_val_2                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_frpr_name             = VARCHAR(36) NOT NULL WITH DEFAULT )=
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC write_to_audit_trail 
+            ( p_contributor_reference = :p_contributor_reference, 
+              p_question              = :p_question,
+              p_period                = :p_period,
+              p_code                  = :p_code, 
+              p_val_1                 = :p_val_1,
+              p_val_2                 = :p_val_2,
+              p_frpr_name             = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+

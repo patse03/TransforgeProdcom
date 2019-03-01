@@ -1,0 +1,2241 @@
+/*----------------------------------------------------------------------
+Extracts all written ins to a table for csv extract/counts etc.
+----------------------------------------------------------------------*/
+
+PROCEDURE adhoc_extract_written_ins_op () =
+
+DECLARE h_frpr_name          = VARCHAR(24)  NOT NULL,
+        h_return             = INTEGER1     NOT NULL,
+        h_return_2           = INTEGER1     NOT NULL,
+        h_total_rows         = INTEGER4     NOT NULL,
+        h_debug              = VARCHAR(160) NOT NULL,
+        h_rows               = INTEGER4     NOT NULL,
+        h_pv_forms           = INTEGER4     NOT NULL,
+        h_pv_quest           = INTEGER4     NOT NULL,
+        h_oa_forms           = INTEGER4     NOT NULL,
+        h_oa_quest           = INTEGER4     NOT NULL,
+        h_wi_forms           = INTEGER4     NOT NULL,
+        h_wi_quest           = INTEGER4     NOT NULL,
+        h_percent            = FLOAT8       NOT NULL,
+        
+        h_input_table        = VARCHAR(24)  NOT NULL,
+        h_error_table        = VARCHAR(24)  NOT NULL,
+        h_mismatch_table     = VARCHAR(24)  NOT NULL,
+        h_dup_table          = VARCHAR(24)  NOT NULL,
+        h_working_table      = VARCHAR(24)  NOT NULL,
+        h_checkscan_table    = VARCHAR(24)  NOT NULL,
+        h_checkscan_temp     = VARCHAR(24)  NOT NULL,
+        h_fpo_table          = VARCHAR(24)  NOT NULL,
+
+        lp_load_scanned      = PROCEDURE RETURNING INTEGER,
+        lp_check_scanned     = PROCEDURE RETURNING INTEGER
+
+{
+    h_input_table        = 'tt_ewi_input';
+    h_error_table        = 'tt_ewi_errors';
+    h_mismatch_table     = 'tt_ewi_mismatches';
+    h_dup_table          = 'tt_ewi_duplicates';
+    h_working_table      = 'tt_ewi_working';
+    h_checkscan_table    = 'tt_ewi_checkscan';
+    h_checkscan_temp     = 'tt_ewi_checkscan_temp';
+    h_fpo_table          = 'tt_ewi_front_page_only';
+
+    h_frpr_name = 'adhoc_extract_written_ins_op';
+    h_total_rows = 0;
+
+    g_log_no = 0;
+
+    SELECT DBMSINFO('username') AS g_user_id;
+    SELECT DBMSINFO('database') AS g_database;
+
+    IF :g_database = 'prodlivedb'
+    THEN
+       MESSAGE'IMPORTANT: DONT RUN THIS ON PRODLIVE!' WITH STYLE = POPUP;
+       EXIT;
+    ENDIF;
+
+    h_debug =  'DEV: START OF ADHOC PROCEDURE.';
+    CALLPROC batch_fp_error_log
+	     (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+    COMMIT;
+
+    /*------------------------------------------------------------------
+    Clear down ewi_question and ewi_reference
+    ------------------------------------------------------------------*/
+    MODIFY ewi_question  TO TRUNCATED; COMMIT;
+    MODIFY ewi_reference TO TRUNCATED; COMMIT;
+
+    /*------------------------------------------------------------------
+    Load the data from scanned forms.
+    ------------------------------------------------------------------*/
+
+    h_debug =  'PRO: Calling lp_load_scanned.';
+    CALLPROC batch_fp_error_log
+	     (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    h_return = CALLPROC lp_load_scanned ();
+
+    IF h_return = 1
+    THEN
+        h_debug = 'DEV: END OF MAIN PROCEDURE (No input file available.)';
+        CALLPROC batch_fp_error_log
+	         (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:h_return);
+        EXIT;
+    ENDIF;
+
+    IF h_return <> 0
+    THEN
+        h_debug = 'ERROR: Local procedure to load data failed.';
+        CALLPROC batch_fp_error_log
+  	         (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:h_return);
+        EXIT;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Validates the scanned data
+    ------------------------------------------------------------------*/
+
+    h_debug =  'PRO: Calling lp_check_scanned.';
+    CALLPROC batch_fp_error_log
+	     (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    h_return = CALLPROC lp_check_scanned ();
+
+    IF h_return <> 0
+    THEN
+        h_debug = 'ERROR: Call to check scanned data failed.';
+        CALLPROC batch_fp_error_log
+	     (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:h_return);
+        EXIT;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Converts the euro forms into sterling
+    ------------------------------------------------------------------*/
+
+    h_debug =  'PRO: Calling msay_fp_convert_euro.';
+    CALLPROC batch_fp_error_log
+	     (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    h_return = CALLPROC msay_fp_convert_euro ();
+
+    IF h_return <> 0
+    THEN
+        h_debug = 'ERROR: Call to convert euro failed.';
+        CALLPROC batch_fp_error_log
+	     (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:h_return);
+        EXIT;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Create table of the distinct references
+     (set no. of references to g_forms_cleared and subtract from it
+      any failures along the way)
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Creating Initial ewi_reference . . .';
+
+    h_return = CALLPROC batch_fp_drop_table ( h_table = 'ewi_reference');
+
+    IF h_return <> 0
+    THEN
+        EXIT;
+    ENDIF;
+
+    CREATE TABLE ewi_reference
+    AS SELECT    DISTINCT(contributor_reference),
+                 contributor_industry,
+                 inquiry,
+                 period,
+                 INT1(0) AS error_status
+    FROM         ewi_question;
+
+    h_return = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(:g_forms_cleared),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF h_return = 9
+    THEN
+	h_debug = 'ERROR: Failed to create ewi_reference.';
+        CALLPROC batch_fp_error_log
+	     (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:h_return);
+        EXIT;
+    ELSEIF h_return = 1
+    THEN
+	h_debug = 'WARNING: No references to take on.';
+        CALLPROC batch_fp_error_log
+	     (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:h_return);
+        EXIT;
+    ENDIF;
+
+    MODIFY ewi_reference TO BTREE ON contributor_reference,period;
+    COMMIT;
+
+    /*------------------------------------------------------------------
+     Delete Uncoded Entry Zeroes from ewi_question
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Deleting uncoded entry zeros . . .';
+
+    DELETE FROM ewi_question
+    WHERE       acell = 'W'
+    AND         avalue = 0;
+
+    h_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF h_return = 9
+    THEN
+	h_debug = 'ERROR: Unable to delete Uncoded Entry zeroes.';
+        CALLPROC batch_fp_error_log
+	     (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:h_return);
+        EXIT;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Create the output table tt_ewi_results
+    ------------------------------------------------------------------*/
+
+    h_debug =  'PRO: Create tt_ewi_results to output non zero written-ins.';
+    CALLPROC batch_fp_error_log 
+	     (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    h_return = CALLPROC batch_fp_drop_table ( h_table = 'tt_ewi_results');
+
+    IF h_return <> 0
+    THEN
+       EXIT;
+    ENDIF;
+
+    CREATE TABLE tt_ewi_results
+    AS
+    SELECT contributor_reference,
+           question,
+           period,
+           acell,
+           acell_type,
+           avalue
+    FROM ewi_question 
+    WHERE acell = 'W';
+
+    h_return = CALLPROC batch_check_inq_ing (
+                h_num_row_ck = 1,
+                h_commit     = 'Y',
+                h_rollback   = 'N',
+                h_frpr_name  = :h_frpr_name);
+
+    IF h_return > 1
+    THEN
+      h_debug = 'ERROR: Failed to create ' + :h_checkscan_table + '.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:h_return);
+      EXIT;
+    ENDIF;
+
+    MODIFY tt_ewi_results TO BTREE UNIQUE 
+        ON contributor_reference, question, period;
+    COMMIT; 
+    
+    /*------------------------------------------------------------------
+    Do some counts and display the results.
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Calculating results for display . . .';
+
+
+    h_pv_forms           = 0;  /* Preval failed forms */
+    h_pv_quest           = 0;  /* Preval failed questions */
+    h_oa_forms           = 0;  /* Validated forms */
+    h_oa_quest           = 0;  /* Validated questions */
+    h_wi_forms           = 0;  /* Written-in forms */
+    h_wi_quest           = 0;  /* Writen-in questions */
+    h_percent            = 0;  /* %age of written ins  */
+
+    /*................................................................
+          Count up questions on forms for Prevalidation fails.
+    .................................................................*/
+
+    h_return = CALLPROC batch_fp_drop_table ( h_table = 'tt_ewi_pvfails');
+
+    IF h_return <> 0
+    THEN
+        EXIT;
+    ENDIF;
+
+    CREATE TABLE tt_ewi_pvfails
+    AS
+    SELECT COUNT (DISTINCT a.contributor_reference) AS forms,
+           a.period
+    FROM   tt_ewi_checkscan a
+    GROUP BY a.period;
+    COMMIT;
+
+    SELECT SUM(forms) AS h_pv_forms
+    FROM tt_ewi_pvfails;
+    COMMIT;
+    
+    SELECT COUNT(question) AS h_pv_quest
+    FROM   tt_ewi_checkscan;
+    COMMIT;
+
+    /*................................................................
+          Count up questions on forms for Prevalidation passes.
+          (ie those forms that would have been validated and scored)
+    .................................................................*/
+
+    h_return = CALLPROC batch_fp_drop_table ( h_table = 'tt_ewi_pvpasses');
+
+    IF h_return <> 0
+    THEN
+        EXIT;
+    ENDIF;
+
+    CREATE TABLE tt_ewi_pvpasses
+    AS
+    SELECT COUNT (DISTINCT a.contributor_reference) AS forms,
+           a.period
+    FROM   ewi_reference a
+    GROUP BY a.period;
+    COMMIT;
+
+    SELECT SUM(forms) AS h_oa_forms
+    FROM tt_ewi_pvpasses;
+    COMMIT;
+
+    SELECT COUNT (question) AS h_oa_quest
+    FROM   ewi_question;
+    COMMIT;
+  
+    /*................................................................
+          Count up questions on forms that have written ins.
+    .................................................................*/
+
+    h_return = CALLPROC batch_fp_drop_table ( h_table = 'tt_ewi_witotals');
+
+    IF h_return <> 0
+    THEN
+        EXIT;
+    ENDIF;
+
+    CREATE TABLE tt_ewi_witotals
+    AS
+    SELECT COUNT (DISTINCT a.contributor_reference) AS forms,
+           a.period
+    FROM   tt_ewi_results a
+    GROUP BY a.period;
+    COMMIT;
+
+    SELECT SUM(forms) AS h_wi_forms
+    FROM tt_ewi_witotals;
+    COMMIT;
+
+    SELECT COUNT (question) AS h_wi_quest
+    FROM   tt_ewi_results;
+    COMMIT;
+
+    h_percent = (100/:h_oa_forms)*:h_wi_forms;
+  
+    /*................................................................
+          Display results.
+    .................................................................*/
+
+    MESSAGE 'RESULTS: ' +X'0D'
+          + VARCHAR(:h_pv_quest) + ' questions on '
+          + VARCHAR(:h_pv_forms) + ' forms failed pre-validation.' +X'0D'
+          + VARCHAR(:h_oa_quest) + ' questions on '
+          + VARCHAR(:h_oa_forms) + ' forms would have been validated.' +X'0D'
+          + VARCHAR(:h_wi_quest) + ' questions on '
+          + VARCHAR(:h_wi_forms) + ' forms were written ins.' +X'0D'
+          +X'0D'
+          + 'This equates to a written in rate of ' 
+          + VARCHAR(:h_percent) +'.'
+     WITH STYLE = POPUP;
+
+    EXIT;
+}
+
+/*************************** LOCAL PROCEDURES ***************************/
+
+/*===========================================================================
+  Local procedure to load in data from file "ewi_input"
+===========================================================================*/
+
+/*.........................................................................
+ Loads the scanned data into the manually-taken on data table
+.........................................................................*/
+
+PROCEDURE lp_load_scanned () =
+
+DECLARE lp_save_name        = VARCHAR(24) NOT NULL,
+        lp_save_name_qtr    = VARCHAR(30) NOT NULL,
+        lp_now              = VARCHAR(24) NOT NULL,
+        lp_directory        = VARCHAR(50) NOT NULL,
+        lp_message          = VARCHAR(100) NOT NULL,
+        lp_rows             = INTEGER4 NOT NULL,
+        lp_input_rows       = INTEGER4 NOT NULL,
+        lp_return           = INTEGER1 NOT NULL,
+
+{
+    lp_now = VARCHAR(DATE('now'));
+
+    SELECT DBMSINFO('database') AS g_database;
+
+    lp_directory = '/home/prodcom/admin/prodlive/bto/produser/';
+
+    /*------------------------------------------------------------------
+    The original input file of scanned data has 3 record types, which
+    are split into two files:
+
+    1. Reference Details + Question Details - bto_input1.txt
+    2. Reference Details + Contact Details  - bto_input2.txt
+
+    (This used to be just one file so, to keep the rest of the code
+    the same, we're just loading the 2nd file into the 1st file).
+
+    plus
+
+    3. Error Details + Count of Lines - bto_errors.txt
+
+    4. Nawk code held in /home/prodcom/admin/utils
+       (bto_report.txt is created by msay_nawk_scanned_data)
+    ------------------------------------------------------------------*/
+
+    h_debug = 'PRO: Nawking Input File.';
+    CALLPROC batch_fp_error_log 
+		 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    lp_return = CALLPROC msay_cp_callsys (
+              '$UTILS/msay_nawk_scanned_data ' + VARCHAR(:lp_directory) +
+              'ewi_input');
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR: Failed whilst calling msay_nawk_scanned_data.';
+      CALLPROC batch_fp_error_log 
+		 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+    ELSEIF lp_return = 1
+    THEN
+        /*Nothing to Take On (no ewi_input file) - Processing Stops*/
+        h_debug = 'WARNING: No ewi_input file found. Code 1.';
+        CALLPROC batch_fp_error_log 
+		 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+        RETURN lp_return;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Load up the error file
+    ------------------------------------------------------------------*/
+
+    h_debug = 'PRO: Loading error file.';
+    CALLPROC batch_fp_error_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    lp_return = CALLPROC batch_fp_drop_table ( h_table = :h_error_table);
+
+    IF lp_return <> 0
+    THEN
+        RETURN lp_return;
+    ENDIF;
+                 
+    CREATE TABLE :h_error_table (text VARCHAR(200) NOT NULL);
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+        h_debug = 'ERROR: Failed in creating ewi_errors.';
+        CALLPROC batch_fp_error_log 
+                 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+        RETURN lp_return;
+    ENDIF;
+
+    COPY TABLE :h_error_table ( text = 'c0nl')
+    FROM       VARCHAR(:lp_directory) + 'bto_errors.txt';
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return <> 0
+    THEN
+        h_debug = 'ERROR: Failed copying file into ewi_errors.';
+        CALLPROC batch_fp_error_log 
+                 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+        RETURN lp_return;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    No of input lines from error table
+    ------------------------------------------------------------------*/
+
+    SELECT INT4(RIGHT(text,LENGTH(text)-2)) AS h_rows
+    FROM   :h_error_table
+    WHERE  text LIKE '0:%';
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return <> 0
+    THEN
+        h_debug = 'ERROR: Failed selecting from ewi_errors.';
+        CALLPROC batch_fp_error_log 
+                 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+        RETURN lp_return;
+    ENDIF;
+
+    lp_message = 'DEV: Input = ' + VARCHAR(h_rows) + ' lines';
+
+    /*------------------------------------------------------------------
+    No of batches from error table
+    ------------------------------------------------------------------*/
+
+    SELECT INT4(RIGHT(text,LENGTH(text)-2)) AS h_rows
+    FROM   :h_error_table
+    WHERE  text LIKE '1:%';
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return <> 0
+    THEN
+        h_debug = 'ERROR: Failed selecting from h_error_table.';
+        CALLPROC batch_fp_error_log 
+                 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+        RETURN lp_return;
+    ENDIF;
+
+    lp_message = lp_message + ' including ' 
+               + VARCHAR(h_rows) + ' Batch Headers';
+
+    CALLPROC batch_fp_error_log 
+             (p_text=:lp_message, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    /*------------------------------------------------------------------
+    Copy all input error lines into the error_log
+    ------------------------------------------------------------------*/
+
+    SELECT  'WARNING: Input Error: ' + RIGHT(text,LENGTH(text)-2) AS h_debug
+    FROM    :h_error_table
+    WHERE   text LIKE '2:%'
+    BEGIN
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+    END;
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(:h_rows),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+        h_debug = 'ERROR: Failed storing errors onto bto_error_log.';
+        CALLPROC batch_fp_error_log 
+                 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+        RETURN lp_return;
+    ENDIF;
+
+    lp_message = VARCHAR(h_rows) + ' Invalid Input + ';
+    lp_input_rows = h_rows;
+
+    /*------------------------------------------------------------------
+    Load the input file
+    ------------------------------------------------------------------*/
+
+    h_debug = 'PRO: Loading scanned data 1.';
+    CALLPROC batch_fp_error_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    lp_return = CALLPROC batch_fp_drop_table ( h_table = h_input_table);
+
+    IF lp_return <> 0
+    THEN
+        RETURN lp_return;
+    ENDIF;
+
+    CREATE TABLE :h_input_table (
+                 inquiry               INTEGER1 NOT NULL,
+                 contributor_industry  INTEGER4 NOT NULL,
+                 period                INTEGER4 NOT NULL,
+                 contributor_reference CHAR(11) NOT NULL,
+                 phone_contact         CHAR(30) NOT NULL WITH DEFAULT,
+                 phone_area_code       CHAR(5) NOT NULL WITH DEFAULT,
+                 phone                 CHAR(10) NOT NULL WITH DEFAULT,
+                 phone_extension       CHAR(5) NOT NULL WITH DEFAULT,
+                 fax_area_code         CHAR(5) NOT NULL WITH DEFAULT,
+                 fax                   CHAR(10) NOT NULL WITH DEFAULT,
+                 email                 CHAR(46) NOT NULL WITH DEFAULT,
+                 address_change        CHAR(1) NOT NULL WITH DEFAULT,
+                 lu_change             CHAR(1) NOT NULL WITH DEFAULT,
+                 comments              CHAR(1) NOT NULL WITH DEFAULT,
+                 extra_pages           CHAR(1) NOT NULL WITH DEFAULT,
+                 question              INTEGER4 NOT NULL,
+                 avalue                INTEGER4 NOT NULL);
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+        h_debug = 'ERROR: Failed to create tt_ewi_input.';
+        CALLPROC batch_fp_error_log 
+                 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+        RETURN lp_return;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Copy the data from the 1st dollar-delimited input file
+    ------------------------------------------------------------------*/
+
+    COPY TABLE :h_input_table (
+               inquiry               = 'c0$',
+               contributor_industry  = 'c0$',
+               period                = 'c0$',
+               contributor_reference = 'c0$',
+               question              = 'c0$',
+               avalue                = c0nl)
+    FROM       VARCHAR(:lp_directory) + 'bto_input1.txt';
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(h_rows),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+        h_debug = 'ERROR: Failed to load file into tt_ewi_input.';
+        CALLPROC batch_fp_error_log 
+                 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+        RETURN lp_return;
+    ENDIF;
+
+    lp_message = lp_message + VARCHAR(h_rows) + ' Qns';
+    lp_input_rows = lp_input_rows + h_rows;
+
+    /*------------------------------------------------------------------
+    Load the 2nd input file of contributor information
+    ------------------------------------------------------------------*/
+
+    h_debug = 'PRO: Loading scanned data 2.';
+    CALLPROC batch_fp_error_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    lp_return = CALLPROC batch_fp_drop_table ( h_table = :h_working_table);
+
+    IF lp_return <> 0
+    THEN
+        RETURN lp_return;
+    ENDIF;
+
+    CREATE TABLE :h_working_table (
+                 inquiry               INTEGER1 NOT NULL,
+                 contributor_industry  INTEGER4 NOT NULL,
+                 period                INTEGER4 NOT NULL,
+                 contributor_reference CHAR(11) NOT NULL,
+                 phone_contact         CHAR(30) NOT NULL WITH DEFAULT,
+                 phone_area_code       CHAR(5) NOT NULL WITH DEFAULT,
+                 phone                 CHAR(10) NOT NULL WITH DEFAULT,
+                 phone_extension       CHAR(5) NOT NULL WITH DEFAULT,
+                 fax_area_code         CHAR(5) NOT NULL WITH DEFAULT,
+                 fax                   CHAR(10) NOT NULL WITH DEFAULT,
+                 email                 CHAR(60) NOT NULL WITH DEFAULT,
+                 address_change        CHAR(1) NOT NULL WITH DEFAULT,
+                 lu_change             CHAR(1) NOT NULL WITH DEFAULT,
+                 comments              CHAR(1) NOT NULL WITH DEFAULT,
+                 extra_pages           CHAR(1) NOT NULL WITH DEFAULT);
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+        h_debug = 'ERROR: Failed to create ' + :h_working_table +'.';
+        CALLPROC batch_fp_error_log 
+                 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+        RETURN lp_return;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Copy the data from the 2nd dollar-delimited input file
+    ------------------------------------------------------------------*/
+
+    COPY TABLE :h_working_table (
+               inquiry               = 'c0$',
+               contributor_industry  = 'c0$',
+               period                = 'c0$',
+               contributor_reference = 'c0$',
+               phone_contact         = 'c0$',
+               phone_area_code       = 'c0$',
+               phone                 = 'c0$',
+               phone_extension       = 'c0$',
+               fax_area_code         = 'c0$',
+               fax                   = 'c0$',
+               email                 = 'c0$',
+               address_change        = 'c0$',
+               lu_change             = 'c0$',
+               comments              = 'c0$',
+               extra_pages           = 'c0nl')
+    FROM       VARCHAR(:lp_directory) + 'bto_input2.txt';
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(h_rows),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+        h_debug = 'ERROR: Failed to load file into '+:h_working_table+'.';
+        CALLPROC batch_fp_error_log 
+                 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+        RETURN lp_return;
+    ENDIF;
+
+    lp_message = lp_message + ' + ' + VARCHAR(h_rows*2) + ' heads/foots';
+    lp_input_rows = lp_input_rows + (h_rows*2);
+    lp_message = 'DEV: '+VARCHAR(:lp_input_rows) + ' Rows  = ' + lp_message;
+
+    CALLPROC batch_fp_error_log 
+             (p_text=:lp_message, p_frpr=:h_frpr_name, p_ret_val=0);
+    
+    /*------------------------------------------------------------------
+    Identify rows on the second file that have no data on the first file,
+    as these are front page only returns and need to be flagged to control.
+    (DF - 2010)
+    ------------------------------------------------------------------*/
+    /*------------------------------------------------------------------
+    Create a fresh instance of tt_fpo_table.
+    ------------------------------------------------------------------*/
+
+    h_debug =  'PRO: Creating a new blank version of ' + :h_fpo_table + '.';
+    CALLPROC batch_fp_error_log 
+	     (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    lp_return = CALLPROC batch_fp_drop_table ( h_table = :h_fpo_table);
+
+    IF lp_return <> 0
+    THEN
+        RETURN lp_return;
+    ENDIF;
+
+    CREATE TABLE :h_fpo_table
+    AS
+    SELECT * FROM bto_front_page_only
+    WHERE 1 = 0;
+
+    lp_return = CALLPROC batch_check_inq_ing (
+                h_num_row_ck = 1,
+                h_commit     = 'Y',
+                h_rollback   = 'N',
+                h_frpr_name  = :h_frpr_name);
+
+    IF lp_return > 1
+    THEN
+      h_debug = 'ERROR: Failed to create ' + :h_fpo_table + '.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+    ENDIF;
+
+
+    h_debug = 'PRO: Checking for front page only returns.';
+    CALLPROC batch_fp_error_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+   INSERT INTO :h_fpo_table
+   SELECT 'now',
+	   :g_counter,
+           b.contributor_reference,
+	   b.period
+     FROM  :h_working_table b
+    WHERE  b.contributor_reference NOT IN 
+           (SELECT z.contributor_reference
+	      FROM tt_ewi_input z
+	      WHERE z.contributor_reference = b.contributor_reference);
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(h_rows),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return > 1 
+    THEN
+        h_debug = 'ERROR: Failed to insert FPO to tt_ewi_front_page_only.';
+        CALLPROC batch_fp_error_log 
+                 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+        RETURN lp_return;
+    ENDIF;
+
+    IF h_rows <> 0
+    THEN
+        h_debug = 'DEV: '+VARCHAR(h_rows)+' front-page-only returns found.';
+        CALLPROC batch_fp_error_log 
+                 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    In case there are any duplicates on the 2nd file, delete the
+    first one read in
+    ------------------------------------------------------------------*/
+
+    h_debug = 'PRO: Deleting Duplicates from within same file.';
+    CALLPROC batch_fp_error_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    DELETE FROM :h_working_table a
+    WHERE       contributor_reference IN (
+                SELECT contributor_reference
+                FROM   :h_working_table b
+                WHERE  a.period = b.period
+                AND    a.tid < b.tid);
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(h_rows),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR: Failed to delete duplicates from '+:h_working_table;
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+    ENDIF;
+
+    IF h_rows <> 0
+    THEN
+      h_debug = 'DEV: '+ VARCHAR(h_rows) + ' duplicate forms deleted.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Put the contributor data into the main table as before
+    ------------------------------------------------------------------*/
+
+    h_debug = 'PRO: Inserting contributor data into main table.';
+    CALLPROC batch_fp_error_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    UPDATE tt_ewi_input a
+    FROM   :h_working_table b
+    SET    phone_contact         = b.phone_contact,
+           phone_area_code       = b.phone_area_code,
+           phone                 = b.phone,
+           phone_extension       = b.phone_extension,
+           fax_area_code         = b.fax_area_code,
+           fax                   = b.fax,
+           email                 = left(b.email,46),
+           address_change        = b.address_change,
+           lu_change             = b.lu_change,
+           comments              = b.comments,
+           extra_pages           = b.extra_pages
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.period = b.period;
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return <> 0
+    THEN
+      h_debug = 'ERROR: Failed to insert 2nd table into tt_ewi_input';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Update the IDBR 6-digit period to PRODCOM style 6 digit period
+    ------------------------------------------------------------------*/
+
+    h_debug = 'PRO: Updating IDBR periods.';
+    CALLPROC batch_fp_error_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    UPDATE tt_ewi_input
+    SET    period = period / 100 * 100
+    WHERE  inquiry = 14;
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR: Failed to update prodcom annual periods [1]';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+    ENDIF;
+
+    UPDATE :h_working_table
+    SET    period = period / 100 * 100
+    WHERE  inquiry = 14;
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR: Failed to update prodcom annual periods [2]';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Update the email/webpage field to 46 characters.                
+    ------------------------------------------------------------------*/
+
+    h_debug = 'PRO: Updating email/webpage field to 46 characters.';
+    CALLPROC batch_fp_error_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    UPDATE tt_ewi_input
+    SET    email = left(email,46);
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR: Failed to set email field to 46 characters.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Make fields the right case
+    ------------------------------------------------------------------*/
+
+    h_debug = 'PRO: Converting contributor details to upper case.';
+    CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    UPDATE tt_ewi_input
+    SET    phone_contact    = UPPERCASE(phone_contact),
+           phone_area_code  = UPPERCASE(phone_area_code),
+           phone            = UPPERCASE(phone),
+           phone_extension  = UPPERCASE(phone_extension),
+           fax              = UPPERCASE(fax),
+           fax_area_code    = UPPERCASE(fax_area_code),
+           address_change   = UPPERCASE(address_change),
+           lu_change        = UPPERCASE(lu_change),
+           comments         = UPPERCASE(comments),
+           extra_pages      = UPPERCASE(extra_pages);
+
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR: Failed whilst upper casing on tt_ewi_input';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+    ENDIF;
+
+    RETURN 0;
+}
+
+
+/*===========================================================================
+  Local procedure to carry out checks on the scanned data.
+
+  1: Put forms directly into ewi_scanning_errors if:
+
+   a) The contributor_reference/period/inquiry/industry is invalid.
+
+  2: Save contact info, etc, then
+
+  3: Put forms into ewi_scanning_errors if:
+
+   a) Any duplicate questions are found.
+   b) Code added to fail any previous periods forms before 199809 and
+      also 199700 due to new £000s forms going live
+   c) Any question mismatches are found between cqpv & the scanned forms.
+   d) Any invalid questions are found (they exist both on cqpv & the
+      scanned forms but shouldn't - i.e. they've been deleted from the
+      question_library after the forms have been sent out).
+   e) A Euro form comes in for a period which does not have an exchange
+      rate.
+   f) A Front Page Only return has been detected earlier. 
+
+Jun 2010 - DF: Added a debugging table so  we can track what is happening 
+               to specific references being processed as they are thrown out.
+               Reason code correspons to above numbering.
+===========================================================================*/
+
+PROCEDURE lp_check_scanned () =
+
+DECLARE 
+        h_debug          = VARCHAR(160) NOT NULL,
+        h_rows           = INTEGER4 NOT NULL,
+        lp_return          = INTEGER1 NOT NULL,
+
+{
+
+    h_debug = 'PRO: Arrived at check_scanning.';
+    CALLPROC batch_fp_error_log 
+	     (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    /*------------------------------------------------------------------
+    Create a fresh instance of the tt_ewi_errors table.
+    ------------------------------------------------------------------*/
+
+    h_debug =  'PRO: Creating a new blank version of '
+            + :h_checkscan_table + '.';
+    CALLPROC batch_fp_error_log 
+	     (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    lp_return = CALLPROC batch_fp_drop_table ( h_table = :h_checkscan_table);
+
+    IF lp_return <> 0
+    THEN
+        RETURN lp_return;
+    ENDIF;
+
+    CREATE TABLE :h_checkscan_table
+    AS
+    SELECT * FROM bto_scanning_errors
+    WHERE 1 = 0;
+
+    lp_return = CALLPROC batch_check_inq_ing (
+                h_num_row_ck = 1,
+                h_commit     = 'Y',
+                h_rollback   = 'N',
+                h_frpr_name  = :h_frpr_name);
+
+    IF lp_return > 1
+    THEN
+      h_debug = 'ERROR: Failed to create ' + :h_checkscan_table + '.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+    ENDIF;
+
+    h_debug =  'PRO: Clearing error tables.';
+    CALLPROC batch_fp_error_log 
+	     (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    lp_return = CALLPROC batch_fp_drop_table ( h_table = :h_checkscan_temp);
+
+    IF lp_return <> 0
+    THEN
+        RETURN lp_return;
+    ENDIF;
+
+    CREATE TABLE :h_checkscan_temp
+    AS SELECT    DISTINCT(contributor_reference),
+                 period
+    FROM         :h_input_table;
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR: Failed to create original ' 
+              + :h_checkscan_temp + '.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+
+    ELSEIF lp_return = 1
+    THEN
+      h_debug =  'DEV: No scanned references to take on.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+      h_debug =  'PRO: Leaving check_scanning, returning zero.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+      RETURN 0;
+    ENDIF;
+
+    DELETE FROM :h_checkscan_table a
+    WHERE       a.contributor_reference IN (
+                SELECT b.contributor_reference
+                FROM   :h_checkscan_temp b
+                WHERE  a.period = b.period);
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR: Failed whilst deleting from ' 
+              + :h_checkscan_table +'.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    1. If any contributor/period/inquiry/industry scanned record does
+       not exist on contributor_period, lose them into an errorfile for
+       Control to look at.
+
+       Don't take on the data, don't receipt the form, don't update
+       any contact info or tick boxes. Don't pass go, don't collect
+       £200.
+    ------------------------------------------------------------------*/
+
+    h_debug = 'PRO: Checking for invalid contributor/period/inquiry/industry.';
+    CALLPROC batch_fp_error_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    lp_return = CALLPROC batch_fp_drop_table ( h_table = :h_checkscan_temp);
+
+    IF lp_return <> 0
+    THEN
+        RETURN lp_return;
+    ENDIF;
+
+    h_debug = 'TMP: Creating '+ VARCHAR(:h_checkscan_temp) +'.';
+    CALLPROC batch_fp_error_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+
+    CREATE TABLE :h_checkscan_temp
+    AS SELECT    DISTINCT(a.contributor_reference),
+                 a.period
+    FROM         :h_input_table a
+    WHERE        a.contributor_reference NOT IN (
+                 SELECT contributor_reference
+                 FROM   contributor_period b
+                 WHERE  a.period = b.period
+                 AND    a.inquiry = b.inquiry
+                 AND    a.contributor_industry = b.contributor_industry);
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(:h_rows),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR: Failed to create 1st instance of '
+              + :h_checkscan_temp+'.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+
+    ELSEIF lp_return = 0
+    THEN
+
+    h_debug = 'TMP: Inserting into '+ VARCHAR(:h_checkscan_table) +'.';
+    CALLPROC batch_fp_error_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+
+        INSERT INTO :h_checkscan_table
+        SELECT      DATE('now'),
+                    'Invalid Ref Line',
+                    a.*
+        FROM        :h_input_table a,
+                    :h_checkscan_temp b
+        WHERE       a.contributor_reference = b.contributor_reference
+        AND         a.period = b.period;
+
+        lp_return = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF lp_return = 9
+        THEN
+          h_debug = 'ERROR: Failed on 1st stage insert into '
+		  + :h_checkscan_table + '.';
+          CALLPROC batch_fp_error_log 
+                   (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+          RETURN lp_return;
+        ENDIF;
+
+        h_debug = 'TMP: Inserting into bto_scanning_debug.';
+        CALLPROC batch_fp_error_log 
+                 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+
+        INSERT INTO bto_scanning_debug
+             SELECT 'now',
+		     contributor_reference,
+		     period,
+		     999,
+		     1
+               FROM :h_checkscan_temp;
+
+        DELETE FROM :h_input_table a
+        WHERE       contributor_reference IN (
+                    SELECT contributor_reference
+                    FROM   :h_checkscan_temp b
+                    WHERE  a.period = b.period);
+
+        lp_return = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF lp_return = 9
+        THEN
+          h_debug = 'ERROR: Failed on 1st stage delete from '
+		  + :h_input_table + '.';
+          CALLPROC batch_fp_error_log 
+                   (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+          RETURN lp_return;
+        ENDIF;
+
+        h_debug = 'WARNING: ' +VARCHAR(:h_rows) + ' INVALID REF/PER/IND/INQ.';
+        CALLPROC batch_fp_error_log 
+                 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    2. If there are any duplicate questions within a form then lose
+       everything.
+    ------------------------------------------------------------------*/
+
+    h_debug = 'PRO: Checking for duplicates.';
+    CALLPROC batch_fp_error_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    lp_return = CALLPROC batch_fp_drop_table ( h_table = :h_checkscan_temp);
+
+    IF lp_return <> 0
+    THEN
+        RETURN lp_return;
+    ENDIF;
+
+    CREATE TABLE :h_checkscan_temp
+    AS SELECT    DISTINCT a.contributor_reference,
+                 a.period
+    FROM         :h_input_table a
+    WHERE        a.contributor_reference IN (
+                 SELECT contributor_reference
+                 FROM   :h_input_table b
+                 WHERE  a.period = b.period
+                 AND    a.question = b.question
+                 AND    a.tid > b.tid);
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(:h_rows),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR: Failed to create 2nd instance of '
+              + :h_checkscan_temp + '.';
+      CALLPROC batch_fp_error_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+
+    ELSEIF lp_return = 0
+    THEN
+
+        INSERT INTO :h_checkscan_table
+        SELECT      DATE('now'),
+                    'Duplicate Quests',
+                    a.*
+        FROM        :h_input_table a,
+                    :h_checkscan_temp b
+        WHERE       a.contributor_reference = b.contributor_reference
+        AND         a.period = b.period;
+
+        lp_return = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF lp_return = 9
+        THEN
+          h_debug = 'ERROR: Failed on 2nd stage of insert into '
+                  + :h_checkscan_table + '.';
+          CALLPROC batch_fp_error_log 
+                   (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+          RETURN lp_return;
+        ENDIF;
+
+        INSERT INTO bto_scanning_debug
+             SELECT 'now',
+		     contributor_reference,
+		     period,
+		     999,
+		     2
+               FROM :h_checkscan_temp;
+
+        DELETE FROM :h_input_table a
+        WHERE       contributor_reference IN (
+                    SELECT contributor_reference
+                    FROM   :h_checkscan_temp b
+                    WHERE  a.period = b.period);
+
+        lp_return = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF lp_return = 9
+        THEN
+          h_debug = 'ERROR: Failed on 2nd stage delete from '
+                  + :h_input_table + '.';
+          CALLPROC batch_fp_error_log 
+                   (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+          RETURN lp_return;
+        ENDIF;
+
+        h_debug = 'WARNING: ' + VARCHAR(:h_rows) +
+			    ' REFERENCES WITH DUPLICATE QUESTIONS.';
+        CALLPROC batch_fp_error_log 
+                 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=1);
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    3) Any forms from 199806 and before have to be failed and not
+       validated because FDU did not change the formtype number
+       when 199809 forms had £000s added to them.
+    ------------------------------------------------------------------*/
+
+    h_debug = 'PRO: Checking for obsolete form types.';
+    CALLPROC batch_fp_error_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    lp_return = CALLPROC batch_fp_drop_table ( h_table = :h_checkscan_temp);
+
+    IF lp_return <> 0
+    THEN
+        RETURN lp_return;
+    ENDIF;
+
+    CREATE TABLE :h_checkscan_temp
+    AS SELECT    DISTINCT contributor_reference,
+                 period
+    FROM         :h_input_table
+    WHERE        period <= 199806
+    AND          period <> 199800;
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(:h_rows),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR Failed to create 3rd instance of '
+              + :h_checkscan_temp + '.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+
+    ELSEIF lp_return = 0
+    THEN
+
+        INSERT INTO :h_checkscan_table
+        SELECT      DATE('now'),
+                    'Mismatch Quests',
+                    a.*
+        FROM        :h_input_table a,
+                    :h_checkscan_temp b
+        WHERE       a.contributor_reference = b.contributor_reference
+        AND         a.period = b.period;
+
+        lp_return = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF lp_return = 9
+        THEN
+          h_debug = 'ERROR: Failed on 3rd stage insert into '
+	          + :h_checkscan_table + '.';
+          CALLPROC batch_fp_error_log 
+                   (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+          RETURN lp_return;
+
+        ENDIF;
+
+        INSERT INTO bto_scanning_debug
+             SELECT 'now',
+		     contributor_reference,
+		     period,
+		     999,
+		     3
+               FROM :h_checkscan_temp;
+
+        DELETE FROM :h_input_table a
+        WHERE       contributor_reference IN (
+                    SELECT contributor_reference
+                    FROM   :h_checkscan_temp b
+                    WHERE  a.period = b.period);
+
+        lp_return = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF lp_return = 9
+        THEN
+          h_debug = 'ERROR: Failed on 3rd stage delete from '
+		  + :h_input_table + '.';
+          CALLPROC batch_fp_error_log 
+                   (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+          RETURN lp_return;
+        ENDIF;
+
+        h_debug = 'WARNING: ' + VARCHAR(:h_rows) 
+	        + ' OBSOLETE FORMS FAILED.';
+        CALLPROC batch_fp_error_log 
+                 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Modify
+    ------------------------------------------------------------------*/
+
+    MODIFY    :h_input_table TO BTREE
+    UNIQUE ON contributor_reference,
+              period,
+              question;
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR: Failed whilst modifying ' + :h_input_table + '.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     4. Compare cqpv with the scanned forms to see if there are any
+        discrepancies. If cpqv has questions that aren't on the forms
+        OR the forms have questions that aren't on cqpv then DON'T
+        take the forms on. (Ignore uncoded entries).
+    ------------------------------------------------------------------*/
+
+    h_debug = 'PRO: Checking for mismatches with cqpv.';
+    CALLPROC batch_fp_error_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    lp_return = CALLPROC batch_fp_drop_table ( h_table = :h_mismatch_table);
+
+    IF lp_return <> 0
+    THEN
+        RETURN lp_return;
+    ENDIF;
+
+    CREATE TABLE :h_mismatch_table
+    AS SELECT    a.contributor_reference,
+                 a.contributor_industry,
+                 a.period,
+                 a.question,
+                 'N' AS from_cqpv,
+                 'N' AS from_scanned
+    FROM         cqpv a
+    WHERE        contributor_reference IN (
+                 SELECT contributor_reference
+                 FROM   :h_input_table b
+                 WHERE  a.period = b.period);
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR: Failed to create ' + :h_mismatch_table +'.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Don't run this next bit for Internet Forms, because they're
+     allowed to have questions that aren't on cqpv (as contributors may
+     add questions themselves).
+    ------------------------------------------------------------------*/
+
+    IF g_run_type <> 'i'
+    THEN
+        MESSAGE 'Mismatches: from ' + :h_input_table + ' . . .';
+
+        INSERT INTO :h_mismatch_table
+        SELECT      contributor_reference,
+                    contributor_industry,
+                    period,
+                    question,
+                    'N' AS from_cqpv,
+                    'N' AS from_scanned
+        FROM        :h_input_table a
+        WHERE       contributor_reference NOT IN (
+                    SELECT contributor_reference
+                    FROM   :h_mismatch_table b
+                    WHERE  a.period = b.period
+                    AND    a.question = b.question);
+
+        lp_return = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF lp_return = 9
+        THEN
+          h_debug = 'ERROR: Failed inserting into ' + :h_mismatch_table +'.';
+          CALLPROC batch_fp_error_log 
+                   (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+          RETURN lp_return;
+
+        ENDIF;
+    ENDIF;
+
+    MESSAGE 'Mismatches: Modifying . . .';
+
+    MODIFY    :h_mismatch_table TO BTREE
+    UNIQUE ON contributor_reference,
+              period,
+              question;
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR: Failed whilst modifying ' +:h_mismatch_table +'.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+    ENDIF;
+
+    MESSAGE 'Mismatches: Deleting Uncoded Entries . . .';
+
+    DELETE FROM :h_mismatch_table
+    WHERE       question BETWEEN (contributor_industry * 10000 + 9701)
+                         AND     (contributor_industry * 10000 + 9791);
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR: Failed whilst deleting uncoded entries from '
+              + :h_mismatch_table +'.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Mark table if the question is on cqpv
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Mismatches: Updating from cqpv . . .';
+
+    UPDATE :h_mismatch_table a
+    FROM   cqpv b
+    SET    from_cqpv = 'Y'
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.period = b.period
+    AND    a.question = b.question;
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR: Failed whilst updating from cqpv to '
+              + :h_mismatch_table +'.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Mark table if the question is on :h_input_table
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Mismatches: Updating from ' + :h_input_table + ' . . .';
+
+    UPDATE :h_mismatch_table a
+    FROM   :h_input_table b
+    SET    from_scanned = 'Y'
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.period = b.period
+    AND    a.question = b.question;
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR: Failed whilst updating ' + :h_mismatch_table 
+              + ' from ' + :h_input_table + '.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Delete the questions that are on both cqpv and the scanned table.
+    This will leave the mis-matches.
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Mismatches: deleting matches . . .';
+
+    DELETE FROM :h_mismatch_table
+    WHERE       from_cqpv = 'Y'
+    AND         from_scanned = 'Y';
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR Failed whilst deleting matches from '
+              + :h_mismatch_table + '.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Lose any mismatches
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Mismatches: deleting mismatches . . .';
+
+    lp_return = CALLPROC batch_fp_drop_table (
+                       h_table = :h_checkscan_temp);
+    IF lp_return <> 0
+    THEN
+        RETURN lp_return;
+    ENDIF;
+
+    CREATE TABLE :h_checkscan_temp
+    AS SELECT    DISTINCT contributor_reference,
+                 period
+    FROM         :h_mismatch_table;
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(:h_rows),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR: Failed whilst creating 4th instance of '
+              + :h_checkscan_temp + '.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+
+    ELSEIF lp_return = 0
+    THEN
+
+        INSERT INTO :h_checkscan_table
+        SELECT      DATE('now'),
+                    'Mismatch Quests',
+                    a.*
+        FROM        :h_input_table a,
+                    :h_checkscan_temp b
+        WHERE       a.contributor_reference = b.contributor_reference
+        AND         a.period = b.period;
+
+        lp_return = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF lp_return = 9
+        THEN
+          h_debug = 'ERROR: Failed on 4th stage insert into '
+		  + :h_checkscan_table + '.';
+          CALLPROC batch_fp_error_log 
+                   (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+          RETURN lp_return;
+        ENDIF;
+
+        INSERT INTO bto_scanning_debug
+             SELECT 'now',
+		     contributor_reference,
+		     period,
+		     999,
+		     4
+               FROM :h_checkscan_temp;
+
+        DELETE FROM :h_input_table a
+        WHERE       contributor_reference IN (
+                    SELECT contributor_reference
+                    FROM   :h_checkscan_temp b
+                    WHERE  a.period = b.period);
+
+        lp_return = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF lp_return = 9
+        THEN
+          h_debug = 'ERROR: Failed on 4th stage delete from '
+		  + :h_input_table + '.';
+          CALLPROC batch_fp_error_log 
+                   (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+          RETURN lp_return;
+        ENDIF;
+
+        h_debug = 'WARNING: ' + VARCHAR(:h_rows) 
+	        + ' REFERENCES WITH QUESTION MISMATCHES.';
+        CALLPROC batch_fp_error_log 
+                 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=1);
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Create ewi_question from the scanned data.
+     ewi_question will be used for all subsequent processing.
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Creating ewi_question . . .';
+
+    lp_return = CALLPROC batch_fp_drop_table ( h_table = 'ewi_question');
+
+    IF lp_return <> 0
+    THEN
+        RETURN lp_return;
+    ENDIF;
+
+    CREATE TABLE ewi_question
+    AS SELECT    contributor_reference,
+                 contributor_industry,
+                 inquiry,
+                 period,
+                 question,
+                 avalue,
+                 INT4(0) AS evalue,
+                 'N ' AS acell,
+                 '  ' AS acell_type,
+                 ' ' AS confirmation_code,
+                 INT1(0) AS quest_order,
+                 INT4(0) AS question_industry,
+                 INT1(0) AS question_inquiry,
+                 ' ' AS atypical,
+		 avalue AS fvalue
+    FROM         :h_input_table;
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR: Failed to create ewi_question.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+    ENDIF;
+
+    MODIFY ewi_question TO BTREE ON contributor_reference,question,period;
+    COMMIT;
+		
+
+    /*------------------------------------------------------------------
+     Update the ewi_question with annual question details
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Updating ewi_question with question details . . .';
+
+    UPDATE ewi_question a
+    FROM   question_library b
+    SET    quest_order = b.quest_order,
+           question_industry = b.question_industry,
+           question_inquiry = b.inquiry
+    WHERE  a.question = b.question
+    AND    a.period = b.period
+    AND    a.inquiry = 14;
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR: Failed to update ewi_question with QL details.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Update the ewi_question for Uncoded Entries
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Uncoded Entries . . .';
+
+    UPDATE ewi_question
+    SET    quest_order = 9,
+           acell = 'W',
+           acell_type = '0',
+           question_industry = contributor_industry
+    WHERE  question BETWEEN (contributor_industry * 10000 + 9701)
+                    AND     (contributor_industry * 10000 + 9791);
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR: Failed to update ewi_question with uncoded entries.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Update the ewi_question for 9100 questions on old forms
+    ------------------------------------------------------------------*/
+
+    UPDATE ewi_question 
+    SET    quest_order = 11,
+           question_industry = int4(left(varchar(question),5))
+    WHERE  mod(question,10000) = 9100;
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR: Failed to update ewi_question with 9100 details';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    5. Invalid Questions: This is when the scanned questions match
+       what's on cqpv, but there are invalid questions on cqpv.
+       (This happens when questions are deleted from question_library
+        after the forms have been printed.)
+    ------------------------------------------------------------------*/
+
+    h_debug = 'PRO: Checking for invalid questions.';
+    CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    lp_return = CALLPROC batch_fp_drop_table ( h_table = :h_checkscan_temp);
+
+    IF lp_return <> 0
+    THEN
+      RETURN lp_return;
+    ENDIF;
+
+    CREATE TABLE :h_checkscan_temp
+    AS SELECT    DISTINCT contributor_reference,
+                 period
+    FROM         ewi_question
+    WHERE        quest_order = 0
+    AND MOD(question,10000) != 9100;
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(:h_rows),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR: Failed to create 5th instance of ' 
+              + :h_checkscan_temp +'.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+
+    ELSEIF lp_return = 0
+    THEN
+
+        INSERT INTO :h_checkscan_table
+        SELECT      DATE('now'),
+                    'Invalid Quests',
+                    a.*
+        FROM        :h_input_table a,
+                    :h_checkscan_temp b
+        WHERE       a.contributor_reference = b.contributor_reference
+        AND         a.period = b.period;
+
+        lp_return = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF lp_return = 9
+        THEN
+          h_debug = 'ERROR: Failed on 5th stage insert into '
+	          + :h_checkscan_table +'.';
+          CALLPROC batch_fp_error_log 
+                   (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+          RETURN lp_return;
+        ENDIF;
+
+        INSERT INTO bto_scanning_debug
+             SELECT 'now',
+		     contributor_reference,
+		     period,
+		     999,
+		     5
+               FROM :h_checkscan_temp;
+
+        DELETE FROM ewi_question a
+        WHERE       contributor_reference IN (
+                    SELECT contributor_reference
+                    FROM   :h_checkscan_temp b
+                    WHERE  a.period = b.period);
+
+        lp_return = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF lp_return = 9
+        THEN
+          h_debug = 'ERROR: Failed on 5th stage insert into '
+	          + :h_checkscan_table +'.';
+          CALLPROC batch_fp_error_log 
+                   (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+          RETURN lp_return;
+        ENDIF;
+
+        h_debug = 'WARNING: ' + VARCHAR(:h_rows) 
+	        + ' REFERENCES WITH INVALID QUESTIONS.';
+        CALLPROC batch_fp_error_log 
+                 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=1);
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    6. If the form is a Euro form but there is no exchange rate for
+       the period of the form.
+    ------------------------------------------------------------------*/
+
+    h_debug = 'PRO: Checking Euro exchange rates available.';
+    CALLPROC batch_fp_error_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    lp_return = CALLPROC batch_fp_drop_table ( h_table = :h_checkscan_temp);
+
+    IF lp_return <> 0
+    THEN
+        RETURN lp_return;
+    ENDIF;
+
+    CREATE TABLE :h_checkscan_temp
+    AS SELECT    DISTINCT a.contributor_reference,
+                 a.period
+    FROM         ewi_question a,
+                 contributor_period b
+    WHERE        a.contributor_reference = b.contributor_reference
+    AND          a.period = b.period
+    AND          b.currency = 'E'
+    AND          a.period NOT IN (
+                 SELECT period
+                 FROM   euro_exchange_rate
+                 WHERE  fixed = 'Y');
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(:h_rows),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+        h_debug = 'ERROR: Failed to create 6th instance of ' 
+		+ :h_checkscan_temp +'.';
+        CALLPROC batch_fp_error_log 
+                 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+        RETURN lp_return;
+
+    ELSEIF lp_return = 0
+    THEN
+
+        INSERT INTO :h_checkscan_table
+        SELECT      DATE('now'),
+                    'No Exchange Rate',
+                    a.*
+        FROM        :h_input_table a,
+                    :h_checkscan_temp b
+        WHERE       a.contributor_reference = b.contributor_reference
+        AND         a.period = b.period;
+
+        lp_return = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF lp_return = 9
+        THEN
+          h_debug = 'ERROR: Failed on 6th stage insert into ' 
+	          + :h_checkscan_table +'.';
+          CALLPROC batch_fp_error_log 
+                   (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+          RETURN lp_return;
+
+        ENDIF;
+
+        INSERT INTO bto_scanning_debug
+             SELECT 'now',
+		     contributor_reference,
+		     period,
+		     999,
+		     6
+               FROM :h_checkscan_temp;
+
+        DELETE FROM ewi_question a
+        WHERE       contributor_reference IN (
+                    SELECT contributor_reference
+                    FROM   :h_checkscan_temp b
+                    WHERE  a.period = b.period);
+
+        lp_return = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF lp_return = 9
+        THEN
+          h_debug = 'ERROR: Failed on 6th stage delete from ewi_question.';
+          CALLPROC batch_fp_error_log 
+                   (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+          RETURN lp_return;
+        ENDIF;
+
+        h_debug = 'WARNING: ' + VARCHAR(:h_rows) 
+                + ' EURO FORMS WITH NO EXCHANGE RATE.';
+        CALLPROC batch_fp_error_log 
+                 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    7. If a front page only return has been detected, flag it now.
+    ------------------------------------------------------------------*/
+
+    h_debug = 'PRO: Checking for FPOs detected during data load.';
+    CALLPROC batch_fp_error_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    lp_return = CALLPROC batch_fp_drop_table ( h_table = :h_checkscan_temp);
+
+    IF lp_return <> 0
+    THEN
+        RETURN lp_return;
+    ENDIF;
+
+    CREATE TABLE :h_checkscan_temp
+    AS SELECT    a.contributor_reference,
+                 a.period
+    FROM         tt_ewi_front_page_only a
+    WHERE        a.counter = :g_counter;
+
+    lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(:h_rows),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF lp_return = 9
+    THEN
+      h_debug = 'ERROR: Failed to create 7th instance of '
+              + :h_checkscan_temp +'.';
+      CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+      RETURN lp_return;
+
+    ELSEIF lp_return = 0
+    THEN
+
+      INSERT INTO :h_checkscan_table
+                ( time,
+                  reason,
+                  inquiry,
+                  contributor_industry,
+                  period,
+                  contributor_reference,
+                  phone_contact,
+                  phone_area_code,
+                  phone,
+                  phone_extension,
+                  fax_area_code,
+                  fax,
+                  email,
+                  address_change,
+                  lu_change,
+                  comments,
+                  extra_pages,
+                  question,
+                  avalue)
+      SELECT      'now',
+                  'Front Page Only',
+                  14,
+                  00000,
+                  a.period,
+                  a.contributor_reference,
+                  ' ',
+                  ' ',
+                  ' ',
+                  ' ',
+                  ' ',
+                  ' ',
+                  ' ',
+                  ' ',
+                  ' ',
+                  ' ',
+                  ' ',
+                  000000000,
+                  0
+       FROM       :h_checkscan_temp a;
+
+       lp_return = CALLPROC batch_check_inq_ing (
+                 h_num_row_ck = 1,
+                 h_commit     = 'Y',
+                 h_rollback   = 'N',
+                 h_frpr_name  = :h_frpr_name);
+
+       IF lp_return = 9
+       THEN
+         h_debug = 'ERROR: Failed on 7th stage insert into '
+                 + :h_checkscan_table +'.';
+         CALLPROC batch_fp_error_log 
+               (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+         RETURN lp_return;
+       ENDIF;
+
+        INSERT INTO bto_scanning_debug
+             SELECT 'now',
+		     contributor_reference,
+		     period,
+		     999,
+		     7
+               FROM :h_checkscan_temp;
+
+        h_debug = 'WARNING: ' + VARCHAR(:h_rows) 
+	        + ' FRONT PAGE ONLY RETURNS DETECTED.';
+        CALLPROC batch_fp_error_log 
+                 (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=:lp_return);
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Th..th..thats all folks, return zero. Keep calm and carry on...
+    ------------------------------------------------------------------*/
+
+    h_debug =  'PRO: Leaving check_scanning, returning zero.';
+    CALLPROC batch_fp_error_log 
+             (p_text=:h_debug, p_frpr=:h_frpr_name, p_ret_val=0);
+
+    RETURN 0;
+
+}

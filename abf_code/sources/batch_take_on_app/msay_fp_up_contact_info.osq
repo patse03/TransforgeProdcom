@@ -1,0 +1,740 @@
+/*----------------------------------------------------------------------
+1. Store Check Boxes - on bto_view_images & bto_despatch
+2. Store Contact Details
+----------------------------------------------------------------------*/
+
+PROCEDURE msay_fp_up_contact_info () =
+
+DECLARE 
+  h_frpr_name             = VARCHAR(36)  NOT NULL WITH DEFAULT,
+  h_input_table           = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_contact_table         = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_form_received         = CHAR(1)      NOT NULL WITH DEFAULT,
+  h_period                = INTEGER4     NOT NULL WITH DEFAULT,
+  h_character             = CHAR(1)      NOT NULL WITH DEFAULT,
+  h_contributor_reference = CHAR(11)     NOT NULL WITH DEFAULT,
+  h_counter               = INTEGER1     NOT NULL WITH DEFAULT,
+  h_test_string           = VARCHAR(10)  NOT NULL WITH DEFAULT,
+  h_phone_area_code       = VARCHAR(10)  NOT NULL WITH DEFAULT,
+  h_phone                 = VARCHAR(10)  NOT NULL WITH DEFAULT,
+  h_phone_extension       = VARCHAR(10)  NOT NULL WITH DEFAULT,
+  h_fax_area_code         = VARCHAR(10)  NOT NULL WITH DEFAULT,
+  h_fax                   = VARCHAR(10)  NOT NULL WITH DEFAULT,
+  h_return                = INTEGER2     NOT NULL WITH DEFAULT,
+  h_return2               = INTEGER2     NOT NULL WITH DEFAULT,
+  h_text                  = VARCHAR(160) NOT NULL WITH DEFAULT,
+
+  lp_error_check          = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name     = 'msay_fp_up_contact_info';
+  h_input_table   = 'bto_scanned_input';
+  h_contact_table = 'tt_scanned_contacts';
+
+  /*--------------------------------------------------------------------------
+     Create working table.
+  --------------------------------------------------------------------------*/
+
+  MESSAGE 'Creating Temporary Contact Table . . .';
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = :h_contact_table);
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE :h_contact_table
+  AS 
+  SELECT DISTINCT inquiry,
+                  contributor_industry,
+                  period,
+                  contributor_reference,
+                  phone_contact,
+                  phone_area_code,
+                  phone,
+                  phone_extension,
+                  fax_area_code,
+                  fax,
+                  email,
+                  address_change,
+                  lu_change,
+                  comments,
+                  extra_pages
+  FROM            :h_input_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create table ' +:h_contact_table +'.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+
+  ELSEIF h_return = 1
+  THEN
+
+    /* Nothing to update from, keep calm and carry on. */
+
+    h_return = CALLPROC batch_fp_drop_table (p_table = :h_contact_table);
+
+    IF h_return != 0
+    THEN
+      /* Error reporting handled by external procedure */
+      RETURN h_return;
+    ENDIF;
+
+    RETURN 0;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    If the same form has been taken on twice, use the data from the
+    first time and ignore the data from the second time
+  ------------------------------------------------------------------*/
+
+  DELETE FROM :h_contact_table a
+  WHERE  contributor_reference IN 
+         ( SELECT contributor_reference
+           FROM   :h_contact_table b
+           WHERE  a.period = b.period
+             AND  a.tid > b.tid);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to delete duplicates '
+           + 'from ' +:h_contact_table +'.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Tidy up the table.
+  ------------------------------------------------------------------*/
+
+  MODIFY :h_contact_table TO BTREE UNIQUE 
+      ON contributor_reference, period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to modify storage structure '
+           + 'of ' +:h_contact_table +'.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Delete preexisting from bto_view_images (holds tick-box flags)
+  ------------------------------------------------------------------*/
+
+  DELETE FROM bto_view_images a
+  WHERE  contributor_reference IN 
+         ( SELECT contributor_reference
+           FROM   :h_contact_table b
+           WHERE  a.period = b.period);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to delete pre-existing records '
+           + 'from ' +:h_contact_table +'.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Insert into bto_reference_acu where address change present.
+    This is used in the management info screens for selective editing
+    and is needed as clearing the ACUs on the normal system destroys
+    the record of them ever being present.
+  ------------------------------------------------------------------*/
+
+  INSERT INTO bto_reference_acu 
+       ( contributor,
+         period,
+         acu,
+         actioned)
+  SELECT contributor_reference,
+         period,
+         'A',
+         'N'
+  FROM   :h_contact_table
+  WHERE  address_change = 'Y';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to insert address change rows '
+           + 'into bto_reference_acu.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Insert into bto_reference_acu where comment present.
+    This is used in the management info screens for selective editing
+    and is needed as clearing the acus on the normal system destroys
+    the record of them ever being present.
+  ------------------------------------------------------------------*/
+
+  INSERT INTO bto_reference_acu 
+       ( contributor,
+         period,
+         acu,
+         actioned)
+  SELECT contributor_reference,
+         period,
+         'C',
+         'N'
+  FROM   :h_contact_table
+  WHERE  comments = 'Y';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to insert comment rows '
+           + 'into bto_reference_acu.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Insert into bto_reference_acu where attachment present.
+    This is used in the management info screens for selective editing
+    and is needed as clearing the acus on the normal system destroys
+    the record of them ever being present.
+  ------------------------------------------------------------------*/
+
+  INSERT INTO bto_reference_acu 
+       ( contributor,
+         period,
+         acu,
+         actioned)
+  SELECT contributor_reference,
+         period,
+         'U',
+         'N'
+  FROM   :h_contact_table
+  WHERE  extra_pages = 'Y';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to insert attachment rows '
+           + 'into bto_reference_acu.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Insert into bto_view_images where tick-boxes say Y
+  ------------------------------------------------------------------*/
+
+  INSERT INTO bto_view_images 
+       ( period,
+         contributor_industry,
+         contributor_reference,
+         tick_boxes)
+  SELECT period,
+         contributor_industry,
+         contributor_reference,
+         address_change + lu_change + comments + extra_pages
+  FROM   :h_contact_table
+  WHERE  address_change = 'Y'
+     OR  lu_change = 'Y'
+     OR  comments = 'Y'
+     OR  extra_pages = 'Y';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to insert ACU markers into bto_view_images.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Update bto_despatch
+  ------------------------------------------------------------------*/
+
+  UPDATE bto_despatch a
+  FROM   :h_contact_table b
+  SET    tick_boxes = b.address_change + b.lu_change 
+                    + b.comments + b.extra_pages
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.period = b.period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update bto_despatch with ACU markers.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Lose any non-numeric characters from phone & fax numbers
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Reformatting Phone/Fax Numbers . . .';
+
+  SELECT contributor_reference AS h_contributor_reference,
+         period                AS h_period,
+         phone_area_code       AS h_phone_area_code,
+         phone                 AS h_phone,
+         phone_extension       AS h_phone_extension,
+         fax_area_code         AS h_fax_area_code,
+         fax                   AS h_fax
+  FROM   :h_contact_table
+  BEGIN
+
+    /*..................................................................
+       Phone area code.
+    ..................................................................*/
+
+    h_phone_area_code = SQUEEZE(h_phone_area_code);
+    h_test_string = '';
+    h_counter = 1;
+
+    WHILE h_counter <= LENGTH(h_phone_area_code)
+    DO
+
+      h_character = CHAREXTRACT(h_phone_area_code,h_counter);
+
+      IF LOCATE('0123456789',h_character) < 11
+      THEN
+        h_test_string = h_test_string + h_character;
+      ENDIF;
+
+      h_counter = h_counter + 1;
+
+    ENDWHILE;
+
+    h_phone_area_code = h_test_string;
+
+    /*..................................................................
+       Phone number.
+    ..................................................................*/
+
+    h_phone = SQUEEZE(h_phone);
+    h_test_string = '';
+    h_counter = 1;
+
+    WHILE h_counter <= LENGTH(h_phone)
+    DO
+
+      h_character = CHAREXTRACT(h_phone,h_counter);
+
+      IF LOCATE('0123456789',h_character) < 11
+      THEN
+        h_test_string = h_test_string + h_character;
+      ENDIF;
+
+      h_counter = h_counter + 1;
+
+    ENDWHILE;
+
+    h_phone = h_test_string;
+
+    /*..................................................................
+       Phone extension.
+    ..................................................................*/
+
+    h_phone_extension = SQUEEZE(h_phone_extension);
+    h_test_string = '';
+    h_counter = 1;
+
+    WHILE h_counter <= LENGTH(h_phone_extension)
+    DO
+
+      h_character = CHAREXTRACT(h_phone_extension,h_counter);
+
+      IF LOCATE('0123456789',h_character) < 11
+      THEN
+        h_test_string = h_test_string + h_character;
+      ENDIF;
+
+      h_counter = h_counter + 1;
+
+    ENDWHILE;
+
+    h_phone_extension = h_test_string;
+
+    /*..................................................................
+       Fax area code.
+    ..................................................................*/
+
+    h_fax_area_code = SQUEEZE(h_fax_area_code);
+    h_test_string = '';
+    h_counter = 1;
+
+    WHILE h_counter <= LENGTH(h_fax_area_code)
+    DO
+
+      h_character = CHAREXTRACT(h_fax_area_code,h_counter);
+
+      IF LOCATE('0123456789',h_character) < 11
+      THEN
+        h_test_string = h_test_string + h_character;
+      ENDIF;
+
+      h_counter = h_counter + 1;
+
+    ENDWHILE;
+
+    h_fax_area_code = h_test_string;
+
+    /*..................................................................
+       Fax number.
+    ..................................................................*/
+
+    h_fax = SQUEEZE(h_fax);
+    h_test_string = '';
+    h_counter = 1;
+
+    WHILE h_counter <= LENGTH(h_fax)
+    DO
+
+      h_character = CHAREXTRACT(h_fax,h_counter);
+
+      IF LOCATE('0123456789',h_character) < 11
+      THEN
+        h_test_string = h_test_string + h_character;
+      ENDIF;
+
+      h_counter = h_counter + 1;
+
+
+    ENDWHILE;
+
+    h_fax = h_test_string;
+
+    /*..................................................................
+       Update the contact table with the cleaned data.
+    ..................................................................*/
+
+    UPDATE :h_contact_table
+    SET    phone_area_code = :h_phone_area_code,
+           phone           = :h_phone,
+           phone_extension = :h_phone_extension,
+           fax_area_code   = :h_fax_area_code,
+           fax             = :h_fax
+    WHERE  contributor_reference = :h_contributor_reference
+      AND  period                = :h_period;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return > 1
+    THEN
+      h_text = 'ERROR: Failed to update phone and fax details '
+             + 'on ' +:h_contact_table +' ' 
+             + 'for contributor ' +:h_contributor_reference +' '
+             + 'in period ' +VARCHAR(:h_period) +'.';
+      CALLPROC write_to_process_log
+               (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+      RETURN h_return;
+
+    ENDIF;
+
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to select phone and fax loop data '
+           + 'from ' +:h_contact_table +'.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Mark as receipted, if not already receipted.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Receipting Forms . . .';
+
+  UPDATE contributor_period a
+  FROM   :h_contact_table b,
+         inquiry_period c
+  SET    receipt_date  = 'today',
+         form_received = :h_form_received,
+         rec_week_no   = c.week_no 
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.period       = b.period
+    AND  a.period       = c.period
+    AND  a.receipt_date = '';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update receipt date on contributor_period.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Update contributor_period: reset correct_date form_status
+  ------------------------------------------------------------------*/
+
+  UPDATE contributor_period a
+  FROM   :h_contact_table b
+  SET    form_taken_on = 'N',
+         correct_date = '',
+         corr_week_no = 0,
+         user_id = '',
+         f9_count = 0
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.period = b.period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to reset take-on data on contributor_period.';
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    If there is more than one form returned on the same file but for
+    different periods, delete the earlier period from
+    bto_scanned_contact as errors were occurring with ambiguous replace
+    on contributor table.
+   ------------------------------------------------------------------*/
+
+  DELETE FROM :h_contact_table a
+  WHERE  contributor_reference IN
+         (SELECT contributor_reference
+          FROM :h_contact_table b
+          WHERE a.contributor_reference = b.contributor_reference
+            AND a.tid < b.tid);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to delete earlier periods '  
+           + 'from ' +:h_contact_table +'.'; 
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Only update the field if something's in the field, so you have to do
+    each field separately.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Updating Contributor . . .';
+
+  /*..................................................................
+    Phone contact
+  ..................................................................*/
+
+  UPDATE contributor a
+  FROM   :h_contact_table b
+  SET    phone_contact = b.phone_contact
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  b.phone_contact != '';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update phone contact on contributor table.';  
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*..................................................................
+    Phone area code
+  ..................................................................*/
+
+  UPDATE contributor a
+  FROM   :h_contact_table b
+  SET    phone_area_code = b.phone_area_code
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  b.phone_area_code != ''
+    AND  LENGTH(b.phone_area_code) >= 3;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update phone area code on contributor table.';  
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*..................................................................
+    Phone number
+  ..................................................................*/
+
+  UPDATE contributor a
+  FROM   :h_contact_table b
+  SET    phone = b.phone
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  b.phone != ''
+    AND  LENGTH(b.phone) >= 5;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update phone number on contributor table.';  
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*..................................................................
+    Phone extension
+  ..................................................................*/
+
+  UPDATE contributor a
+  FROM   :h_contact_table b
+  SET    phone_extension = b.phone_extension
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  b.phone_extension != '';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update phone extension on contributor table.';  
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*..................................................................
+    fax area code
+  ..................................................................*/
+
+  UPDATE contributor a
+  FROM   :h_contact_table b
+  SET    fax_area_code = b.fax_area_code
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  b.fax_area_code != ''
+    AND  LENGTH(b.fax_area_code) >= 3;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update fax area code on contributor table.';  
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*..................................................................
+    Fax number
+  ..................................................................*/
+
+  UPDATE contributor a
+  FROM   :h_contact_table b
+  SET    fax = b.fax
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  b.fax != ''
+    AND  LENGTH(b.fax) >= 5;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update fax number on contributor table.';  
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*..................................................................
+    Email address
+  ..................................................................*/
+
+  UPDATE contributor a
+  FROM   :h_contact_table b
+  SET    email = b.email
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  b.email != '';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update email address on contributor table.';  
+    CALLPROC write_to_process_log
+             (p_text=:h_text, p_frpr=:h_frpr_name, p_return=:h_return);
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Tidy up temp table and return.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Tidying up . . .';
+
+  h_return = CALLPROC batch_fp_drop_table (p_table = :h_contact_table);
+
+  IF h_return != 0
+  THEN
+    /* Error reporting handled by external procedure */
+    RETURN h_return;
+  ENDIF;
+
+  RETURN 0
+
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

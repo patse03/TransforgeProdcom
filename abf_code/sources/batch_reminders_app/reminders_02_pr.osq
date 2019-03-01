@@ -1,0 +1,636 @@
+/************************************************************************
+This procedure produces a data file for SPC to CEO letters.
+It has been written to work with the new industry_analysts structure and
+the automated prodcom production system.
+
+COMMAND LINE PARAMETERS:
+    $IMAGES/batch_reminders_app -dprodlivedb -a 201200
+    $DIMAGES/batch_reminders_app -dproddevd1 -a 201200
+
+Where:
+     201200   = data period
+
+Feb 2013 - DF
+Mar 2015 - MC 
+Updating so that ceo letters include the ons_tel contact no (min 0184).
+
+***********************************************************************/
+
+PROCEDURE reminders_02_pr () =
+
+DECLARE   h_return                = INTEGER1     NOT NULL WITH DEFAULT,
+          h_return_2              = INTEGER1     NOT NULL WITH DEFAULT,
+          h_return_3              = INTEGER1     NOT NULL WITH DEFAULT,
+          h_param_list            = VARCHAR(200) NOT NULL WITH DEFAULT,
+          h_varchar_variable      = VARCHAR(200) NOT NULL WITH DEFAULT,
+          h_integer_variable      = INTEGER4     NOT NULL WITH DEFAULT,
+          h_param1                = VARCHAR(10)  NOT NULL WITH DEFAULT,
+          h_frpr_name             = VARCHAR(25)  NOT NULL WITH DEFAULT,
+          h_text                  = VARCHAR(80)  NOT NULL WITH DEFAULT,
+          h_temp_table_1          = VARCHAR(32)  NOT NULL WITH DEFAULT,
+          h_period                = INTEGER4     NOT NULL WITH DEFAULT,
+          h_idbr_year             = INTEGER4     NOT NULL WITH DEFAULT,
+          h_count                 = INTEGER4     NOT NULL WITH DEFAULT,
+          h_filename_1            = VARCHAR(100) NOT NULL WITH DEFAULT,
+          h_filename_2            = VARCHAR(100) NOT NULL WITH DEFAULT,
+          h_contributor_reference = VARCHAR(11)  NOT NULL WITH DEFAULT,
+          h_contributor_industry  = INTEGER4     NOT NULL WITH DEFAULT,
+          h_output_category       = CHAR(2)      NOT NULL WITH DEFAULT,
+
+       lp_drop_table  = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+       lp_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+{
+  h_frpr_name = 'reminders_02_pr';
+  g_analysts_table = 'rem_data_analysts';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  g_inquiry = 14;
+
+  h_temp_table_1 = 'tt_reminders_02a';
+  
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_procs (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Log start of process.
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = '*SIGNON*');
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'STARTING: CEO LETTERS PROCESS STARTING.');
+  
+  /*------------------------------------------------------------------
+    Select the parameters from the UNIX line
+  ------------------------------------------------------------------*/
+
+  h_param_list = CALLPROC COMMANDLINEPARAMETERS();
+
+  h_varchar_variable = SQUEEZE (h_param_list);
+
+  h_integer_variable = LOCATE (h_varchar_variable, ' ');
+  h_param1           = LEFT   (h_varchar_variable,h_integer_variable - 1);
+
+  g_period = INT4(:h_param1);
+
+  /*------------------------------------------------------------------
+    Validating parameters
+  ------------------------------------------------------------------*/
+  MESSAGE '[1/8] Validating parameters...';
+  h_text = 'Validating prameters.';
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = :h_text);
+  SLEEP 1;
+
+  /*...................................................................
+    Select max inquiry_period as h_period, as thats what we should
+    be printing forms and reminders for.
+  ..................................................................*/
+
+  SELECT  MAX(period) AS h_period
+  FROM    inquiry_period
+  WHERE   inquiry = 14; 
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select max period from inquiry period.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*...................................................................
+    Checks that g_period is on the list of periods for the inquiry.
+  ..................................................................*/
+
+  SELECT period AS :g_period
+  FROM   inquiry_period
+  WHERE  period = :g_period
+  AND    inquiry = 14;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select period parameter from inquiry period.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*...................................................................
+    Compare g_period to h_period to make sure they match.
+  ..................................................................*/
+
+  IF g_period != h_period 
+  THEN
+    h_text = 'ERROR: Period parameter does not match latest inquiry period.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF; 
+
+  h_text = 'Period parameter ' +VARCHAR(:g_period) +' validated successfully.';
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = :h_text);
+
+  /*------------------------------------------------------------------
+     Set some vaiables using using period parameter.
+  ------------------------------------------------------------------*/
+  MESSAGE '[2/8] Setting some variables...';
+  h_text = 'Using period to set IDBR year and filenames.';
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = :h_text);
+  SLEEP 1;
+
+  h_idbr_year = :g_period + 12;
+
+  IF g_database = 'prodlivedb'
+  THEN
+    h_filename_1 = '/admin/scratch/idbr/iro/prodcom_bpt_refs';
+    h_filename_2 = '/prodcom/live5/files/forms/rem6dets014_'
+                 + VARCHAR(:h_idbr_year);
+  ELSE
+    h_filename_1 = '/admin/scratch/idbr/iro/prodcom_bpt_refs';
+    h_filename_2 = '/admin/scratch/TEST_prodcom_ceo_refs_'
+                 + VARCHAR(:h_idbr_year);
+  ENDIF;
+
+  /*--------------------------------------------------------------------------
+    Drop and create working table. 
+  --------------------------------------------------------------------------*/
+
+  MESSAGE '[3/8] Creating working table...';
+  h_text = 'Creating working table.';
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = :h_text);
+  SLEEP 1;
+  
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_temp_table_1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop ' +:h_temp_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_temp_table_1
+  AS
+  SELECT DISTINCT 
+         a.contributor_reference,
+         c.check_letter,
+         CHAR(a.contributor_industry) AS contributor_industry,
+         a.region,
+         b.add_name1,
+         b.add_name2,
+         b.add_name3,
+         b.add_tradstyle1,
+         b.add_tradstyle2,
+         b.add_tradstyle3,
+         b.add_line1,
+         b.add_line2,
+         b.add_line3,
+         b.add_line4,
+         b.add_line5,
+         b.add_postcode,
+         c.ons_tel,  /* Updated later */
+         c.inclexcl,
+         c.welsh,
+         a.output_category,
+         ''           AS str_dummy,
+         0            AS int_dummy,
+         FLOAT8(0)    AS flt_dummy
+ FROM   contributor_period a,
+        contributor        b,
+        fpr_form_c_data    c
+ WHERE  a.contributor_reference = b.contributor_reference
+   AND  a.contributor_reference = c.contributor_reference
+   AND  a.period = c.period
+   AND  a.register_emp > 999
+   AND  a.receipt_date = ''
+   AND  a.region != 'YY'
+   AND  a.period = :g_period
+   AND  a.output_category != ('Y')
+   AND  a.contributor_reference NOT IN
+     (  SELECT c.contributor_reference
+        FROM   stop_reminder c
+        WHERE  c.contributor_reference = a.contributor_reference
+          AND  c.period = a.period
+          AND  c.reminder = 3);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_temp_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*--------------------------------------------------------------------------
+    Update contact phone number to current analyst.
+  --------------------------------------------------------------------------*/
+
+  UPDATE :h_temp_table_1 a
+  FROM   industry_analysts b
+  SET    ons_tel = '65' + b.ext
+  WHERE  a.contributor_industry = b.industry
+    AND  a.contributor_reference >= b.low_ref
+    AND  a.contributor_reference <= b.high_ref
+    AND  LEFT(b.ext,1) = 1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed prefix tel nos with 65 on ' +:h_temp_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  UPDATE :h_temp_table_1 a
+  FROM   industry_analysts b
+  SET    ons_tel = '45' + b.ext
+  WHERE  a.contributor_industry = b.industry
+    AND  a.contributor_reference >= b.low_ref
+    AND  a.contributor_reference <= b.high_ref
+    AND  LEFT(b.ext,1) != 1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed prefix tel nos with 45 on ' +:h_temp_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*--------------------------------------------------------------------------
+    Pad industry numbers
+  --------------------------------------------------------------------------*/
+  MESSAGE '[4/8] Padding industry numbers...';
+  h_text = 'Padding any short industry numbers with leading zero.';
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = :h_text);
+  SLEEP 1;
+
+  UPDATE :h_temp_table_1
+  SET    contributor_industry =
+         RIGHT(('0'+ SQUEEZE(VARCHAR(contributor_industry))),5)
+  WHERE  length(contributor_industry) = 4;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to pad industry numbers on ' +:h_temp_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+ 
+  /*--------------------------------------------------------------------------
+    Set transfer to desk marker.
+  --------------------------------------------------------------------------*/
+
+  MESSAGE '[5/8] Updating any desk despatch markers...';
+  h_text = 'Updating any desk despatch markers.';
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = :h_text);
+  SLEEP 1;
+
+  UPDATE :h_temp_table_1
+  SET    inclexcl = 'T'
+  WHERE  output_category = 'X';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update desk despatch on ' +:h_temp_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*--------------------------------------------------------------------------
+    Delete from and copy into semi perm table.
+  --------------------------------------------------------------------------*/
+
+  MESSAGE '[6/8] Recording in semi permanent table...';
+  h_text = 'Recording data in semi-permanent table.';
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = :h_text);
+  SLEEP 1;
+
+  DELETE FROM ceo_form_c_data;
+  
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to delete old data from ceo_form_c_data.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  INSERT INTO ceo_form_c_data
+  SELECT contributor_reference,
+         check_letter,
+         str_dummy,
+         contributor_industry,
+         region, 
+         str_dummy,
+         str_dummy,
+         str_dummy,
+         str_dummy,
+         str_dummy,
+         str_dummy,
+         str_dummy,
+         str_dummy,
+         str_dummy,
+         str_dummy,
+         str_dummy,
+         str_dummy,
+         add_name1,
+         add_name2,
+         add_name3,
+         add_tradstyle1,
+         add_tradstyle2,
+         add_tradstyle3,
+         add_line1,
+         add_line2,
+         add_line3,
+         add_line4,
+         add_line5,
+         add_postcode,
+         str_dummy,
+         str_dummy,
+         str_dummy,
+         ons_tel,
+         str_dummy,
+         '0001',
+         inclexcl,
+         welsh 
+  FROM   :h_temp_table_1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to insert new data into ceo_form_c_data.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*--------------------------------------------------------------------------
+    Produce file for spc.
+
+    (RU data doubled up into ENT data at SPCs request as no seperate ENT
+     data held on prodcom. DF 2013)
+  --------------------------------------------------------------------------*/
+
+  MESSAGE '[7/8] Creating data file for SPC...';
+  h_text = 'Producing output file: ' +:h_filename_2;
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = :h_text);
+  SLEEP 1;
+  
+  COPY TABLE ceo_form_c_data
+           ( contributor_reference =  c(0)':',
+             check_letter          =  c(0)':',
+             ent_ref               =  c(0)':',
+             industry              =  c(0)':',
+             region                =  c(0)':',
+             ru_name1              =  c(0)':',
+             ru_name2              =  c(0)':',
+             ru_name3              =  c(0)':',
+             ru_trad1              =  c(0)':',
+             ru_trad2              =  c(0)':',
+             ru_trad3              =  c(0)':',
+             ru_addr1              =  c(0)':',
+             ru_addr2              =  c(0)':',
+             ru_addr3              =  c(0)':',
+             ru_addr4              =  c(0)':',
+             ru_addr5              =  c(0)':',
+             ru_postcode           =  c(0)':',
+             ru_name1              =  c(0)':',
+             ru_name2              =  c(0)':',
+             ru_name3              =  c(0)':',
+             ru_trad1              =  c(0)':',
+             ru_trad2              =  c(0)':',
+             ru_trad3              =  c(0)':',
+             ru_addr1              =  c(0)':',
+             ru_addr2              =  c(0)':',
+             ru_addr3              =  c(0)':',
+             ru_addr4              =  c(0)':',
+             ru_addr5              =  c(0)':',
+             ru_postcode           =  c(0)':',
+             addressee             =  c(0)':',
+             telephone             =  c(0)':',
+             fax                   =  c(0)':',
+             ons_tel               =  c(0)':',
+             cell_no               =  c(0)':',
+             form_type             =  c(0)':',
+             incexcl               =  c(0)':',
+             iswelsh               =  c0nl)
+  INTO h_filename_2;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_temp_table_1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to tidy up ' +:h_temp_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*--------------------------------------------------------------------------
+    Tidy up.
+  --------------------------------------------------------------------------*/
+
+  MESSAGE '[8/8] Tidying up...';
+  h_text = 'Tidying up temp tables.';
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = :h_text);
+  SLEEP 1;
+  
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_temp_table_1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to tidy up ' +:h_temp_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Log end of process.
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'COMPLETE: CEO LETTERS PROCESS COMPLETED OK.');
+  
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = '*SIGNOFF*');
+
+}
+
+/*************************** LOCAL PROCEDURES *****************************/
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL WITH DEFAULT) = 
+
+  DECLARE lp_return = INTEGER4    NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(36)    NOT NULL WITH DEFAULT,
+          lp_text   = VARCHAR(80) NOT NULL WITH DEFAULT
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    lp_text = 'SYSTEM ERROR: Failed whilst selecting ' 
+            +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+            + 'with error code ' + VARCHAR(:lp_return) + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :lp_text);
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  h_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF h_return != 0 
+  THEN 
+    lp_text = 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :lp_text);
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+
+

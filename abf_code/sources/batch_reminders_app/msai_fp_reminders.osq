@@ -1,0 +1,1105 @@
+/*--------------------------------------------------------------------------
+ Used to create the output file required by SPC
+ for first reminders letters printing 
+
+Called by msai_fp_start
+--------------------------------------------------------------------------*/
+
+PROCEDURE msai_fp_reminders(
+	)=
+
+
+
+DECLARE	ret_val 		= INTEGER4 NOT NULL,
+	h_reminders	 	= VARCHAR(50) NOT NULL,
+	h_questions	 	= VARCHAR(60) NOT NULL,
+
+        h_form_table		= VARCHAR(25) NOT NULL,
+	h_contributor_reference = CHAR(11) NOT NULL,	
+	h_letter 		= CHAR(1) NOT NULL,	
+	h_inquiry		= INTEGER1 NOT NULL,
+
+	h_region 		= CHAR(2) NOT NULL,	
+	h_contributor_industry	= INTEGER4 NOT NULL,	
+	h_period		= INTEGER4 NOT NULL,
+
+	h_frpr_name		= VARCHAR(25) NOT NULL
+
+{
+h_frpr_name = 'msai_fp_reminders';
+h_period = :g_period + 12;
+IF :g_type = 1 THEN
+    	h_reminders = '/prodcom/live5/files/forms/rem1dets014_'
+	+VARCHAR(:h_period);
+ELSE
+    	h_reminders = '/prodcom/live5/files/forms/rem2dets014_'
+	+VARCHAR(:h_period);
+ENDIF;
+h_questions = '/prodcom/live5/files/forms/rem2detsquestions014_'
+	+VARCHAR(:h_period);
+
+
+/* A */ 
+ 
+  MESSAGE 'creating temp_first_table_spc'; 
+
+  DROP temp_first_table_spc; 
+  COMMIT;
+    /*-s----------------------------------------------------------------
+     If it is a reminders run select the contributor_references from the
+     table set up during reminders otherwise select all
+     contributor_references
+    ----------------------------------------------------------------e-*/
+ 
+            CREATE TABLE temp_first_table_spc
+            AS SELECT    a.contributor_reference,
+                         ' ' AS check_letter,
+                         'N' AS scanned,
+                         a.output_category,
+                         a.contributor_industry AS industry,
+                         a.region,
+                         b.ext1 AS ao_ext1,
+                         b.ext2 AS ao_ext2,
+                         b.ext3 AS ao_ext3,
+                         b.name1 AS ao_name1,
+                         b.name2 AS ao_name2,
+                         b.name3 AS ao_name3,
+                         f.email AS ao_email,
+                         a.structure AS structure,
+                         c.addressee AS designator,
+                         c.add_name1 AS addrline1,
+                         c.add_name2 AS addrline2,
+                         c.add_name3 AS addrline3,
+                         c.add_tradstyle1 AS addrline4,
+                         c.add_tradstyle2 AS addrline5,
+                         c.add_tradstyle3 AS addrline6,
+                         c.add_line1 AS addrline7,
+                         c.add_line2 AS addrline8,
+                         c.add_line3 AS addrline9,
+                         c.add_line4 AS addrline10,
+                         c.add_line5 AS addrline11,
+                         c.add_postcode AS addrline12,
+			 ' ' AS barcodeline,
+			 ' ' AS fax_barcode1,
+			 ' ' AS fax_barcode2,
+			 ' ' AS fax_barcode3,
+			 ' ' AS fax_barcode4,
+			 ' ' AS fax_barcode5,
+                         a.lu_count AS lu_count,
+                         a.legal_status,
+                         INT1(0) as wales,
+                         a.currency
+            FROM         contributor_period a,
+                         rem_data_analysts b,
+                         contributor c,
+                         passwords f
+            WHERE       a.period = :g_period
+            AND         receipt_date = ''
+            AND         inquiry = 14
+            AND         a.contributor_reference NOT IN (
+                        SELECT contributor_reference FROM stop_reminder
+                        WHERE period = :g_period
+                        AND inquiry = 14
+                        AND reminder = :g_type)
+            AND          a.contributor_industry = b.industry
+            AND          a.contributor_reference = c.contributor_reference
+            AND          UPPERCASE(b.name1) = f.user_name
+            WITH LOCATION = (prod2);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+	h_num_row_ck = 1,
+	h_commit = 'Y',
+	h_rollback = 'N',
+	h_frpr_name = :h_frpr_name);
+
+COMMIT; 
+
+    IF ret_val <> 0	
+    THEN
+	INSERT INTO error_log
+		VALUES ('now',
+			'Error creating temp_first_table_spc',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+    	COMMIT;
+    	RETURN ret_val;
+    ENDIF;
+
+    MODIFY temp_first_table_spc TO BTREE UNIQUE ON contributor_reference;
+ 
+ 
+    ret_val = CALLPROC batch_check_inq_ing (
+	h_num_row_ck = 1,
+	h_commit = 'Y',
+	h_rollback = 'N',
+	h_frpr_name = :h_frpr_name);
+    COMMIT; 
+
+    IF ret_val <> 0	
+    THEN
+	INSERT INTO error_log
+		VALUES ('now',
+			'Error modifying temp_first_table_spc',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+    	COMMIT;
+    	RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Mark the scanned contributors
+    ----------------------------------------------------------------e-*/
+  MESSAGE 'updating temp_first_table_spc'; 
+ 
+    UPDATE temp_first_table_spc a
+    FROM   bto_despatch b
+    SET    scanned = 'Y'
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    b.period = :g_period;
+ 
+    ret_val = CALLPROC batch_check_inq_ing (
+        h_num_row_ck = 0,
+	h_commit = 'Y',
+	h_rollback = 'N',
+	h_frpr_name = :h_frpr_name);
+    COMMIT; 
+
+    IF ret_val <> 0	
+    THEN
+	INSERT INTO error_log
+		VALUES ('now',
+			'Error updating  1 temp_first_table_spc',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+    	COMMIT;
+    	RETURN ret_val;
+    ENDIF;
+
+ 
+    /*-s----------------------------------------------------------------
+    Mark the welsh postcode contributors from file passed from IDBR
+    ----------------------------------------------------------------e-*/
+ 
+    UPDATE temp_first_table_spc a
+    FROM   welsh_contributor b
+    SET    wales = 1
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    b.period = :g_period;
+ 
+    ret_val = CALLPROC batch_check_inq_ing (
+	h_num_row_ck = 1,
+	h_commit = 'Y',
+	h_rollback = 'N',
+	h_frpr_name = :h_frpr_name);
+    COMMIT; 
+
+    IF ret_val <> 0	
+    THEN
+	INSERT INTO error_log
+		VALUES ('now',
+			'Error updating 2 temp_first_table_spc',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+    	COMMIT;
+    	RETURN ret_val;
+    ENDIF;
+
+ 
+    /*-s----------------------------------------------------------------
+    Update First Table with ao details for 18120 depending on ref range.
+
+    June 2012 - DF - Recoded to remove hard coding, now basing on table
+    industry_analysts which will also be used for take-on screen access
+    control.
+    ----------------------------------------------------------------e-*/
+
+    UPDATE   temp_first_table_spc a
+    FROM     industry_analysts b
+    SET      ao_name1 = b.name,
+             ao_ext1  = b.ext
+    WHERE    a.industry = 18120
+      AND    a.industry = b.industry
+      AND    a.contributor_reference >= b.low_ref
+      AND    a.contributor_reference <= b.high_ref;
+
+    ret_val = CALLPROC batch_check_inq_ing ( h_num_row_ck = 1,
+                                             h_commit     = 'Y',
+                                             h_rollback   = 'N',
+                                             h_frpr_name  = :h_frpr_name);
+
+    IF ret_val > 1  
+    THEN
+      INSERT INTO error_log
+      VALUES ( 'now',
+               'Error updating analyst details for 18120 on ' + 
+               'table temp_first_table_spc.',
+               :h_frpr_name,
+               :ret_val,
+               :g_user_id);
+      COMMIT;
+      RETURN ret_val;
+    ENDIF;
+
+
+  MESSAGE 'add checkletter to temp_first_table_spc'; 
+
+    /*-s----------------------------------------------------------------
+     Add checkletter
+    ----------------------------------------------------------------e-*/
+
+    SELECT contributor_reference AS h_contributor_reference
+    FROM   temp_first_table_spc
+    {
+        ret_val = CALLPROC msa_cp_check_digit (
+                  :h_contributor_reference,
+                  BYREF(:h_letter));
+
+
+        UPDATE temp_first_table_spc
+        SET    check_letter = :h_letter
+        WHERE  contributor_reference = :h_contributor_reference;
+
+    };
+ 
+    ret_val = CALLPROC batch_check_inq_ing (
+	h_num_row_ck = 1,
+	h_commit = 'Y',
+	h_rollback = 'N',
+	h_frpr_name = :h_frpr_name);
+    COMMIT; 
+
+    IF ret_val <> 0	
+    THEN
+	INSERT INTO error_log
+		VALUES ('now',
+			'Error selecting from temp_first_table_spc',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+    	COMMIT;
+    	RETURN ret_val;
+    ENDIF;
+
+
+/* C */ 
+
+  MESSAGE 'insert into first_table'; 
+
+DELETE FROM first_table;
+commit;
+/*--------------------------------------------------------------------
+  append the data from the industry/output_category table into the
+  main first_table
+--------------------------------------------------------------------*/
+ 
+    INSERT INTO first_table
+    SELECT *
+    FROM        temp_first_table_spc;
+ 
+    ret_val = CALLPROC batch_check_inq_ing (
+	h_num_row_ck = 1,
+	h_commit = 'Y',
+	h_rollback = 'N',
+	h_frpr_name = :h_frpr_name);
+    COMMIT; 
+
+    IF ret_val <> 0	
+    THEN
+	INSERT INTO error_log
+		VALUES ('now',
+			'Error inserting into first_table',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+    	COMMIT;
+    	RETURN ret_val;
+    ENDIF;
+
+ 
+ 
+ 
+    DELETE FROM first_table_spc;
+ 
+    ret_val = CALLPROC batch_check_inq_ing (
+	h_num_row_ck = 0,
+	h_commit = 'Y',
+	h_rollback = 'N',
+	h_frpr_name = :h_frpr_name);
+    COMMIT; 
+/*
+    IF ret_val <> 0	
+    THEN
+	INSERT INTO error_log
+		VALUES ('now',
+			'Error deleting from first_table_spc',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+    	COMMIT;
+    	RETURN ret_val;
+    ENDIF;
+*/
+ 
+/*-----------------------------------------------------------------
+Insert into first_table_spc from first_table and contributor
+------------------------------------------------------------------*/
+ 
+  MESSAGE 'insert into first_table_spc'; 
+
+    INSERT INTO first_table_spc(
+        ruref,
+        checkletter,
+        frosic92,
+        rusic92,
+        frosic2007,
+        rusic2007,
+        froempees,
+        employees,
+        froempment,
+        employment,
+        frofteempt,
+        fteempt,
+        frotover,
+        turnover,
+        entref,
+        wowentref,
+        vatref,
+        payeref,
+        crn,
+        live_lu,
+        live_vat,
+        live_paye,
+        legalstatus,
+        entrepmkr,
+        region,
+        birthdate,
+        entname1,
+        entname2,
+        entname3,
+        runame1,
+        runame2,
+        runame3,
+        ruaddr1,
+        ruaddr2,
+        ruaddr3,
+        ruaddr4,
+        ruaddr5,
+        rupostcode,
+        tradstyle1,
+        tradstyle2,
+        tradstyle3,
+        contact,
+        telephone,
+        fax,
+        seltype,
+        inclexcl,
+        cell_no,
+        formtype,
+        cso_tel,
+        currency,
+        iswelsh,
+        isnew,
+        notde,
+        osm)
+        select distinct   /* distinct added 16 Nov 2009 by MJE */
+        a.contributor_reference,
+        check_letter,
+        '',
+        '',
+        '',
+        char(industry),
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        '',
+        '',
+        '',
+        '',
+        '',
+        0,
+        0,
+        0,
+        char(legal_status),
+        '',
+        region,
+        '',
+        '',
+        '',
+        '',
+        addrline1,
+        addrline2,
+        addrline3,
+        addrline7,
+        addrline8,
+        addrline9,
+        addrline10,
+        addrline11,
+        addrline12,
+        add_tradstyle1,
+        add_tradstyle2,
+        add_tradstyle3,
+        designator,
+        '',
+        '',
+        '',
+        '',
+        0,
+        '0001',
+        '45' + ao_ext1,
+        currency,
+        '0',
+        'N',
+        '0',
+        'N'
+    FROM  first_table a , contributor b
+    WHERE a.contributor_reference=b.contributor_reference;
+ 
+    ret_val = CALLPROC batch_check_inq_ing (
+	h_num_row_ck = 1,
+	h_commit = 'Y',
+	h_rollback = 'N',
+	h_frpr_name = :h_frpr_name);
+    COMMIT; 
+
+    IF ret_val <> 0	
+    THEN
+	INSERT INTO error_log
+		VALUES ('now',
+			'Error inserting into first_table_spc',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+    	COMMIT;
+    	RETURN ret_val;
+    ENDIF;
+
+ 
+    COMMIT;
+ 
+/*--------------------------------------------------------------------
+Update first_table_spc with markers for new, osm, welsh etc..
+Also make the sic up to 5 digits where it only has 4
+---------------------------------------------------------------------*/
+ 
+  MESSAGE 'update first_table_spc'; 
+
+    UPDATE  first_table_spc
+    SET     rusic2007 = '0' + rusic2007
+    WHERE   length(rusic2007) < 5;
+ 
+    ret_val = CALLPROC batch_check_inq_ing (
+	h_num_row_ck = 1,
+	h_commit = 'Y',
+	h_rollback = 'N',
+	h_frpr_name = :h_frpr_name);
+    COMMIT; 
+
+    IF ret_val <> 0	
+    THEN
+	INSERT INTO error_log
+		VALUES ('now',
+			'Error updating 1 first_table_spc',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+    	COMMIT;
+    	RETURN ret_val;
+    ENDIF;
+
+    COMMIT;
+ 
+ 
+    UPDATE  first_table_spc
+    SET     inclexcl = 'F'
+    WHERE   ruref in(
+            select contributor_reference from first_table
+            where output_category = 'Y');
+ 
+    ret_val = CALLPROC batch_check_inq_ing (
+	h_num_row_ck = 1,
+	h_commit = 'Y',
+	h_rollback = 'N',
+	h_frpr_name = :h_frpr_name);
+    COMMIT; 
+
+    IF ret_val <> 0	
+    THEN
+	INSERT INTO error_log
+		VALUES ('now',
+			'Error updating 2 first_table_spc',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+    	COMMIT;
+    	RETURN ret_val;
+    ENDIF;
+
+    COMMIT;
+ 
+    UPDATE  first_table_spc
+    SET     inclexcl = 'T'
+    WHERE   ruref in (
+            select contributor_reference from first_table
+            where output_category = 'X');
+ 
+    ret_val = CALLPROC batch_check_inq_ing (
+	h_num_row_ck = 1,
+	h_commit = 'Y',
+	h_rollback = 'N',
+	h_frpr_name = :h_frpr_name);
+    COMMIT; 
+
+    IF ret_val <> 0	
+    THEN
+	INSERT INTO error_log
+		VALUES ('now',
+			'Error updating 3 first_table_spc',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+    	COMMIT;
+    	RETURN ret_val;
+    ENDIF;
+
+    COMMIT;
+ 
+    UPDATE  first_table_spc
+    SET     formtype = '0002'
+    WHERE   region = 'YY';
+ 
+    ret_val = CALLPROC batch_check_inq_ing (
+	h_num_row_ck = 1,
+	h_commit = 'Y',
+	h_rollback = 'N',
+	h_frpr_name = :h_frpr_name);
+    COMMIT; 
+
+    IF ret_val <> 0	
+    THEN
+	INSERT INTO error_log
+		VALUES ('now',
+			'Error updating 4 first_table_spc',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+    	COMMIT;
+    	RETURN ret_val;
+    ENDIF;
+
+    COMMIT;
+ 
+    UPDATE  first_table_spc
+    SET     iswelsh = 'P'
+    WHERE   ruref in(
+            SELECT contributor_reference from welsh_contributor
+            WHERE  period = :g_period);
+ 
+    ret_val = CALLPROC batch_check_inq_ing (
+	h_num_row_ck = 1,
+	h_commit = 'Y',
+	h_rollback = 'N',
+	h_frpr_name = :h_frpr_name);
+    COMMIT; 
+
+    IF ret_val <> 0	
+    THEN
+	INSERT INTO error_log
+		VALUES ('now',
+			'Error updating 5 first_table_spc',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+    	COMMIT;
+    	RETURN ret_val;
+    ENDIF;
+
+    COMMIT;
+ 
+    UPDATE  first_table_spc
+    SET     iswelsh = 'W'
+    WHERE   ruref in(
+            SELECT contributor_reference from welsh_forms
+            WHERE  period = :g_period);
+ 
+    ret_val = CALLPROC batch_check_inq_ing (
+	h_num_row_ck = 1,
+	h_commit = 'Y',
+	h_rollback = 'N',
+	h_frpr_name = :h_frpr_name);
+    COMMIT; 
+
+    IF ret_val <> 0	
+    THEN
+	INSERT INTO error_log
+		VALUES ('now',
+			'Error updating 6 first_table_spc',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+    	COMMIT;
+    	RETURN ret_val;
+    ENDIF;
+
+    COMMIT;
+ 
+    UPDATE  first_table_spc
+    SET     isnew = 'Y'
+    WHERE   ruref in(
+            SELECT contributor_reference from first_table
+            WHERE  output_category in('C','G','W'));
+ 
+    ret_val = CALLPROC batch_check_inq_ing (
+	h_num_row_ck = 1,
+	h_commit = 'Y',
+	h_rollback = 'N',
+	h_frpr_name = :h_frpr_name);
+    COMMIT; 
+
+    IF ret_val <> 0	
+    THEN
+	INSERT INTO error_log
+		VALUES ('now',
+			'Error updating 7 first_table_spc',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+    	COMMIT;
+    	RETURN ret_val;
+    ENDIF;
+
+    COMMIT;
+ 
+    UPDATE  first_table_spc
+    SET     osm = 'Y'
+    WHERE   ruref in(
+            select contributor_reference from first_table
+            where output_category in('O','W'));
+ 
+    ret_val = CALLPROC batch_check_inq_ing (
+	h_num_row_ck = 1,
+	h_commit = 'Y',
+	h_rollback = 'N',
+	h_frpr_name = :h_frpr_name);
+    COMMIT; 
+
+    IF ret_val <> 0	
+    THEN
+	INSERT INTO error_log
+		VALUES ('now',
+			'Error updating 8 first_table_spc',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+    	COMMIT;
+    	RETURN ret_val;
+    ENDIF;
+
+    COMMIT;
+ 
+/*------------------------------------------------------------------
+Create the output file for the firs_table information
+------------------------------------------------------------------*/
+ 
+  MESSAGE 'copy  first_table_spc'; 
+
+    COPY TABLE  first_table_spc(
+        ruref       =  c(0)':',
+        checkletter =  c(0)':',
+        frosic92    =  c(0)':',
+        rusic92     =  c(0)':',
+        frosic2007  =  c(0)':',
+        rusic2007   =  c(0)':',
+        froempees   =  c(0)':',
+        employees   =  c(0)':',
+        froempment  =  c(0)':',
+        employment  =  c(0)':',
+        frofteempt  =  c(0)':',
+        fteempt     =  c(0)':',
+        frotover    =  c(0)':',
+        turnover    =  c(0)':',
+        entref      =  c(0)':',
+        wowentref   =  c(0)':',
+        vatref      =  c(0)':',
+        payeref     =  c(0)':',
+        crn         =  c(0)':',
+        live_lu     =  c(0)':',
+        live_vat    =  c(0)':',
+        live_paye   =  c(0)':',
+        legalstatus =  c(0)':',
+        entrepmkr   =  c(0)':',
+        region      =  c(0)':',
+        birthdate   =  c(0)':',
+        entname1    =  c(0)':',
+        entname2    =  c(0)':',
+        entname3    =  c(0)':',
+        runame1     =  c(0)':',
+        runame2     =  c(0)':',
+        runame3     =  c(0)':',
+        ruaddr1     =  c(0)':',
+        ruaddr2     =  c(0)':',
+        ruaddr3     =  c(0)':',
+        ruaddr4     =  c(0)':',
+        ruaddr5     =  c(0)':',
+        rupostcode  =  c(0)':',
+        tradstyle1  =  c(0)':',
+        tradstyle2  =  c(0)':',
+        tradstyle3  =  c(0)':',
+        contact     =  c(0)':',
+        telephone   =  c(0)':',
+        fax         =  c(0)':',
+        seltype     =  c(0)':',
+        inclexcl    =  c(0)':',
+        cell_no     =  c(0)':',
+        formtype    =  c(0)':',
+        cso_tel     =  c(0)':',
+        currency    =  c(0)':',
+        iswelsh     =  c(0)':',
+        isnew       =  c(0)':',
+        notde       =  c(0)':',
+        osm         =  c0nl)
+ 
+    INTO  :h_reminders;
+ 
+    ret_val = CALLPROC batch_check_inq_ing (
+	h_num_row_ck = 1,
+	h_commit = 'Y',
+	h_rollback = 'N',
+	h_frpr_name = :h_frpr_name);
+    COMMIT; 
+
+    IF ret_val <> 0	
+    THEN
+	INSERT INTO error_log
+		VALUES ('now',
+			'Error copying first_table_spc',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+    	COMMIT;
+    	RETURN ret_val;
+    ENDIF;
+
+ 
+/* Now generate the questions for the form reprint - if this is the final run */
+
+IF :g_type = 2 THEN
+
+  h_form_table = 'reminder_form_table';
+  DROP :h_form_table;
+  COMMIT;
+
+  g_loop_count = 0;
+  h_inquiry = 14;
+/*
+  MESSAGE 'Creating reminder_form_table..';
+	SLEEP 3;
+
+  CREATE TABLE :h_form_table (
+	col_type		CHAR(1) NOT NULL,
+	contributor_reference	CHAR(11) NOT NULL,
+	contributor_industry	INTEGER4 NOT NULL,
+	q_n_l_code		INTEGER4 NOT NULL,
+	q_n_order		INTEGER4 NOT NULL,
+	q_desc_code		INTEGER1 NOT NULL,
+	q_count			INTEGER1 NOT NULL,
+	q_line			INTEGER1 NOT NULL,
+	need_count		INTEGER4 NOT NULL,
+	text1			VARCHAR(60) NOT NULL,
+	text2			VARCHAR(60) NOT NULL,
+	text3			VARCHAR(60) NOT NULL,
+	text4			VARCHAR(60) NOT NULL,
+	text5			VARCHAR(60) NOT NULL,
+	text6			VARCHAR(60) NOT NULL,
+	text7			VARCHAR(60) NOT NULL,
+	text8			VARCHAR(60) NOT NULL,
+	text9			VARCHAR(60) NOT NULL,
+	text10			VARCHAR(60) NOT NULL,
+	unit1			CHAR(20) NOT NULL,
+	cn_code1		VARCHAR(60) NOT NULL,
+	cn_code2		VARCHAR(60) NOT NULL,
+	cn_code3		VARCHAR(60) NOT NULL,
+	cn_code4		VARCHAR(60) NOT NULL,
+	cn_code5		VARCHAR(60) NOT NULL,
+	cn_code6		VARCHAR(60) NOT NULL,
+	cn_code7		VARCHAR(60) NOT NULL,
+	cn_code8		VARCHAR(60) NOT NULL,
+	cn_code9		VARCHAR(60) NOT NULL);
+	
+
+    ret_val = CALLPROC batch_check_inq_ing (
+	h_num_row_ck = 0,
+	h_commit = 'Y',
+	h_rollback = 'N',
+	h_frpr_name = :h_frpr_name);
+    COMMIT; 
+
+    IF ret_val <> 0	
+    THEN
+	INSERT INTO error_log
+		VALUES ('now',
+			'Error creating reminder_form_table',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+    	COMMIT;
+    	RETURN ret_val;
+    ENDIF;
+*/
+
+  MESSAGE 'Callproc msai_fp_form_table ';
+
+/*--------------------------------------------------------------------
+Create the form table data file for SPC.
+---------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msai_fp_form_table ();
+
+
+/*----------------->
+    SELECT ruref as h_contributor_reference,
+	   region as h_region,
+	   INT4(rusic2007) as h_contributor_industry
+    FROM   first_table_spc
+    ORDER BY ruref
+{
+
+    -s----------------------------------------------------------------
+    Call the procedure to create the form_table
+    ----------------------------------------------------------------e-
+
+    ret_val = CALLPROC msai_fp_batch_form_table (
+              form_table            = :h_form_table,
+              period                = :g_period,
+              contributor_reference = :h_contributor_reference,
+              contributor_industry  = :h_contributor_industry,
+              inquiry               = :h_inquiry);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error calling msai_fp_batch_form_table',
+		    :h_frpr_name,
+		    :ret_val,
+  		    :g_user_id);
+	COMMIT;
+
+	ENDLOOP;
+    ENDIF;
+
+};
+
+<--------------*/
+    ret_val = CALLPROC batch_fp_drop_table (
+              h_table = 'reprint_finalsel_questions');
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    MESSAGE 'Create table reprint_finalsel_questions'; 
+	SLEEP 3;
+
+    CREATE TABLE  reprint_finalsel_questions as
+    SELECT  char(:g_period + 12) as period,
+	    char(a.col_type) as col_type,
+            a.contributor_reference,
+            char(a.contributor_industry) as contributor_industry,
+            a.q_n_l_code,
+            char(a.q_n_order) as q_n_order,
+            a.q_desc_code,
+            a.q_count,
+            a.q_line,
+            a.need_count,
+            a.text1,
+            a.text2,
+            a.text3,
+            a.text4,
+            a.text5,
+            a.text6,
+            a.text7,
+            a.text8,
+            a.text9,
+            a.text10,
+            a.unit1,
+            a.cn_code1,
+            a.cn_code2,
+            a.cn_code3,
+            a.cn_code4,
+            a.cn_code5,
+            a.cn_code6,
+            a.cn_code7,
+            a.cn_code8,
+            a.cn_code9,
+            b.phone_contact,
+            b.phone_area_code,
+            b.phone,
+            b.phone_extension,
+            b.fax_area_code,
+            b.fax,
+            b.email
+            from reminder_form_table a,          
+            contributor b
+    
+    WHERE  a.contributor_reference = b.contributor_reference;
+    
+    COMMIT;
+    
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+	            'Error creating reprint_finalsel_questions',
+         		:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+	COMMIT;
+        RETURN ret_val;
+     ENDIF; 
+    
+     UPDATE  reprint_finalsel_questions
+     SET     contributor_industry = '0' + contributor_industry
+     WHERE   length(contributor_industry) = 4;
+
+     COMMIT;
+     
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error changing 4 digit sic to 5 digits on reprint_finalsel_questions',
+	   	    :h_frpr_name,
+		    :ret_val,
+		    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+
+    ENDIF;
+
+     UPDATE  reprint_finalsel_questions
+     SET     q_n_order = '0' + q_n_order
+     WHERE   length(q_n_order) = 8;
+
+     COMMIT;
+     
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error changing 8 digit PCC to 9 digits on reprint_finalsel_questions',
+	   	    :h_frpr_name,
+		    :ret_val,
+		    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+
+    ENDIF;
+/*--------------------------------------------------------------------
+create form questions file for SPC
+--------------------------------------------------------------------*/
+
+    MESSAGE 'Copy table reprint_finalsel_questions'; 
+
+    COPY TABLE reprint_finalsel_questions (
+	period   = c0$,
+        col_type = c0$,
+        contributor_reference = c0$,
+        contributor_industry = c0$,
+        q_n_l_code = c0$,
+        q_n_order = c0$,
+        q_desc_code = c0$,
+        q_count = c0$,
+        q_line = c0$,
+        need_count = c0$,
+        text1 = c0$,
+        text2 = c0$,
+        text3 = c0$,
+        text4 = c0$,
+        text5 = c0$,
+        text6 = c0$,
+        text7 = c0$,
+        text8 = c0$,
+        text9 = c0$,
+        text10 = c0$,
+        unit1 = c0$,
+        cn_code1 = c0$,
+        cn_code2 = c0$,
+        cn_code3 = c0$,
+        cn_code4 = c0$,
+        cn_code5 = c0$,
+        cn_code6 = c0$,
+        cn_code7 = c0$,
+        cn_code8 = c0$,
+        cn_code9 = c0$,
+        phone_contact = c0$,
+        phone_area_code = c0$,
+        phone = c0$,
+        phone_extension = c0$,
+        fax_area_code = c0$,
+        fax = c0$,
+        email = c0nl)
+     
+    INTO :h_questions;
+ 
+    COMMIT;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating form table file for reminders',
+	   	    :h_frpr_name,
+		    :ret_val,
+		    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+
+    ENDIF;
+
+
+ENDIF;
+
+INSERT INTO error_log
+      VALUES('now',
+	    '+++Reminders process reached the end.+++',
+   	    :h_frpr_name,
+	    :ret_val,
+	    :g_user_id);
+      COMMIT;
+
+RETURN 0; 
+} 

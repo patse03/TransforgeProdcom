@@ -1,0 +1,905 @@
+
+/*-s--------------------------------------------------------------------
+  Procedure msal_fp_gains_losses
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msal_fp_gains_losses () = 
+
+
+DECLARE ret_val      = INTEGER4 NOT NULL,
+        report_name1 = CHAR(30) NOT NULL,
+        report_name2 = CHAR(30) NOT NULL,
+        print_name1  = CHAR(30) NOT NULL,
+        print_name2  = CHAR(30) NOT NULL,
+        print_name3  = CHAR(30) NOT NULL,
+        print_name4  = CHAR(30) NOT NULL,
+        file_name1   = CHAR(55) NOT NULL,
+        region1      = VARCHAR(2) NOT NULL,
+        region2      = VARCHAR(2) NOT NULL,
+        h_table1     = VARCHAR(24) NOT NULL,
+        h_table2     = VARCHAR(24) NOT NULL,
+        h_table3     = VARCHAR(24) NOT NULL,
+        h_table4     = VARCHAR(24) NOT NULL,
+	h_table5     = VARCHAR(24) NOT NULL,
+	h_table6     = VARCHAR(24) NOT NULL,
+        h_frpr_name  = VARCHAR(24) NOT NULL
+
+{
+    h_frpr_name  = 'msal_fp_gains_losses' ;
+
+    h_table1     = 'regional_old_contribs' ;
+    h_table2     = 'regional_losses' ;
+    h_table3     = 'regional_new_contribs' ;
+    h_table4     = 'regional_gains' ;
+    h_table5     = 'temp_welsh_gl' ;
+    h_table6     = 'temp_scottish_gl' ;
+
+    report_name1 = 'msal_rw_losses.rw' ;
+    report_name2 = 'msal_rw_gains.rw' ;
+
+    print_name1  = 'welsh_losses_' + ASCII(:g_period) + '.rpt';
+    print_name2  = 'welsh_gains_' + ASCII(:g_period) + '.rpt';
+    print_name3  = 'scottish_losses_' + ASCII(:g_period) + '.rpt';
+    print_name4  = 'scottish_gains_' + ASCII(:g_period) + '.rpt';
+
+    file_name1   =  :g_path_name1 + '/scot_gains_losses' + ASCII(:g_period) + '.txt';
+
+
+    /*-s----------------------------------------------------------------
+    Process Welsh and Scottish ProdCom losses 
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Losses . . .';
+
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table1);
+
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create temp table to hold old references
+    ----------------------------------------------------------------e-*/
+
+    CREATE TABLE :h_table1 (
+                 contributor_reference  CHAR(11) NOT NULL,
+                 contributor_industry   INTEGER4 NOT NULL,
+                 period                 INTEGER4 NOT NULL,
+                 register_emp           INTEGER4 NOT NULL,
+                 percentage             FLOAT8 NOT NULL,
+                 structure              CHAR(1) NOT NULL,
+                 region                 CHAR(2) NOT NULL );
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Insert into regional_old_contribs references that were selected last
+    period but not for current period (known as "losses").
+    ----------------------------------------------------------------e-*/
+
+    INSERT INTO :h_table1
+    SELECT       contributor_reference,
+                 contributor_industry ,
+                 period ,
+                 register_emp,
+                 percentage,
+                 structure,
+                 region
+    FROM         :g_sel_table
+    WHERE        period = :g_prev_period1
+    AND          contributor_reference NOT IN 
+		 (SELECT contributor_reference
+		  FROM :g_sel_table 
+		  WHERE period = :g_period);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting losses into ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create temp table for report writer and process old contribs who are
+    not selected for the current period
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table2);
+
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    CREATE TABLE :h_table2 (
+                 prev_sic              INTEGER4 NOT NULL,
+                 curr_sic              INTEGER4 NOT NULL,
+                 contributor_reference CHAR(11) NOT NULL,
+                 region                CHAR(2) NOT NULL,
+                 prev_emp              INTEGER4 NOT NULL,
+                 curr_emp              INTEGER4 NOT NULL,
+                 percentage            FLOAT8 NOT NULL,
+                 add_name1             CHAR(35) NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Insert the losses 
+    ----------------------------------------------------------------e-*/
+
+    INSERT INTO :h_table2 
+    SELECT contributor_industry,
+	   0,
+	   contributor_reference,
+	   region,
+	   register_emp,
+	   0,
+	   percentage,
+	   ''
+    FROM   :h_table1;
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting losses into ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Process reclassifications
+    ----------------------------------------------------------------e-*/
+
+    INSERT INTO :h_table2
+    SELECT a.contributor_industry,
+	   b.contributor_industry,
+	   a.contributor_reference,
+	   a.region,
+	   a.register_emp,
+	   b.register_emp,
+	   a.percentage,
+	   ''
+    FROM   :g_sel_table a,
+	   :g_sel_table b
+    WHERE  a.period = :g_prev_period1
+    AND    b.period = :g_period
+    AND    a.contributor_reference = b.contributor_reference
+    AND    a.contributor_industry <> b.contributor_industry;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting reclassifications into ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Add contributor name from contributor
+    ----------------------------------------------------------------e-*/
+
+    UPDATE :h_table2 a
+    FROM   contributor b
+    SET    add_name1 = b.add_name1
+    WHERE  a.contributor_reference = b.contributor_reference;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating contributor name',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+
+
+    /*-s----------------------------------------------------------------
+    Process Welsh and Scottish ProdCom gains 
+    ----------------------------------------------------------------e-*/
+
+
+    MESSAGE 'Gains . . .';
+
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table3);
+
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create temp table to hold new references
+    ----------------------------------------------------------------e-*/
+
+    CREATE TABLE :h_table3 (
+                 contributor_reference  CHAR(11) NOT NULL,
+                 contributor_industry   INTEGER4 NOT NULL,
+                 period                 INTEGER4 NOT NULL,
+                 register_emp           INTEGER4 NOT NULL,
+                 percentage             FLOAT8 NOT NULL,
+                 structure              CHAR(1) NOT NULL,
+                 region                 CHAR(2) NOT NULL );
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table3,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Insert into regional_new_contribs references that were selected not
+    selected for previous period but are for current period (known as
+    "gains").
+    ----------------------------------------------------------------e-*/
+
+    INSERT INTO :h_table3
+    SELECT       contributor_reference,
+                 contributor_industry ,
+                 period ,
+                 register_emp,
+                 percentage,
+                 structure,
+                 region
+    FROM         :g_sel_table
+    WHERE        period = :g_period
+    AND          contributor_reference NOT IN 
+		 (SELECT contributor_reference
+		  FROM :g_sel_table 
+		  WHERE period = :g_prev_period1);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting gains into ' + :h_table3,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create temp table for report writer and process new contribs who
+    were not selected for the previous period
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table4);
+
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    CREATE TABLE :h_table4 (
+                 prev_sic              INTEGER4 NOT NULL,
+                 curr_sic              INTEGER4 NOT NULL,
+                 contributor_reference CHAR(11) NOT NULL,
+                 region                CHAR(2) NOT NULL,
+                 prev_emp              INTEGER4 NOT NULL,
+                 curr_emp              INTEGER4 NOT NULL,
+                 percentage            FLOAT8 NOT NULL,
+                 add_name1             CHAR(35) NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table4,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Insert the gains 
+    ----------------------------------------------------------------e-*/
+
+    INSERT INTO :h_table4 
+    SELECT 0,
+	   contributor_industry,
+	   contributor_reference,
+	   region,
+	   0,
+	   register_emp,
+	   percentage,
+	   ''
+    FROM   :h_table3;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting gains into ' + :h_table4,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Process reclassifications
+    ----------------------------------------------------------------e-*/
+
+    INSERT INTO :h_table4
+    SELECT a.contributor_industry,
+	   b.contributor_industry,
+	   a.contributor_reference,
+	   a.region,
+	   a.register_emp,
+	   b.register_emp,
+	   a.percentage,
+	   ''
+    FROM   :g_sel_table a,
+	   :g_sel_table b
+    WHERE  a.period = :g_prev_period1
+    AND    b.period = :g_period
+    AND    a.contributor_reference = b.contributor_reference
+    AND    a.contributor_industry <> b.contributor_industry;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting reclassifications into ' + :h_table4,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Add contributor name from contributor
+    ----------------------------------------------------------------e-*/
+
+    UPDATE :h_table4 a
+    FROM   contributor b
+    SET    add_name1 = b.add_name1
+    WHERE  a.contributor_reference = b.contributor_reference;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating contributor name',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Call the report writer program for losses print
+    ----------------------------------------------------------------e-*/
+
+/*********************
+No Welsh data required until further notice - 1/12/2000 - SJH
+
+    SELECT DISTINCT region as region1
+    FROM   :h_table2
+    WHERE  region = 'WW';
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error selecting region1 from ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+    ret_val = CALLPROC msa_cp_callsys(
+    'report ' +
+    :g_database +
+    ' ''(period = ' + VARCHAR(:g_period) +
+    ', region = "' + :region1 + '"' +
+    ', table_name = "' + :h_table2 + '")''' +
+    ' -f$PRINTOUT/' + :print_name1 +
+    ' -i$REPORTS/' + :report_name1 + '> report.output');
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error calling ' + :report_name1 + ' for ' + :region1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+***********************/
+
+    SELECT DISTINCT region as region2
+    FROM   :h_table2
+    WHERE  region = 'XX';
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name,
+              h_rollback   = 'N');
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error selecting region2 from ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+    ret_val = CALLPROC msa_cp_callsys(
+    'report ' +
+    :g_database +
+    ' ''(period = ' + VARCHAR(:g_period) +
+    ', region = "' + :region2 + '"' +
+    ', table_name = "' + :h_table2 + '")''' +
+    ' -f$PRINTOUT/' + :print_name3 +
+    ' -i$REPORTS/' + :report_name1 + '> report.output');
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error calling ' + :report_name1 + ' for ' + :region2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+  /*  ret_val = CALLPROC msa_cp_callsys(
+              'lp -drxp -oLANZ+NPN+SIMPLEX -n2 $PRINTOUT/' + :print_name1 +
+	      ' >> report.output');
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error printing ' + :print_name1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+*/
+
+    /*-s----------------------------------------------------------------
+    Call the report writer program for gains print
+    ----------------------------------------------------------------e-*/
+
+/**************************
+
+    ret_val = CALLPROC msa_cp_callsys(
+    'report ' +
+    :g_database +
+    ' ''(period = ' + VARCHAR(:g_period) +
+    ', region = "' + :region1 + '"' +
+    ', table_name = "' + :h_table4 + '")''' +
+    ' -f$PRINTOUT/' + :print_name2 +
+    ' -i$REPORTS/' + :report_name2 + '> report.output');
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error calling ' + :report_name2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+**************************/
+
+    ret_val = CALLPROC msa_cp_callsys(
+    'report ' +
+    :g_database +
+    ' ''(period = ' + VARCHAR(:g_period) +
+    ', region = "' + :region2 + '"' +
+    ', table_name = "' + :h_table4 + '")''' +
+    ' -f$PRINTOUT/' + :print_name4 +
+    ' -i$REPORTS/' + :report_name2 + '> report.output');
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error calling ' + :report_name2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+  /*  ret_val = CALLPROC msa_cp_callsys(
+              'lp -drxp -oLANZ+NPN+SIMPLEX -n2 $PRINTOUT/' + :print_name2 +
+	      ' >> report.output');
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error printing ' + :print_name2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+*/
+
+     /*--------------------------------------------------------------
+      create temporary table for Welsh gains and losses 
+     --------------------------------------------------------------*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table5);
+
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+
+    CREATE TABLE :h_table5 AS
+    SELECT prev_sic,
+ 	   curr_sic,
+	   contributor_reference,
+	   'LOSS' as loss_gain,
+	   prev_emp,
+	   curr_emp,
+	   percentage
+    FROM   :h_table2
+    WHERE  region = 'WW';
+
+    ret_val = CALLPROC batch_check_inq_ing(
+		       h_num_row_ck = 1,
+	               h_commit     = 'Y',
+	               h_frpr_name  = :h_frpr_name,
+	               h_rollback   = 'Y');
+
+    IF ret_val = 9 
+    THEN
+       INSERT INTO error_log
+       VALUES(   'now',
+  		 'Error creating table ' + :h_table5, 
+		 :h_frpr_name,
+		 :ret_val,
+		 :g_user_id);
+       COMMIT;
+       RETURN 9;
+    ENDIF;
+
+
+     /*--------------------------------------------------------------
+      Update temporary table with Welsh gains 
+      Scottish only from now on 1/12/2000 - SJH
+     --------------------------------------------------------------*/
+
+    /*****************************
+
+    INSERT INTO :h_table5 
+    SELECT prev_sic,
+ 	   curr_sic,
+	   contributor_reference,
+	   'GAIN',
+	   prev_emp,
+	   curr_emp,
+	   percentage
+    FROM   :h_table4
+    WHERE  region = 'WW';
+
+    ret_val = CALLPROC batch_check_inq_ing(
+		       h_num_row_ck = 1,
+	               h_commit     = 'Y',
+	               h_frpr_name  = :h_frpr_name,
+	               h_rollback   = 'Y');
+
+    IF ret_val = 9 
+    THEN
+       INSERT INTO error_log
+       VALUES(   'now',
+ 		 'Error updating table ' + :h_table5 + ' with gains',
+		 :h_frpr_name,
+		 :ret_val,
+		 :g_user_id);
+       COMMIT;
+       RETURN 9;
+    ENDIF;
+
+
+*********************/
+
+     /*--------------------------------------------------------------
+      Copy temporary table to CSV file 
+     --------------------------------------------------------------*/
+
+    /******************************
+
+    COPY :h_table5 (
+         prev_sic = c0comma,
+         curr_sic = c0comma,
+ 	 contributor_reference = c0comma,
+ 	 loss_gain = c0comma,
+ 	 prev_emp = c0comma,
+	 curr_emp = c0comma,
+	 percentage = c0nl)
+    INTO :g_path_name1 + '/welsh_gains_losses' + ASCII(:g_period) + '.txt';
+
+    ret_val = CALLPROC batch_check_inq_ing(
+		       h_num_row_ck = 1,
+	               h_commit     = 'Y',
+	               h_frpr_name  = :h_frpr_name,
+	               h_rollback   = 'Y');
+
+    IF ret_val = 9 
+    THEN
+       INSERT INTO error_log
+       VALUES(   'now',
+ 		 'Error copying table ' + :h_table5 + ' to flat file',
+		 :h_frpr_name,
+		 :ret_val,
+		 :g_user_id);
+       COMMIT;
+       RETURN 9;
+    ENDIF;
+
+************************/
+
+     /*--------------------------------------------------------------
+      create temporary table for Scottish gains and losses 
+     --------------------------------------------------------------*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table6);
+
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+
+    CREATE TABLE :h_table6 AS
+    SELECT prev_sic,
+ 	   curr_sic,
+	   contributor_reference,
+	   'LOSS' as loss_gain,
+	   prev_emp,
+	   curr_emp,
+	   percentage
+    FROM   :h_table2
+    WHERE  region = 'XX';
+
+    ret_val = CALLPROC batch_check_inq_ing(
+		       h_num_row_ck = 1,
+	               h_commit     = 'Y',
+	               h_frpr_name  = :h_frpr_name,
+	               h_rollback   = 'Y');
+
+    IF ret_val = 9 
+    THEN
+       INSERT INTO error_log
+       VALUES(   'now',
+  		 'Error creating table ' + :h_table6, 
+		 :h_frpr_name,
+		 :ret_val,
+		 :g_user_id);
+       COMMIT;
+       RETURN 9;
+    ENDIF;
+
+
+     /*--------------------------------------------------------------
+      Update temporary table with Scottish gains 
+     --------------------------------------------------------------*/
+
+    INSERT INTO :h_table6 
+    SELECT prev_sic,
+ 	   curr_sic,
+	   contributor_reference,
+	   'GAIN',
+	   prev_emp,
+	   curr_emp,
+	   percentage
+    FROM   :h_table4
+    WHERE  region = 'XX';
+
+    ret_val = CALLPROC batch_check_inq_ing(
+		       h_num_row_ck = 1,
+	               h_commit     = 'Y',
+	               h_frpr_name  = :h_frpr_name,
+	               h_rollback   = 'Y');
+
+    IF ret_val = 9 
+    THEN
+       INSERT INTO error_log
+       VALUES(   'now',
+ 		 'Error updating table ' + :h_table6 + ' with gains',
+		 :h_frpr_name,
+		 :ret_val,
+		 :g_user_id);
+       COMMIT;
+       RETURN 9;
+    ENDIF;
+
+
+     /*--------------------------------------------------------------
+      Copy temporary table to CSV file 
+     --------------------------------------------------------------*/
+
+    COPY :h_table6 (
+         prev_sic = c0comma,
+         curr_sic = c0comma,
+ 	 contributor_reference = c0comma,
+ 	 loss_gain = c0comma,
+ 	 prev_emp = c0comma,
+	 curr_emp = c0comma,
+	 percentage = c0nl)
+    INTO :file_name1; 
+
+    ret_val = CALLPROC batch_check_inq_ing(
+		       h_num_row_ck = 1,
+	               h_commit     = 'Y',
+	               h_frpr_name  = :h_frpr_name,
+	               h_rollback   = 'Y');
+
+    IF ret_val = 9 
+    THEN
+       INSERT INTO error_log
+       VALUES(   'now',
+ 		 'Error copying table ' + :h_table6 + ' to flat file',
+		 :h_frpr_name,
+		 :ret_val,
+		 :g_user_id);
+       COMMIT;
+       RETURN 9;
+    ENDIF;
+
+
+    RETURN 0;
+}
+

@@ -1,0 +1,1181 @@
+/*----------------------------------------------------------------------
+EQ Table 3 - Question
+----------------------------------------------------------------------*/
+
+PROCEDURE msay_fp_eq_question () =
+
+DECLARE h_frpr_name             = VARCHAR(24) NOT NULL,
+        h_table                 = VARCHAR(24) NOT NULL,
+        h_sthead_table          = VARCHAR(24) NOT NULL,
+        h_few_q_table           = VARCHAR(24) NOT NULL,
+        h_inval_q_table         = VARCHAR(24) NOT NULL,
+        h_error_table           = VARCHAR(24) NOT NULL,
+        h_rows                  = INTEGER4 NOT NULL,
+        h_rows_cleared          = INTEGER4 NOT NULL,
+        h_rows_failed           = INTEGER4 NOT NULL,
+        ret_val                 = INTEGER1 NOT NULL,
+
+        h_forms_reclassed       = INTEGER4 NOT NULL,
+        h_forms_out_of_scope    = INTEGER4 NOT NULL,
+        h_reclassified          = CHAR(1) NOT NULL,
+        h_out_of_scope          = CHAR(1) NOT NULL,
+        h_contributor_reference = CHAR(11) NOT NULL,
+        h_period                = INTEGER4 NOT NULL,
+        h_industry              = INTEGER4 NOT NULL,
+        h_inquiry               = INTEGER1 NOT NULL
+{
+    h_frpr_name = 'msay_fp_eq_question';
+    h_table = 'bto_eq_question';
+
+    h_error_table = 'eq_data_errors';
+    h_sthead_table = 'temp_eq_sthead1';
+    h_few_q_table = 'temp_eq_sthead2';
+    h_inval_q_table = 'temp_eq_sthead3';
+
+    MESSAGE 'Removing Duplicates from ' + :h_table + ' . . .';
+
+    DELETE FROM :h_table a
+    WHERE       a.contributor_reference IN (
+                SELECT contributor_reference
+                FROM   :h_table b
+                WHERE  a.period = b.period
+                AND    a.question = b.question
+                AND    a.tid > b.tid);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES(     'now',
+                    'Error deleting dups from ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    MESSAGE 'Modifying ' + :h_table + ' . . .';
+
+    MODIFY    :h_table TO BTREE
+    UNIQUE ON period,
+              contributor_reference,
+              question;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES(     'now',
+                    'Error modifying ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Update the confirmation codes: 1 --> S (seasonality)
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Updating Confirmation Codes / Acells . . .';
+
+    UPDATE :h_table
+    SET    confirmation_code = 'S'
+    WHERE  confirmation_code = '1';
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error updating confirmations 1 on ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Update the confirmation codes: not S --> C (contacted company)
+    ------------------------------------------------------------------*/
+
+    UPDATE :h_table
+    SET    confirmation_code = 'C'
+    WHERE  confirmation_code <> 'S'
+    AND    confirmation_code <> '';
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error updating confirmations 2 on ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Update the acell to V
+    ------------------------------------------------------------------*/
+
+    UPDATE :h_table
+    SET    acell = 'V'
+    WHERE  avalue <> 0;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error updating acell 1 on ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Update the acell to Z
+    ------------------------------------------------------------------*/
+
+    UPDATE :h_table
+    SET    acell = 'Z'
+    WHERE  avalue = 0;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error updating acell 2 on ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Update with annual question details
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Updating ' + :h_table + ' with question details . . .';
+
+    UPDATE :h_table a
+    FROM   question_library b
+    SET    quest_order = b.quest_order,
+           question_industry = b.question_industry,
+           question_inquiry = b.inquiry
+    WHERE  a.question = b.question
+    AND    a.period = b.period
+    AND    a.inquiry = 14;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error updating with Annual QL details',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Update with quarterly question details
+    ------------------------------------------------------------------*/
+
+    UPDATE :h_table a
+    FROM   question_library b
+    SET    quest_order = b.quest_order,
+           question_industry = b.question_industry,
+           question_inquiry = b.inquiry
+    WHERE  a.question = b.question
+    AND    (a.period / 100 * 100) = b.period
+    AND    a.inquiry = 15;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error updating with Annual QL details',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Update for Uncoded Entries
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Uncoded Entries . . .';
+
+    UPDATE :h_table
+    SET    quest_order = 9,
+           question_industry = contributor_industry,
+           acell = 'W',
+           acell_type = '0'
+    WHERE  question BETWEEN (contributor_industry * 10000 + 9701)
+                    AND     (contributor_industry * 10000 + 9798);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error updating with Uncoded Entries details',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     If any contributor has a question with a quest_order of 0, the
+     question could not be found on question_library. Don't take any
+     of the questions on.
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Checking for Invalid Questions . . .';
+
+    ret_val = batch_fp_drop_table (h_table = :h_inval_q_table);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_inval_q_table
+    AS SELECT    DISTINCT contributor_reference,
+                 period
+    FROM         :h_table
+    WHERE        quest_order = 0;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(:h_rows),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_inval_q_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF h_rows <> 0
+    THEN
+        INSERT INTO bto_error_log
+        VALUES(     'now',
+                    'BTO: ' + VARCHAR(h_rows) + ' EQ Contribs with' +
+                    ' Invalid Questions',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+
+        /*--------------------------------------------------------------
+        Delete the invalid Questions
+        --------------------------------------------------------------*/
+
+        MESSAGE 'Inserting into ' + :h_error_table + ' . . .';
+
+        INSERT INTO :h_error_table (
+                    time,
+                    reason,
+                    inquiry,
+                    contributor_industry,
+                    contributor_reference,
+                    period,
+                    question,
+                    avalue,
+                    acell)
+        SELECT      'now',
+                    'INVALID QUESTIONS',
+                    a.inquiry,
+                    a.contributor_industry,
+                    a.contributor_reference,
+                    a.period,
+                    question,
+                    avalue,
+                    acell
+        FROM        :h_table a,
+                    :h_inval_q_table b
+        WHERE       a.contributor_reference = b.contributor_reference
+        AND         a.period = b.period;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO bto_error_log
+            VALUES(     'now',
+                        'Error inserting into ' + :h_error_table,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        Delete the questions
+        --------------------------------------------------------------*/
+
+        MESSAGE 'Deleting Invalid Questions from ' + :h_table + ' . . .';
+
+        DELETE FROM :h_table a
+        WHERE       contributor_reference IN (
+                    SELECT contributor_reference
+                    FROM   :h_inval_q_table b
+                    WHERE  a.period = b.period);
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO bto_error_log
+            VALUES(     'now',
+                        'Error deleting from ' + :h_table,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        Delete the contributors
+        --------------------------------------------------------------*/
+
+        MESSAGE 'Deleting Invalid Questions from bto_eq_contributor . . .';
+        DELETE FROM bto_eq_contributor a
+        WHERE       contributor_reference IN (
+                    SELECT contributor_reference
+                    FROM   :h_inval_q_table b
+                    WHERE  a.period = b.period);
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO bto_error_log
+            VALUES(     'now',
+                        'Error deleting from bto_eq_contributor',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     If any contributor has fewer than 7 standard heading questions,
+     don't take its questions on, as there's something wrong somewhere
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Counting Questions . . .';
+
+    ret_val = batch_fp_drop_table (h_table = :h_sthead_table);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_sthead_table
+    AS SELECT    contributor_reference,
+                 period,
+                 COUNT(question) AS std_head
+    FROM         :h_table
+    WHERE        quest_order <> 1
+    AND          acell <> 'W'
+    GROUP BY     contributor_reference,
+                 period
+    HAVING       COUNT(question) = 7;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_sthead_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    MESSAGE 'Checking Refs with Too Few Questions . . .';
+
+    ret_val = batch_fp_drop_table (h_table = :h_few_q_table);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_few_q_table
+    AS SELECT    a.contributor_reference,
+                 a.period
+    FROM         bto_eq_contributor a
+    WHERE        contributor_reference NOT IN (
+                 SELECT contributor_reference
+                 FROM   :h_sthead_table b
+                 WHERE  a.period = b.period);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(:h_rows),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_few_q_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF h_rows <> 0
+    THEN
+        INSERT INTO bto_error_log
+        VALUES(     'now',
+                    'BTO: ' + VARCHAR(h_rows) + ' EQ Contribs without' +
+                    ' Standard Headings',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+
+        /*--------------------------------------------------------------
+         Too few questions: save into error table from 2 tables:
+          1. bto_eq_contributor (a "header" type record)
+          2. bto_eq_question (the actual questions)
+        (The first save is necessary as the form might have NO questions
+        at all, and would not have any records on bto_eq_question)
+        --------------------------------------------------------------*/
+
+        MESSAGE 'Inserting into ' + :h_error_table + ' . . .';
+
+        INSERT INTO :h_error_table (
+                    time,
+                    reason,
+                    inquiry,
+                    contributor_industry,
+                    contributor_reference,
+                    period,
+                    question,
+                    avalue,
+                    acell)
+        SELECT      'now',
+                    'TOO FEW STANDARD HEADINGS',
+                    a.inquiry,
+                    a.contributor_industry,
+                    a.contributor_reference,
+                    a.period,
+                    0,
+                    0,
+                    ''
+        FROM        bto_eq_contributor a,
+                    :h_few_q_table b
+        WHERE       a.contributor_reference = b.contributor_reference
+        AND         a.period = b.period;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO bto_error_log
+            VALUES(     'now',
+                        'Error 1st insert into ' + :h_error_table,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+
+        INSERT INTO :h_error_table (
+                    time,
+                    reason,
+                    inquiry,
+                    contributor_industry,
+                    contributor_reference,
+                    period,
+                    question,
+                    avalue,
+                    acell)
+        SELECT      'now',
+                    'TOO FEW STANDARD HEADINGS',
+                    a.inquiry,
+                    a.contributor_industry,
+                    a.contributor_reference,
+                    a.period,
+                    question,
+                    avalue,
+                    acell
+        FROM        :h_table a,
+                    :h_few_q_table b
+        WHERE       a.contributor_reference = b.contributor_reference
+        AND         a.period = b.period;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO bto_error_log
+            VALUES(     'now',
+                        'Error 2nd insert into ' + :h_error_table,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        Delete the questions
+        --------------------------------------------------------------*/
+
+        MESSAGE 'Deleting Too Few Questions from ' + :h_table + ' . . .';
+
+        DELETE FROM :h_table a
+        WHERE       contributor_reference IN (
+                    SELECT contributor_reference
+                    FROM   :h_few_q_table b
+                    WHERE  a.period = b.period);
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO bto_error_log
+            VALUES(     'now',
+                        'Error deleting from ' + :h_table,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        Delete the Contributors
+        --------------------------------------------------------------*/
+
+        MESSAGE 'Deleting Too Few Questions from bto_eq_contributor . . .';
+        DELETE FROM bto_eq_contributor a
+        WHERE       contributor_reference IN (
+                    SELECT contributor_reference
+                    FROM   :h_few_q_table b
+                    WHERE  a.period = b.period);
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO bto_error_log
+            VALUES(     'now',
+                        'Error deleting from bto_eq_contributor',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    See if anything left to take on
+    ------------------------------------------------------------------*/
+
+    SELECT IFNULL(COUNT(*),0) AS h_rows
+    FROM   bto_eq_contributor;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES(     'now',
+                    'Error counting from bto_eq_contributor',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF h_rows = 0
+    THEN
+        INSERT INTO bto_error_log
+        VALUES(     'now',
+                    'BTO: ' + VARCHAR(:h_rows) +
+                    ' Contribs to take on',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Check for mismatched values / volumes
+     Value is Zero, Volume isn't (Update to L for both val & vol)
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'EQ: Mismatched Volumes 1 . . .';
+
+    UPDATE bto_eq_question a
+    FROM   bto_eq_question b,
+           bto_eq_question c
+    SET    acell = 'L',
+           acell_type = '0'
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.contributor_reference = c.contributor_reference
+    AND    a.period = b.period
+    AND    a.period = c.period
+    AND    (a.question = b.question OR a.question = c.question)
+    AND    MOD(b.question,10) = 1
+    AND    (c.question = b.question + 1 OR c.question = b.question + 3)
+    AND    b.avalue = 0
+    AND    c.avalue > 0;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error Updating 1st Val/Vol Mismatch',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Volume is Zero, Value isn't (Update to M for both val & vol)
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'EQ: Mismatched Volumes 2 . . .';
+
+    UPDATE bto_eq_question a
+    SET    acell = 'M',
+           acell_type = '0'
+    WHERE  contributor_reference IN
+    (SELECT  b.contributor_reference 
+    FROM   bto_eq_question b,
+           bto_eq_question c
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.contributor_reference = c.contributor_reference
+    AND    a.period = b.period
+    AND    a.period = c.period
+    AND    (a.question = b.question OR a.question = c.question)
+    AND    MOD(b.question,10) = 1
+    AND    (c.question = b.question + 1 OR c.question = b.question + 3)
+    AND    b.avalue > 0
+    AND    c.avalue = 0);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error Updating 2nd Val/Vol Mismatch',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Take on
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Archiving original cqpv entries . . .';
+
+    INSERT INTO bto_archive
+    SELECT      DATE('now'),
+                a.*
+    FROM        cqpv a,
+                bto_eq_contributor b
+    WHERE       a.contributor_reference = b.contributor_reference
+    AND         a.period = b.period;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO bto_error_log
+        VALUES(     'now',
+                    'Error deleting from cqpv',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    MESSAGE 'Deleting original entries from cqpv . . .';
+
+    DELETE FROM cqpv a
+    WHERE       contributor_reference IN (
+                SELECT contributor_reference
+                FROM   bto_eq_contributor b
+                WHERE  a.period = b.period);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO bto_error_log
+        VALUES(     'now',
+                    'Error deleting from cqpv',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    MESSAGE 'Saving onto cqpv . . .';
+
+    INSERT INTO cqpv (
+                contributor_reference,
+                quest_order,
+                question,
+                period,
+                contributor_inquiry,
+                contributor_industry,
+                question_industry,
+                acell,
+                avalue,
+                acell_type,
+                aconstruction_type,
+                fcell,
+                fvalue,
+                fcell_type,
+                fconstruction_type,
+                confirmation_code,
+                confirmation_date,
+                atypical)
+    SELECT      contributor_reference,
+                quest_order,
+                question,
+                period,
+                inquiry,
+                contributor_industry,
+                question_industry,
+                acell,
+                avalue,
+                acell_type,
+                0,
+                acell,
+                avalue,
+                acell_type,
+                0,
+                confirmation_code,
+                '',
+                'N'
+    FROM        :h_table;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error inserting onto cqpv',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Until EQ Validation has been sorted out to make it the same for both
+    online and EQ, fail every form to make the DCU check each one.
+    ALSO set f9_count to 0 as it's first real f9_check will be when
+    f9 is pressed online (when it will be set to 1).
+    ------------------------------------------------------------------*/
+
+    UPDATE contributor_period a
+    SET    form_status = 2,
+           f9_count = 0,
+           form_taken_on = 'Q'
+    WHERE  contributor_reference IN
+          (SELECT contributor_reference
+          FROM   :h_table b,
+                 inquiry_period c
+          WHERE  a.period = b.period
+          AND    a.period = c.period
+          AND    c.inquiry = a.inquiry);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(h_rows_failed),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO bto_error_log
+        VALUES(     'now',
+                    'Error updating contributor_period 1',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    INSERT INTO bto_error_log
+    VALUES(     'now',
+                'BTO: EQ All ' +
+                VARCHAR(h_rows_failed) + ' Marked as Failed',
+                :h_frpr_name,
+                :ret_val,
+                :g_user_id);
+    COMMIT;
+
+    /*------------------------------------------------------------------
+
+    -----> START-OF-COMMENT
+
+    Once EQ Validation has been sorted out, replace the above update
+    with all the following code:
+    ------------------------------------------------------------------
+
+    /*------------------------------------------------------------------
+    Mark contributor period to (i) clear all forms
+    ------------------------------------------------------------------
+
+    UPDATE contributor_period a
+    FROM   :h_table b,
+           inquiry_period c
+    SET    correct_date = 'today',
+           corr_week_no = c.week_no,
+           user_id = :g_user_id,
+           form_status = 4,
+           f9_count = 1,
+           form_taken_on = 'Q'
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.period = b.period
+    AND    a.period = c.period
+    AND    c.inquiry = a.inquiry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(h_rows_cleared),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO bto_error_log
+        VALUES(     'now',
+                    'Error updating contributor_period 1',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Mark contributor period to (ii) fail forms with dummy questions &
+    value/volume mismatches
+    ------------------------------------------------------------------
+
+    UPDATE contributor_period a
+    FROM   :h_table b
+    SET    correct_date = '',
+           corr_week_no = 0,
+           user_id = '',
+           form_status = 2
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.period = b.period
+    AND    b.acell IN ('W','M','L');
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(h_rows_failed),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES(     'now',
+                    'Error updating contributor_period 2',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    h_rows_cleared = h_rows_cleared - h_rows_failed;
+
+    /*------------------------------------------------------------------
+     Reclassifications: either reclassified or out_of_scope
+    ------------------------------------------------------------------
+
+    MESSAGE 'Reclassification . . .';
+
+    h_forms_reclassed = 0;
+    h_forms_out_of_scope = 0;
+
+    SELECT a.contributor_reference AS h_contributor_reference,
+           a.period AS h_period,
+           a.contributor_industry AS h_industry,
+           a.inquiry AS h_inquiry
+    FROM   bto_eq_contributor a,
+           contributor_period b
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.period = b.period
+    AND    b.form_status = 4
+    {
+        h_reclassified = 'n';
+        h_out_of_scope = 'n';
+
+        ret_val = CALLPROC msay_fp_reclassify (
+                  contributor_reference = :h_contributor_reference,
+                  period                = :h_period,
+                  contributor_industry  = :h_industry,
+                  contributor_inquiry   = :h_inquiry,
+                  reclassified          = BYREF(:h_reclassified),
+                  out_of_scope          = BYREF(:h_out_of_scope));
+
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+        IF :h_out_of_scope = 'y' OR :h_reclassified = 'y'
+        THEN
+            h_rows_cleared = h_rows_cleared - 1;
+            h_rows_failed = h_rows_failed + 1;
+
+            /*----------------------------------------------------------
+            Reclassified: form_status is 3
+            Out_of_scope: form_status is 2
+            ----------------------------------------------------------
+
+            IF :h_reclassified = 'y'
+            THEN
+                h_forms_reclassed = :h_forms_reclassed + 1;
+
+                UPDATE contributor_period
+                SET    correct_date = '',
+                       corr_week_no = 0,
+                       user_id = '',
+                       form_status = 3
+                WHERE  contributor_reference = :h_contributor_reference
+                AND    period = :h_period;
+
+            ELSE
+                h_forms_out_of_scope = :h_forms_out_of_scope + 1;
+
+                UPDATE contributor_period
+                SET    correct_date = '',
+                       corr_week_no = 0,
+                       user_id = '',
+                       form_status = 2
+                WHERE  contributor_reference = :h_contributor_reference
+                AND    period = :h_period;
+
+            ENDIF;
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0
+            THEN
+                INSERT INTO bto_error_log
+                VALUES (    'now',
+                            'Error updating reclassifications/scopes',
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+        ENDIF;
+
+    };
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO bto_error_log
+        VALUES (    'now',
+                    'Error in reclassification loop',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    INSERT INTO bto_error_log
+    VALUES(     'now',
+                'BTO: EQ ' + VARCHAR(h_rows_cleared) + ' Cleared, ' +
+                VARCHAR(h_rows_failed) + ' Failed (' +
+                VARCHAR(h_forms_reclassed) + ' Reclass, ' +
+                VARCHAR(h_forms_out_of_scope) + ' OutOfScope)',
+                :h_frpr_name,
+                :ret_val,
+                :g_user_id);
+    COMMIT;
+
+    -----> END-OF-COMMENT
+
+    ------------------------------------------------------------------*/
+
+    RETURN 0;
+}
