@@ -1,0 +1,218 @@
+/*----------------------------------------------------------------------
+                      msag_fr_add_aces
+----------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries          = INTEGER1 NOT NULL,
+        h_retries_allowed  = INTEGER1 NOT NULL,
+        h_retry_or_not     = CHAR(5)  NOT NULL,
+        h_frpr_name        = VARCHAR(25) NOT NULL,
+        valid_run_period1  = INTEGER4 NOT NULL,
+        valid_run_period2  = INTEGER4 NOT NULL,
+        h_job_number       = INTEGER4 NOT NULL,
+        q1                 = INTEGER4 NOT NULL,
+        q2                 = INTEGER4 NOT NULL,
+        q3                 = INTEGER4 NOT NULL,
+        q4                 = INTEGER4 NOT NULL,
+        h_table            = VARCHAR(25) NOT NULL,
+        h_view             = VARCHAR(25) NOT NULL,
+        output_file        = VARCHAR(40) NOT NULL,
+        h_code             = VARCHAR(1200) NOT NULL,
+        h_job_type         = VARCHAR(20) NOT NULL,
+        ret_val            = INTEGER1 NOT NULL
+
+{
+    msa_date = 'now';
+    h_frpr_name = 'msag_fr_add_aces';
+    h_retries_allowed = 3;
+
+    h_job_type = 'aces print';
+
+    ret_val = CALLPROC msag_fp_check_job (
+              h_job_type = :h_job_type);
+
+    IF ret_val <> 0
+    THEN
+        IF ret_val = 1
+        THEN
+            MESSAGE 'This job is already on the schedule'
+            WITH STYLE = POPUP;
+            RETURN 0;
+        ELSE
+            RETURN ret_val;
+        ENDIF;
+    ENDIF;
+}
+
+FIELD period =
+{
+    MESSAGE 'Checking Period . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT period AS period
+        FROM   inquiry_period
+        WHERE  period = :period
+        AND    inquiry = 14;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This period is not a valid Annual Period'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    valid_run_period1 = :period + 12;
+    valid_run_period2 = :period + 103;
+
+    run_period = valid_run_period1;
+    RESUME FIELD run_period;
+}
+
+FIELD run_period =
+{
+    IF :run_period <> :valid_run_period1 
+    AND :run_period <> :valid_run_period2
+    THEN
+        MESSAGE 'The only Quarterly Run Periods that are valid for an' +
+                ' Annual Period of ' + VARCHAR(:period) + ' are ' +
+                VARCHAR(:valid_run_period1) + ' and ' +
+                VARCHAR(:valid_run_period2) + '.'
+        WITH STYLE = POPUP;
+        RESUME FIELD run_period;
+    ENDIF;
+      
+    /*------------------------------------------------------------------
+      Declarations for the report writer
+    ------------------------------------------------------------------*/
+
+    q1 = :period + 3;
+    q2 = :period + 6;
+    q3 = :period + 9;
+    q4 = :period + 12;
+
+    h_table = 'temp_aces_table';
+    h_view  = 'temp_aces_view';
+
+    output_file = '$PRINTOUT/msag_rw_aces.rpt';
+
+    /*--------------------------------------------------------------
+      Drop the tables in case they're left over from before
+    --------------------------------------------------------------*/
+
+    h_code = 'echo "drop ' + :h_table +
+             ' \p\g drop ' + :h_view +
+             ' \p\g " | sql ' + :g_database + 
+             ' >> ' + :g_error_log + '; ' +
+
+             'report ' + 
+             :g_database +
+             ' ''(h_table = "' + :h_table + '"' + 
+             ',h_view = "' + :h_view + '"' + 
+             ',database = "' + :g_database + '"' + 
+             ',aperiod = ' + VARCHAR(:period) +
+             ',qperiod = ' + VARCHAR(:run_period) +
+             ',q1 = ' + VARCHAR(:q1) +
+             ',q2 = ' + VARCHAR(:q2) +
+             ',q3 = ' + VARCHAR(:q3) +
+             ',q4 = ' + VARCHAR(:q4) +
+             ')'' -i$REPORTS/msag_rw_aces.rw' +
+             ' -f' + :output_file +
+             ' >> ' +:g_error_log + ' 2>>' + :g_error_log +';' +
+             'lp -drxp -oPOR1+NPN+SIMPLEX+?CONTROL?+%' +
+             :g_room + '% ' +
+             CONCAT(' ',:output_file) +
+             ' >> ' + :g_error_log + ' 2>>' + :g_error_log;
+                 
+    /*------------------------------------------------------------------
+     Check job isn't already on table
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msag_fp_check_job (
+              h_job_type = :h_job_type);
+
+    IF ret_val <> 0
+    THEN
+        IF ret_val = 1
+        THEN
+            MESSAGE 'This job is already on the schedule'
+            WITH STYLE = POPUP;
+            RETURN 0;
+        ELSE
+            RETURN ret_val;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Get job number
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msag_fp_get_jobno (
+              h_job_number = BYREF(:h_job_number));
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Add job to batch_jobs table
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msag_fp_insert_job (
+              h_job_number = :h_job_number,
+              h_job_type   = :h_job_type,
+              h_code       = :h_code);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    RETURN 0;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    msa_date = 'now';
+    HELP_FORMS(SUBJECT = 'help',
+	       FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}

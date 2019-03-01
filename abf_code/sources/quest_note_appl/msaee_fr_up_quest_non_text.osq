@@ -1,0 +1,648 @@
+INITIALIZE () =
+
+DECLARE h_retries_allowed     = INTEGER1 NOT NULL,
+        h_retries             = INTEGER1 NOT NULL,
+        h_retry_or_not        = CHAR(5) NOT NULL,
+        h_frpr_name           = VARCHAR(30) NOT NULL,
+        h_volume              = CHAR(20) NOT NULL,
+        h_unit_1              = CHAR(20) NOT NULL,
+        h_unit_02             = CHAR(20) NOT NULL,
+        h_unit_04             = CHAR(20) NOT NULL,
+        h_question            = INTEGER4 NOT NULL,
+        h_quest_order         = INTEGER4 NOT NULL,
+        question1             = INTEGER4 NOT NULL,
+        question2             = INTEGER4 NOT NULL,
+        latest_period         = INTEGER4 NOT NULL,
+        h_display             = INTEGER1 NOT NULL,
+        h_yesno		      = CHAR(1) NOT NULL,
+        h_prefix	      = VARCHAR(15) NOT NULL, 	
+        ret_val               = INTEGER1 NOT NULL
+
+{
+    msa_date = 'now';
+    h_retries_allowed = 3;
+    h_frpr_name = 'msaee_fr_up_quest_non_text';
+    h_prefix = 'Non text - ';
+    SET_FORMS FIELD '' (DISPLAYONLY(period) = 0,
+                        REVERSE(period) = 0,
+                        UNDERLINE(period) = 1,
+                        DISPLAYONLY(question) = 0,
+                        REVERSE(question) = 0,
+                        UNDERLINE(question) = 1,
+                        DISPLAYONLY(lag) = 0,
+                        REVERSE(lag) = 0,
+                        UNDERLINE(lag) = 1);
+
+    /*------------------------------------------------------------------
+     Get latest period - only allow amendments for:
+       lags: current period, next period, next period + 1
+       others: prev period, next period, next period + 1
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT MAX(period) AS latest_period
+        FROM   inquiry_period
+        WHERE  inquiry = 14;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows found on inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    latest_period = :latest_period / 100 * 100;
+
+}
+
+FIELD period =
+{
+    IF :period <> :latest_period
+    AND :period <> :latest_period + 100
+    AND :period <> :latest_period - 100
+    THEN
+        MESSAGE 'The only Periods whose Questions may be changed' +
+                ' are ' + VARCHAR(:latest_period - 100) + ', ' +
+                VARCHAR(:latest_period) + ' and ' +
+                VARCHAR(:latest_period + 100)
+                WITH STYLE = POPUP;
+                RESUME FIELD period;
+    ENDIF;
+
+    SET_FORMS FIELD '' (REVERSE(period)= 1,
+                        DISPLAYONLY(period)= 1,
+                        UNDERLINE(period)= 0);
+
+    RESUME FIELD question;
+}
+
+FIELD question =
+{
+    MESSAGE 'Checking Question . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT brief_text,
+               lag,
+               unit_1,
+               quest_order AS h_quest_order
+        FROM   question_library
+        WHERE  question = :question
+        AND    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question_library'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This Question does not exist for this Period'
+        WITH STYLE = POPUP;
+        RESUME FIELD question;
+    ENDIF;
+
+    SET_FORMS FIELD '' (REVERSE(question)= 1,
+                        DISPLAYONLY(question)= 1,
+                        UNDERLINE(question)= 0);
+
+    /*------------------------------------------------------------------
+     Find out volume types for 02 and 04 questions
+    ------------------------------------------------------------------*/
+
+    h_unit_02  = '999999';
+    h_unit_04  = '999999';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT unit_1 AS h_unit_1,
+               question AS h_question
+        FROM   question_library
+        WHERE  question IN (:question / 10 * 10 + 2,
+                            :question / 10 * 10 + 4)
+        AND    period = :period
+        {
+            IF MOD(:h_question,10) = 2
+            THEN
+                h_unit_02 = :h_unit_1;
+            ELSE
+                h_unit_04 = :h_unit_1;
+            ENDIF;
+        };
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question_library'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    IF MOD(question,10) = 1 AND :h_quest_order = 1
+    THEN
+        RESUME FIELD lag;
+    ELSE
+        /*--------------------------------------------------------------
+        Former restriction removed
+
+        IF :period = :latest_period - 100
+        THEN
+            MESSAGE 'Only Value Questions may be changed for the' +
+                    ' Period ' + VARCHAR(:latest_period - 100)
+            WITH STYLE = POPUP;
+
+            CLEAR FIELD ALL;
+            msa_date = 'now';
+            SET_FORMS FIELD '' (DISPLAYONLY(period) = 0,
+                                REVERSE(period) = 0,
+                                UNDERLINE(period) = 1,
+                                DISPLAYONLY(question) = 0,
+                                REVERSE(question) = 0,
+                                UNDERLINE(question) = 1,
+                                DISPLAYONLY(lag) = 0,
+                                REVERSE(lag) = 0,
+                                UNDERLINE(lag) = 1);
+
+            RESUME FIELD period;
+        ENDIF;
+        --------------------------------------------------------------*/
+
+        SET_FORMS FIELD '' (DISPLAYONLY(lag) = 1,
+                           REVERSE(lag) = 1,
+                           UNDERLINE(lag) = 0);
+        RESUME FIELD brief_text;
+    ENDIF;
+
+}
+
+FIELD unit_1 =
+{
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT volume_type AS h_volume
+        FROM   valid_volumes
+        WHERE  volume_type = :unit_1;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing valid_volumes'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This is not a valid Volume Type'
+        WITH STYLE = POPUP;
+        RESUME FIELD unit_1;
+    ENDIF;
+
+    IF MOD(:question,10) = 2 AND :unit_1 = :h_unit_04
+    THEN
+        MESSAGE '''' + VARCHAR(:unit_1) + ''' is the Volume Text for' +
+                ' the 04 Volume'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    IF MOD(:question,10) = 4 AND :unit_1 = :h_unit_02
+    THEN
+        MESSAGE '''' + VARCHAR(:unit_1) + ''' is the Volume Text for' +
+                ' the 02 Volume'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(unit_1) = 1,
+                        REVERSE(unit_1) = 1,
+                        UNDERLINE(unit_1) = 0);
+}
+
+FIELD lag =
+{
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT lag
+        FROM   lag
+        WHERE  lag = :lag;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing lag'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This is not a valid lag'
+        WITH STYLE = POPUP;
+        RESUME FIELD lag;
+    ENDIF;
+
+    RESUME FIELD brief_text;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Clear' =
+{
+    CLEAR FIELD ALL;
+    msa_date = 'now';
+    SET_FORMS FIELD '' (DISPLAYONLY(period) = 0,
+                        REVERSE(period) = 0,
+                        UNDERLINE(period) = 1,
+                        DISPLAYONLY(question) = 0,
+                        REVERSE(question) = 0,
+                        UNDERLINE(question) = 1,
+                        DISPLAYONLY(lag) = 0,
+                        REVERSE(lag) = 0,
+                        UNDERLINE(lag) = 1);
+
+    RESUME FIELD period;
+}
+
+'TypeVolume' =
+{
+
+    IF MOD(:question,10) <> 2 AND MOD(:question,10) <> 4
+    THEN
+        MESSAGE 'You can only change Volume Text for 02 and 04' +
+                ' Questions'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(unit_1) = 0,
+                        REVERSE(unit_1) = 0,
+                        UNDERLINE(unit_1) = 1);
+    RESUME FIELD unit_1;
+}
+
+'ChooseVolume' =
+{
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(period));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Period' WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(question));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Question' WITH STYLE = POPUP;
+        RESUME FIELD question;
+    ENDIF;
+
+    IF MOD(:question,10) <> 2 AND MOD(:question,10) <> 4
+    THEN
+        MESSAGE 'You can only change Volume Text for 02 and 04' +
+                ' Questions'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_unit_1 = '';
+
+    ret_val = CALLFRAME msaee_fr_valid_volumes (
+              unit_1 = BYREF(:h_unit_1));
+
+    IF MOD(:question,10) = 2 AND :h_unit_1 = :h_unit_04
+    THEN
+        MESSAGE '''' + VARCHAR(:h_unit_1) + ''' is the Volume Text for' +
+                ' the 04 Volume'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    IF MOD(:question,10) = 4 AND :h_unit_1 = :h_unit_02
+    THEN
+        MESSAGE '''' + VARCHAR(:h_unit_1) + ''' is the Volume Text for' +
+                ' the 02 Volume'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    IF h_unit_1 <> ''
+    THEN
+        unit_1 = :h_unit_1;
+    ENDIF;
+
+}
+
+'Update', KEY FRSKEY4 =
+{
+
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(period));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Period' WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(question));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Question' WITH STYLE = POPUP;
+        RESUME FIELD question;
+    ENDIF;
+
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(unit_1));
+    IF :h_display = 0 AND (MOD(question,10) = 2 OR MOD(question,10) = 4)
+    THEN
+        MESSAGE 'Please complete the Volume Units' WITH STYLE = POPUP;
+        RESUME FIELD question;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     02 Questions: update for 02, 05 and 08
+     04 Questions: update for 04 and 06
+     01 Questions: update that question and the lag on all volumes
+     All other Questions: update for that question only
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Updating Question . . .';
+
+    IF MOD(:question,10) = 2
+    THEN
+        question1 = :question + 3;
+        question2 = :question + 6;
+    ELSEIF MOD(:question,10) = 4
+    THEN
+        question1 = :question + 2;
+        question2 = 999999999;
+    ELSE
+        question1 = 999999999;
+        question2 = 999999999;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE question_library
+        SET    unit_1 = :unit_1,
+               brief_text = :brief_text
+        WHERE  period = :period
+        AND    question IN (:question,:question1,:question2);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating question_library'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows updated on question_library'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    For 01 Questions, update lag for that question & all its volumes
+    ------------------------------------------------------------------*/
+
+    IF MOD(question,10) = 1 AND :h_quest_order = 1
+    THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            UPDATE question_library
+            SET    lag = :lag
+            WHERE  period = :period
+            AND    question IN (:question,:question + 1,:question + 3,
+                                :question + 4,:question + 5,
+                                :question + 7);
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in updating question_library'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No lags changed on question_library'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+    ENDIF;
+
+    /*----------------------------------------------------------
+    get reason for change and update question_changes table
+    -----------------------------------------------------------*/
+
+    h_yesno = '';
+
+    ret_val = CALLPROC msaee_fp_insert_q_changes (
+	      question		= :question,
+	      period		= :period,
+	      h_yesno		= :h_yesno,		
+	      h_prefix		= :h_prefix);
+
+    IF ret_val <> 0
+    THEN
+	RETURN ret_val;
+    ENDIF;
+
+    IF ret_val = 9
+    THEN 
+        RETURN 9;
+    ENDIF;
+    MESSAGE 'Question Details Updated OK' WITH STYLE = POPUP;
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}

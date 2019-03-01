@@ -1,0 +1,312 @@
+/*----------------------------------------------------------------------
+Inserts a newly created question into question_period and
+question_sph_gross
+----------------------------------------------------------------------*/
+
+PROCEDURE msaee_fp_insert_qp (
+
+        question          = INTEGER4 NOT NULL,
+        question_industry = INTEGER4 NOT NULL,
+        inquiry           = INTEGER1 NOT NULL,
+        period            = INTEGER4 NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_curr_period     = INTEGER4 NOT NULL,
+        h_max_period      = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msaee_fp_insert_qp';
+
+    /*------------------------------------------------------------------
+    Find out how far creation has gone
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT MAX(period) AS h_max_period
+        FROM   inquiry_period
+        WHERE  inquiry = :inquiry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows found on inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    If creation hasn't yet run for the period the question's being
+    created for, don't insert it - as it'll be taken from the
+    question_library itself when creation runs.
+    ------------------------------------------------------------------*/
+
+    IF h_max_period < period
+    THEN
+        RETURN 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Annual: insert for current period
+
+    Quarterly: insert for all quarters within current year,
+               but not beyond the current max period
+
+    e.g. if it's a Q question for 199800 and max is 199806,
+         insert for 199803 & 199806
+
+         if it's a Q question for 199700 and max is 199806,
+         insert for 199703, 199706, 199709 & 199712
+    ------------------------------------------------------------------*/
+
+    IF inquiry = 14
+    THEN
+        h_curr_period = period;
+        h_max_period = period;
+    ELSE
+        h_curr_period = period + 3;
+
+        IF (h_max_period / 100 * 100) > (period / 100 * 100)
+        THEN
+            h_max_period = period + 12;
+        ENDIF;
+    ENDIF;
+
+    WHILE h_curr_period <= h_max_period
+    DO
+
+        MESSAGE 'Inserting into question_period for ' +
+                VARCHAR(h_curr_period) + ' . . .';
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            INSERT INTO question_period (
+                        question,
+                        period,
+                        inquiry,
+                        question_industry,
+                        total_value,
+                        imp_total_value,
+                        con_total_value,
+                        prinprod,
+                        imp_prinprod,
+                        con_prinprod,
+                        carryin_qsi,
+                        imp_carryin_qsi,
+                        con_carryin_qsi,
+                        carryin_asi,
+                        imp_carryin_asi,
+                        con_carryin_asi,
+                        disclosure_indicator,
+                        enterprise_count,
+                        contributor_count,
+                        prev_pub_ent_count,
+                        prin_prod_indicator,
+                        grossed_value,
+                        grossed_disc_indicator,
+                        imputation_ratio,
+                        rollup,
+                        manual_ratio,
+                        permission_to_publish,
+                        pub_indicator,
+                        prev_pub_total,
+                        prev_pub_discind,
+                        prev_pub_grossed_value,
+                        prev_pub_grossed_dis_ind,
+                        prev_pub_indicator,
+                        prev_pub_rollup,
+                        qu_flag,
+                        est_flag,
+                        rev_flag,
+                        disc_flag,
+                        round_flag)
+            VALUES (    :question,
+                        :h_curr_period,
+                        :inquiry,
+                        :question_industry,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        '',
+                        0,
+                        0,
+                        0,
+                        '',
+                        0,
+                        '',
+                        1,
+                        '',
+                        '',
+                        '',
+                        '',
+                        0,
+                        '',
+                        0,
+                        '',
+                        '',
+                        '',
+                        '',
+                        '',
+                        '',
+                        '',
+                        '');
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error inserting into question_period'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No rows inserted into question_period'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+        MESSAGE 'Inserting into question_sph_gross for ' +
+                VARCHAR(h_curr_period) + ' . . .';
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            INSERT INTO question_sph_gross (
+                        question,
+                        industry,
+                        period,
+                        one_sales_per_head,
+                        pps_sales_per_head,
+                        und_sales_per_head,
+                        com_sales_per_head,
+                        one_gross,
+                        two_gross,
+                        gr_meth1_val,
+                        gr_meth2_val,
+                        gr_meth1_vol,
+                        gr_meth2_vol)
+            VALUES (    :question,
+                        :question_industry,
+                        :h_curr_period,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0);
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error inserting into question_sph_gross'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No rows inserted into question_sph_gross'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+        h_curr_period = h_curr_period + 3;
+
+    ENDWHILE;
+
+    RETURN 0;
+}

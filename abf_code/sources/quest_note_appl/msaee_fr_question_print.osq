@@ -1,0 +1,537 @@
+/*-S--------------------------------------------------------------------
+Prints the question library for a supplied industry and period
+--------------------------------------------------------------------e-*/
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_field_name      = VARCHAR(24) NOT NULL,
+        h_table           = VARCHAR(24) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        h_display         = INTEGER1 NOT NULL,
+	h_print_name	  = VARCHAR(45) NOT NULL,
+        h_counter         = INTEGER1 NOT NULL
+{
+    msa_date = 'now';
+    h_retries_allowed = 3;
+    h_frpr_name = 'msaee_fr_question_print';
+    SET_FORMS FIELD '' (MODE(tf) = 'READ',
+                        DISPLAYONLY(period) = 0,
+                        REVERSE(period) = 0,
+                        UNDERLINE(period) = 1);
+    h_table = 'temp_question_inds';
+    no_of_industries = 0;
+
+    /*------------------------------------------------------------------
+     Create temporary table to hold industries
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Calling Print Questions Process . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table (h_table = :h_table);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table (industry INTEGER4 NOT NULL);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        MODIFY    :h_table TO BTREE
+        UNIQUE ON industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error modifying ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+}
+
+FIELD period =
+{
+    MESSAGE 'Checking Period . . .';
+
+    ret_val = CALLPROC msaee_fp_check_year (period = :period);
+    IF ret_val = 9
+    THEN
+        RETURN ret_val;
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This is not a valid annual Period'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(period) = 1,
+                        REVERSE(period) = 1,
+                        UNDERLINE(period) = 0);
+    RESUME FIELD industry;
+}
+
+FIELD industry =
+{
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(period));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Period' WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    IF :industry <> 'ALL14' AND :industry <> 'ALL15'
+    AND :industry NOT LIKE '\[0-9\]\[0-9\]\[0-9\]\[0-9\]\[0-9\]' escape '\'
+    THEN
+        MESSAGE 'Industry must be ALL14, ALL15 or a valid 5-digit Industry'
+        WITH STYLE = POPUP;
+        RESUME FIELD industry;
+    ENDIF;
+
+    MESSAGE 'Checking Industry . . .';
+
+    IF :industry = 'ALL14' OR :industry = 'ALL15'
+    THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            IF :industry = 'ALL14'
+            THEN
+                INSERT INTO :h_table
+                SELECT      industry
+                FROM        industry
+                WHERE       inquiry = 14
+                AND         industry NOT IN (
+                            SELECT industry FROM :h_table);
+            ELSE
+                INSERT INTO :h_table
+                SELECT      industry
+                FROM        industry
+                WHERE       inquiry = 15
+                AND         industry NOT IN (
+                            SELECT industry FROM :h_table);
+            ENDIF;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing industry'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ENDIF;
+
+    ELSE
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            INSERT INTO :h_table
+            SELECT      industry
+            FROM        industry
+            WHERE       industry = INT4(:industry)
+            AND         industry NOT IN (SELECT industry FROM :h_table);
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing industry'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'This Industry has either been selected already,' +
+                    ' or is not a valid Industry'
+            WITH STYLE = POPUP;
+            RESUME FIELD industry;
+        ENDIF;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Reload Screen Table of Industries
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT   industry
+        FROM     :h_table
+        ORDER BY industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:no_of_industries),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing '+ :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    RESUME FIELD tf;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Delete' =
+{
+    IF :no_of_industries = 0
+    THEN
+        MESSAGE 'Nothing to Delete'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name <> 'tf'
+    THEN
+        MESSAGE 'Please highlight the required Industry'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Delete the specified Industry
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        DELETE FROM :h_table
+        WHERE       industry = :tf.industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in deleting from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No row deleted from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Reload Screen Table of Industries
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT   industry
+        FROM     :h_table
+        ORDER BY industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:no_of_industries),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing '+ :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    IF :no_of_industries = 0
+    THEN
+        RESUME FIELD industry;
+    ELSE
+        RESUME FIELD tf;
+    ENDIF;
+}
+
+'Print', KEY FRSKEY4 =
+{
+    IF :no_of_industries = 0
+    THEN
+        MESSAGE 'Please select at least one Industry'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    MESSAGE 'Preparing Report . . .';
+
+    ret_val = CALLPROC msa_cp_callsys (
+              'report ' +
+              :g_database +
+              ' ''(period = ' + VARCHAR(:period) +
+              ',user_name = "' + :g_user_name + '"' +
+              ',h_table = "' + :h_table + '"' +
+              ')'' -i$REPORTS/msaee_rw_print_questions.rw' +
+              ' > report.output 2> report.output');
+
+    IF ret_val <> 0
+    THEN
+        MESSAGE 'Error producing report'
+        WITH STYLE = POPUP;
+    ELSE
+        h_print_name := 'msaee_rw_print_questions'
+			+:industry+'_'+VARCHAR(:period)+'.rpt';
+
+	ret_val = CALLPROC msa_cp_callsys (
+		'mv msaee_rw_print_questions.rpt '+
+		:h_print_name+
+		' >> report.output 2>> report.output');
+
+        ret_val = CALLPROC msa_cp_callsys (
+              'lp -drxp -oLANZ+DUPLEX+NPN'+' '+:h_print_name+
+              ' >> report.output 2>> report.output');
+
+        IF ret_val <> 0
+        THEN
+            MESSAGE 'Error sending report to Central Printer'
+            WITH STYLE = POPUP;
+        ELSE
+            MESSAGE 'Report sent to Central Printer OK'
+            WITH STYLE = POPUP;
+        ENDIF;
+    ENDIF;
+
+    CLEAR FIELD ALL;
+    msa_date = 'now';
+    SET_FORMS FIELD '' (DISPLAYONLY(period) = 0,
+                        REVERSE(period) = 0,
+                        UNDERLINE(period) = 1);
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        DELETE FROM :h_table;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error deleting from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    RESUME FIELD period;
+
+}
+
+'End', KEY FRSKEY6 =
+{
+    MESSAGE 'Exiting Screen . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table (h_table = :h_table);
+    RETURN 0;
+}

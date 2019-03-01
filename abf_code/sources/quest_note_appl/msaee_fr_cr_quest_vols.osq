@@ -1,0 +1,521 @@
+/*----------------------------------------------------------------------
+Create Volume Question
+----------------------------------------------------------------------*/
+
+INITIALIZE (
+
+        inquiry             = INTEGER1 NOT NULL,
+        question_industry   = INTEGER4 NOT NULL,
+        h_quest_order       = INTEGER1 NOT NULL,
+        owner_question      = INTEGER4 NOT NULL,
+        uk_only             = CHAR(1) NOT NULL,
+        unit_type_is_preset = CHAR(1) NOT NULL,
+        period              = INTEGER4 NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_unit_1          = CHAR(20) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        h_lag             = INTEGER1 NOT NULL,
+        lp_insert_volume  = PROCEDURE RETURNING INTEGER
+
+{
+    msa_date = 'now';
+    h_retries_allowed = 3;
+    h_frpr_name = 'msaee_fr_cr_quest_vols';
+
+    IF uk_only = 'Y'
+    THEN
+        h_lag = 2;
+    ELSE
+        h_lag = 0;
+    ENDIF;
+    message 'question = ' + VARCHAR(:question) + ', owner_question = ' +
+   VARCHAR(:owner_question)
+    with style = popup;
+
+    /*------------------------------------------------------------------
+    You can only change the volumes for the 02 and 04 questions.
+    The 05, 06, 08 and 09 volumes will be exactly the same as their
+    related 02 and 04 questions (02 = 05 & 08; 04 = 06 & 09).
+    The 05 to 09 volumes are added automatically.
+    ------------------------------------------------------------------*/
+
+    IF unit_type_is_preset = 'Y'
+    THEN
+        ret_val = CALLPROC lp_insert_volume ();
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+        RETURN 0;
+    ELSE
+        REDISPLAY;
+        ret_val = CALLFRAME msaee_fr_valid_volumes (
+                  unit_1 = BYREF(:unit_1));
+    ENDIF;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'ChooseVolume' =
+{
+    ret_val = CALLFRAME msaee_fr_valid_volumes (
+              unit_1 = BYREF(:unit_1));
+}
+
+'SaveVolume', KEY FRSKEY4  =
+{
+    IF unit_1 = ''
+    THEN
+        MESSAGE 'Please supply a Volume Unit Type'
+        WITH STYLE = POPUP;
+        RESUME FIELD unit_1;
+    ENDIF;
+
+    ret_val = CALLPROC lp_insert_volume ();
+    IF ret_val = 1
+    THEN
+        RESUME;
+    ELSEIF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                    L O C A L   P R O C E D U R E
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_insert_volume () =
+{
+    /*------------------------------------------------------------------
+    Owner Member
+    ------------------------------------------------------------------*/
+
+    IF uk_only = 'Y' AND :question <> :owner_question
+    THEN
+    MESSAGE 'examine question library for existance of volume' 
+    WITH STYLE = POPUP;
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            SELECT question AS owner_question
+            FROM   question_library
+            WHERE  question = :owner_question
+            AND    period   = :period;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing question_library'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'Owner Question ' + VARCHAR(:owner_question) +
+                    ' does not exist. This must first be created.'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Check 04 question doesn't have same unit type as the 02 question
+    ------------------------------------------------------------------*/
+
+    IF ASCII(:question) LIKE '%4'
+    THEN
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            SELECT unit_1 AS h_unit_1
+            FROM   question_library
+            WHERE  question = :question - 2
+            AND    period   = :period;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing question_library'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No 02 volume found on the question_library'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+        IF LOWERCASE(:h_unit_1) = LOWERCASE(:unit_1)
+        THEN
+            MESSAGE 'This Unit Type is already used by ' +
+                    VARCHAR(:question - 2)
+            WITH STYLE = POPUP;
+            RETURN 1;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Insert the Volume
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        INSERT INTO question_library (
+                    question,
+                    period,
+                    desc_quest_code,
+                    inquiry,
+                    question_industry,
+                    quest_order,
+                    cred_q,
+                    cred_k1,
+                    cred_k2,
+                    cred_t1,
+                    cred_t2,
+                    gate,
+                    lag,
+                    start_period,
+                    end_period,
+                    brief_text,
+                    line_count,
+                    unit_1,
+                    text_line1,
+                    text_line2,
+                    text_line3,
+                    text_line4,
+                    text_line5,
+                    text_line6,
+                    text_line7,
+                    text_line8,
+                    text_line9,
+                    text_line10,
+                    diff_pub)
+        VALUES (    :question,
+                    :period,
+                    0,
+                    :inquiry,
+                    :question_industry,
+                    :h_quest_order,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    :h_lag,
+                    :period,
+                    0,
+                    '',
+                    0,
+                    :unit_1,
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '');
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error inserting into question_library'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows inserted into question_library'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Create default credibility gates for the new question
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msaee_fp_cr_credibility (
+              question          = :question,
+              inquiry           = :inquiry,
+              question_industry = :question_industry,
+              quest_order       = :h_quest_order);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Create volume on question_period / question_sph_gross
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msaee_fp_insert_qp (
+              question          = :question,
+              inquiry           = :inquiry,
+              question_industry = :question_industry,
+              period            = :period);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Insert into Question History for the volume
+    if the value already has an entry and the replaced volume
+    actually exists
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        INSERT INTO question_history (
+                    old_question,
+                    new_question,
+                    rep_type,
+                    period)
+        SELECT      a.old_question / 10 * 10 + MOD(:question,10),
+                    :question,
+                    a.rep_type,
+                    a.period
+        FROM        question_history a,
+                    question_library b
+        WHERE       a.new_question = :question / 10 * 10 + 1
+        AND         a.period = :period
+        AND         a.old_question / 10 * 10 + MOD(:question,10) = b.question
+        AND         a.period = b.period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error inserting volume into question_history'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    UK only : Update owner_question to lag = 1
+    ------------------------------------------------------------------*/
+
+    IF uk_only = 'Y'
+    THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            UPDATE question_library
+            SET    lag = 1
+            WHERE  question = :owner_question
+            AND    period   = :period;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in updating lag on question_library'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No rows updated on question_library'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        Insert owner_question link
+        --------------------------------------------------------------*/
+    message 'question = ' + VARCHAR(:question) + ', owner_question = ' +
+   VARCHAR(:owner_question)
+    with style = popup;
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            INSERT INTO owner_question (
+                        owner_question,
+                        question,
+                        period)
+            VALUES (    :owner_question,
+                        :question,
+                        :period);
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in inserting into owner_question'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No rows inserted into owner_question'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+    ENDIF;
+
+    RETURN 0;
+}

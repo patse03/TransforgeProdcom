@@ -1,0 +1,417 @@
+INITIALIZE () =
+
+DECLARE h_retries_allowed  = INTEGER1 NOT NULL,
+        h_retries          = INTEGER1 NOT NULL,
+        h_retry_or_not     = CHAR(5) NOT NULL,
+	h_varchar_variable = VARCHAR(100) NOT NULL,
+	h_param_list       = VARCHAR(100) NOT NULL,
+	h_integer_variable = INTEGER1 NOT NULL,
+        h_param1           = VARCHAR(20) NOT NULL,
+        h_param2           = VARCHAR(20) NOT NULL,
+        h_frpr_name        = VARCHAR(24) NOT NULL,
+        h_display          = INTEGER1 NOT NULL,
+        h_question         = INTEGER4 NOT NULL,
+        h_period           = INTEGER4 NOT NULL,
+        h_max_rows         = INTEGER1 NOT NULL,
+        h_counter          = INTEGER1 NOT NULL,
+        h_volume_text      = VARCHAR(20) NOT NULL,
+        ret_val            = INTEGER1 NOT NULL,
+        lp_check_question  = PROCEDURE RETURNING INTEGER,
+        lp_load_data       = PROCEDURE RETURNING INTEGER
+{
+    msa_date = 'now';
+    h_frpr_name = 'msaee_fr_in_quest_info';
+    h_retries_allowed = 3;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(question) = 0,
+                        REVERSE(question) = 0,
+                        UNDERLINE(question) = 1);
+
+    h_param_list = CALLPROC CommandLineParameters();
+
+    h_varchar_variable = SQUEEZE (h_param_list);
+
+    h_integer_variable = LOCATE (h_varchar_variable, ' ');
+    h_param1         =   LEFT (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = SHIFT (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = LOCATE (h_varchar_variable, ' ');
+    h_param2         =   LEFT (h_varchar_variable,h_integer_variable - 1);
+		
+    IF h_param1 <> ''
+    THEN
+        question = INT4(h_param1);
+        h_period = INT4(h_param2);
+        ret_val = CALLPROC lp_check_question();
+        IF ret_val > 0
+        THEN 
+            RETURN ret_val;
+        ENDIF;
+
+        h_counter = 0;
+	WHILE h_counter < h_max_rows
+	DO
+	    h_counter = h_counter + 1;
+	    IF g_year_array [h_counter].period = h_period
+	    THEN
+		ENDLOOP;
+            ENDIF;
+        ENDWHILE;
+
+
+        SET_FORMS FIELD '' (DISPLAYONLY(question) = 1,
+                            REVERSE(question) = 1,
+                            UNDERLINE(question) = 0);
+    
+        ret_val = CALLPROC lp_load_data();
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+    ENDIF;
+
+}
+
+FIELD question =
+{
+
+    ret_val = CALLPROC lp_check_question();
+    IF ret_val > 1
+    THEN 
+	RETURN ret_val;
+    ELSEIF ret_val = 1
+    THEN
+	RESUME FIELD question;
+    ENDIF;
+
+
+    SET_FORMS FIELD '' (DISPLAYONLY(question) = 1,
+                        REVERSE(question) = 1,
+                        UNDERLINE(question) = 0);
+
+    ret_val = CALLPROC lp_load_data();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Clear' =
+{
+    CLEAR FIELD ALL;
+    msa_date = 'now';
+    SET_FORMS FIELD '' (DISPLAYONLY(question) = 0,
+                        REVERSE(question) = 0,
+                        UNDERLINE(question) = 1);
+    RESUME FIELD question;
+}
+
+'PreviousPeriod' =
+{
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(question));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Question' WITH STYLE = POPUP;
+        RESUME FIELD question;
+    ENDIF;
+
+    IF h_counter = 1
+    THEN
+        MESSAGE 'No more Periods'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_counter = h_counter - 1;
+
+    ret_val = CALLPROC lp_load_data();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'NextPeriod' =
+{
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(question));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Question' WITH STYLE = POPUP;
+        RESUME FIELD question;
+    ENDIF;
+
+    IF h_counter = h_max_rows
+    THEN
+        MESSAGE 'No more Periods'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_counter = h_counter + 1;
+
+    ret_val = CALLPROC lp_load_data();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'ShowCNs' =
+{
+
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(question));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Question' WITH STYLE = POPUP;
+        RESUME FIELD question;
+    ENDIF;
+
+    ret_val = CALLFRAME msaee_fr_show_cns (
+              question = :question,
+              period   = :h_period);
+}
+
+'ShowMembers', KEY FRSKEY4 =
+{
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(question));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Question' WITH STYLE = POPUP;
+        RESUME FIELD question;
+    ENDIF;
+
+    IF lag <> 1
+    THEN
+        MESSAGE 'This Question is not an Owner Question'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    ret_val = CALLFRAME msaee_fr_show_members (
+              question = :question,
+              period   = :h_period);
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                     L O C A L   P R O C E D U R E
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_check_question () =
+{
+    MESSAGE 'Checking Question . . .';
+
+    /*------------------------------------------------------------------
+     Look for Question : either a Value or a Standard Heading Question
+     (not a volume)
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        g_year_array =
+
+        SELECT   period
+        FROM     question_library
+        WHERE    question = :question
+        AND      ((MOD(question,10) = 1 AND quest_order = 1)
+                 OR quest_order <> 1)
+        ORDER BY period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:h_max_rows),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question_library'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This is neither a valid Value Question' +
+                ' nor a valid Standard Heading for any Period'
+        WITH STYLE = POPUP;
+        RETURN 1; 
+    ENDIF;
+
+    h_counter = h_max_rows;
+    RETURN 0;
+} 
+
+PROCEDURE lp_load_data () =
+{
+    h_period = :g_year_array[:h_counter].period;
+    form_message = VARCHAR(:h_period) + ' - Period ' + 
+                   VARCHAR(:h_counter) + ' of ' + VARCHAR(:h_max_rows);
+    MESSAGE 'Loading Question Data for ' + VARCHAR(:h_period) + ' . . .';
+
+    CLEAR FIELD inquiry, question_industry, lag, text_line1, text_line2,
+                text_line3, text_line4, text_line5, text_line6,
+                text_line7, text_line8, text_line9, text_line10, text,
+                question2, question4, question5, question6,
+                question8;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT a.inquiry,
+               a.question_industry,
+               a.lag,
+               a.text_line1,
+               a.text_line2,
+               a.text_line3,
+               a.text_line4,
+               a.text_line5,
+               a.text_line6,
+               a.text_line7,
+               a.text_line8,
+               a.text_line9,
+               a.text_line10,
+               b.text
+        FROM   question_library a,
+               lag b
+        WHERE  a.question = :question
+        AND    a.lag      = b.lag
+        AND    a.period   = :h_period
+        AND    ((MOD(a.question,10) = 1 AND a.quest_order = 1)
+                 OR a.quest_order <> 1);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question_library'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Unable to find question/lag details for ' +
+                VARCHAR(:h_period)
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Get units for other the volume questions
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Volumes . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT unit_1 AS h_volume_text,
+               question AS h_question
+        FROM   question_library
+        WHERE  question IN (:question + 1, :question + 3, :question + 4,
+                            :question + 5, :question + 7)
+        AND    period = :h_period
+        {
+            IF MOD(h_question,10) = 2
+            THEN
+                question2 = :h_volume_text;
+            ELSEIF MOD(h_question,10) = 4
+            THEN
+                question4 = :h_volume_text;
+            ELSEIF MOD(h_question,10) = 5
+            THEN
+                question5 = :h_volume_text;
+            ELSEIF MOD(h_question,10) = 6
+            THEN
+                question6 = :h_volume_text;
+            ELSEIF MOD(h_question,10) = 8
+            THEN
+                question8 = :h_volume_text;
+            ENDIF;
+        };
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question_library'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    RETURN 0;
+}

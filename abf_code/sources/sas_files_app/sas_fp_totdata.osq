@@ -1,0 +1,1126 @@
+
+
+
+/*--------------------------------------------------------------
+    This procedure total tables to harrydb
+--------------------------------------------------------------*/
+
+PROCEDURE sas_fp_totdata () =
+
+DECLARE   ret_val           = INTEGER4 NOT NULL,
+          h_frpr_name       = VARCHAR(25) NOT NULL,
+          h_period          = INTEGER4 NOT NULL,
+          start_period      = INTEGER4 NOT NULL,
+          end_period        = INTEGER4 NOT NULL,
+          froz_period       = INTEGER4 NOT NULL,
+          h_industry        = INTEGER4 NOT NULL,
+          h_count           = INTEGER4 NOT NULL,
+          h_table           = VARCHAR(24) NOT NULL,
+          h_copy_table1     = VARCHAR(24) NOT NULL,
+          h_command         = VARCHAR(500) NOT NULL,
+          h_directory       = VARCHAR(100) NOT NULL,
+          h_to_database     = VARCHAR(10) NOT NULL
+{
+    h_frpr_name  = 'sas_fp_totdata';
+    h_copy_table1 = 'sastots'+varchar(:g_period[1].period);
+    ret_val = CALLPROC sas_fp_drop_table (
+              h_table = :h_copy_table1);
+
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    CREATE TABLE :h_copy_table1 
+    AS SELECT 
+	  industry              ,
+	  period                ,
+	  int4(0) as salcnt1               ,
+	  int4(0) as salcnt2               ,
+	  int4(0) as salcnt3               ,
+	  int4(0) as salcnt4               ,
+	  int4(0) as salcnt5               ,
+	  int4(0) as salemp1               ,
+	  int4(0) as salemp2               ,
+	  int4(0) as salemp3               ,
+	  int4(0) as salemp4               ,
+	  int4(0) as salemp5               ,
+	  int4(0) as empnr1                ,
+	  int4(0) as empnr2                ,
+	  int4(0) as empnr3                ,
+	  int4(0) as empnr4                ,
+	  int4(0) as empnr5                ,
+	  int4(0) as empns1                ,
+	  int4(0) as empns2                ,
+	  int4(0) as empns3                ,
+	  int4(0) as empns4                ,
+	  int4(0) as empns5                
+	  FROM industry_period
+	  WHERE period BETWEEN :g_period[:g_periods].period
+		       AND :g_period[1].period
+	  AND industry IN
+	            (SELECT industry FROM :g_results_industry)
+	  WITH LOCATION = (prod2);
+
+
+
+    ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error creating ' + :h_copy_table1,
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+
+    MESSAGE 'Modifying SAS table ';
+
+    MODIFY :h_copy_table1 TO BTREE UNIQUE ON  industry,
+					      period;
+
+    ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Modifying sasinds table',
+                  h_frpr_name = :h_frpr_name);
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Loading counts and employment for 9200
+    ------------------------------------------------------------------*/
+
+        MESSAGE 'Creating counts and employments for 9200';
+
+	ret_val = CALLPROC sas_fp_drop_table(h_table = 'temp_table_sas');
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        CREATE TABLE temp_table_sas
+	AS SELECT a.contributor_industry as industry,
+		  a.period,
+	          COUNT(a.avalue) as salcnt1,
+	          SUM(b.register_emp) as salemp1
+	FROM cqpv a, 
+	     contributor_period b
+        WHERE a.acell IN ('V','C','Z','I','P','A','B','M','L')
+	AND a.contributor_reference = b.contributor_reference
+	AND a.period = b.period
+	AND a.quest_order = 10
+	AND a.period BETWEEN :g_period[:g_periods].period
+		       AND :g_period[1].period
+	AND a.contributor_industry IN
+	            (SELECT industry FROM :g_results_industry)
+	AND b.register_emp BETWEEN 0 and 9
+	GROUP BY a.contributor_industry,
+		 a.period;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val > 1
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating data 1' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+	UPDATE :h_copy_table1 a
+	FROM temp_table_sas b
+	SET salcnt1 = b.salcnt1,
+	    salemp1 = b.salemp1
+        WHERE a.industry = b.industry
+	AND a.period = b.period;
+
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error in updating emp and sal1',
+                  h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        MESSAGE 'Creating counts and employments 2 for 9200';
+
+	ret_val = CALLPROC sas_fp_drop_table(h_table = 'temp_table_sas');
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        CREATE TABLE temp_table_sas
+	AS SELECT a.contributor_industry as industry,
+		  a.period,
+	          COUNT(a.avalue) as salcnt2,
+	          SUM(b.register_emp) as salemp2
+	FROM cqpv a, 
+	     contributor_period b
+        WHERE a.acell IN ('V','C','Z','I','P','A','B','M','L')
+	AND a.contributor_reference = b.contributor_reference
+	AND a.period = b.period
+	AND a.quest_order = 10
+	AND a.period BETWEEN :g_period[:g_periods].period
+		       AND :g_period[1].period
+	AND a.contributor_industry IN
+	            (SELECT industry FROM :g_results_industry)
+	AND b.register_emp BETWEEN 10 and 19
+	GROUP BY a.contributor_industry,
+		 a.period;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val > 1
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating data 2' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+	UPDATE :h_copy_table1 a
+	FROM temp_table_sas b
+	SET salcnt2 = b.salcnt2,
+	    salemp2 = b.salemp2
+        WHERE a.industry = b.industry
+	AND a.period = b.period;
+
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error in updating emp and sal1',
+                  h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        MESSAGE 'Creating counts and employments 3 for 9200';
+	ret_val = CALLPROC sas_fp_drop_table(h_table = 'temp_table_sas');
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        CREATE TABLE temp_table_sas 
+	AS SELECT a.contributor_industry as industry,
+		  a.period,
+	          COUNT(a.avalue) as salcnt3,
+	          SUM(b.register_emp) as salemp3
+	FROM cqpv a, 
+	     contributor_period b
+        WHERE a.acell IN ('V','C','Z','I','P','A','B','M','L')
+	AND a.contributor_reference = b.contributor_reference
+	AND a.period = b.period
+	AND a.quest_order = 10
+	AND a.period BETWEEN :g_period[:g_periods].period
+		       AND :g_period[1].period
+	AND a.contributor_industry IN
+	            (SELECT industry FROM :g_results_industry)
+	AND b.register_emp BETWEEN 20 and 49
+	GROUP BY a.contributor_industry,
+		 a.period;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val > 1
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating data 3' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+	UPDATE :h_copy_table1 a
+	FROM temp_table_sas b
+	SET salcnt3 = b.salcnt3,
+	    salemp3 = b.salemp3
+        WHERE a.industry = b.industry
+	AND a.period = b.period;
+
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error in updating emp and sal1',
+                  h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+
+        MESSAGE 'Creating counts and employments 4 for 9200';
+	ret_val = CALLPROC sas_fp_drop_table(h_table = 'temp_table_sas');
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        CREATE TABLE temp_table_sas 
+	AS SELECT a.contributor_industry as industry,
+		  a.period,
+	          COUNT(a.avalue) as salcnt4,
+	          SUM(b.register_emp) as salemp4
+	FROM cqpv a, 
+	     contributor_period b
+        WHERE a.acell IN ('V','C','Z','I','P','A','B','M','L')
+	AND a.contributor_reference = b.contributor_reference
+	AND a.period = b.period
+	AND a.quest_order = 10
+	AND a.period BETWEEN :g_period[:g_periods].period
+		       AND :g_period[1].period
+	AND a.contributor_industry IN
+	            (SELECT industry FROM :g_results_industry)
+	AND b.register_emp BETWEEN 50 and 99
+	GROUP BY a.contributor_industry,
+		 a.period;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val > 1
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating data 5' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+	UPDATE :h_copy_table1 a
+	FROM temp_table_sas b
+	SET salcnt4 = b.salcnt4,
+	    salemp4 = b.salemp4
+        WHERE a.industry = b.industry
+	AND a.period = b.period;
+
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error in updating emp and sal1',
+                  h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+
+	ret_val = CALLPROC sas_fp_drop_table(h_table = 'temp_table_sas');
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+        MESSAGE 'Creating counts and employments 5 for 9200';
+
+        CREATE TABLE temp_table_sas 
+	AS SELECT a.contributor_industry as industry,
+		  a.period,
+	          COUNT(a.avalue) as salcnt5,
+	          SUM(b.register_emp) as salemp5
+	FROM cqpv a, 
+	     contributor_period b
+        WHERE a.acell IN ('V','C','Z','I','P','A','B','M','L')
+	AND a.contributor_reference = b.contributor_reference
+	AND a.period = b.period
+	AND a.quest_order = 10
+	AND a.period BETWEEN :g_period[:g_periods].period
+		       AND :g_period[1].period
+	AND a.contributor_industry IN
+	            (SELECT industry FROM :g_results_industry)
+	AND b.register_emp >  99
+	GROUP BY a.contributor_industry,
+		 a.period;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val > 1
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating data 6' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+	UPDATE :h_copy_table1 a
+	FROM temp_table_sas b
+	SET salcnt5 = b.salcnt5,
+	    salemp5 = b.salemp5
+        WHERE a.industry = b.industry
+	AND a.period = b.period;
+
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error in updating emp and sal1',
+                  h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+    /*------------------------------------------------------------------
+     Loading non response counts 
+    ------------------------------------------------------------------*/
+
+
+     MESSAGE 'Creating non responders count for industry';
+
+
+	ret_val = CALLPROC sas_fp_drop_table(h_table = 'temp_table_sas');
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+
+        CREATE TABLE temp_table_sas 
+	AS SELECT a.contributor_industry as industry,
+		  a.period,
+	          SUM(b.register_emp) as empnr1
+	FROM cqpv a, 
+	     contributor_period b
+        WHERE a.acell IN ('N')
+	AND a.contributor_reference = b.contributor_reference
+	AND a.period = b.period
+	AND a.quest_order = 10
+	AND a.period BETWEEN :g_period[:g_periods].period
+		       AND :g_period[1].period
+	AND a.contributor_industry IN
+	            (SELECT industry FROM :g_results_industry)
+	AND b.register_emp BETWEEN 0 and 9
+	GROUP BY a.contributor_industry,
+		 a.period;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val > 1
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating data 7' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+	UPDATE :h_copy_table1 a
+	FROM temp_table_sas b
+	SET empnr1 = b.empnr1
+        WHERE a.industry = b.industry
+	AND a.period = b.period;
+
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error in updating emp and sal1',
+                  h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+     MESSAGE 'Creating non responders count 2';
+
+	ret_val = CALLPROC sas_fp_drop_table(h_table = 'temp_table_sas');
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+
+        CREATE TABLE temp_table_sas 
+	AS SELECT a.contributor_industry as industry,
+		  a.period,
+	          SUM(b.register_emp) as empnr2
+	FROM cqpv a, 
+	     contributor_period b
+        WHERE a.acell IN ('N')
+	AND a.contributor_reference = b.contributor_reference
+	AND a.period = b.period
+	AND a.quest_order = 10
+	AND a.period BETWEEN :g_period[:g_periods].period
+		       AND :g_period[1].period
+	AND a.contributor_industry IN
+	            (SELECT industry FROM :g_results_industry)
+	AND b.register_emp BETWEEN 10 and 19
+	GROUP BY a.contributor_industry,
+		 a.period;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val > 1
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating data 9' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+	UPDATE :h_copy_table1 a
+	FROM temp_table_sas b
+	SET empnr2 = b.empnr2
+        WHERE a.industry = b.industry
+	AND a.period = b.period;
+
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error in updating emp and sal1',
+                  h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+
+     MESSAGE 'Creating non responders count 3';
+	ret_val = CALLPROC sas_fp_drop_table(h_table = 'temp_table_sas');
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        CREATE TABLE temp_table_sas 
+	AS SELECT a.contributor_industry as industry,
+		  a.period,
+	          SUM(b.register_emp) as empnr3
+	FROM cqpv a, 
+	     contributor_period b
+        WHERE a.acell IN ('N')
+	AND a.contributor_reference = b.contributor_reference
+	AND a.period = b.period
+	AND a.quest_order = 10
+	AND a.period BETWEEN :g_period[:g_periods].period
+		       AND :g_period[1].period
+	AND a.contributor_industry IN
+	            (SELECT industry FROM :g_results_industry)
+	AND b.register_emp BETWEEN 20 and 49
+	GROUP BY a.contributor_industry,
+		 a.period;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val > 1
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating data 10' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+	UPDATE :h_copy_table1 a
+	FROM temp_table_sas b
+	SET empnr3 = b.empnr3
+        WHERE a.industry = b.industry
+	AND a.period = b.period;
+
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error in updating emp and sal1',
+                  h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+
+     MESSAGE 'Creating non responders count 4';
+	ret_val = CALLPROC sas_fp_drop_table(h_table = 'temp_table_sas');
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        CREATE TABLE temp_table_sas 
+	AS SELECT a.contributor_industry as industry,
+		  a.period,
+	          SUM(b.register_emp) as empnr4
+	FROM cqpv a, 
+	     contributor_period b
+        WHERE a.acell IN ('N')
+	AND a.contributor_reference = b.contributor_reference
+	AND a.period = b.period
+	AND a.quest_order = 10
+	AND a.period BETWEEN :g_period[:g_periods].period
+		       AND :g_period[1].period
+	AND a.contributor_industry IN
+	            (SELECT industry FROM :g_results_industry)
+	AND b.register_emp BETWEEN 50 and 99
+	GROUP BY a.contributor_industry,
+		 a.period;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val > 1
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating data 11' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+	UPDATE :h_copy_table1 a
+	FROM temp_table_sas b
+	SET empnr4 = b.empnr4
+        WHERE a.industry = b.industry
+	AND a.period = b.period;
+
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error in updating emp and sal1',
+                  h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+     MESSAGE 'Creating non responders count 5';
+
+	ret_val = CALLPROC sas_fp_drop_table(h_table = 'temp_table_sas');
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        CREATE TABLE temp_table_sas 
+	AS SELECT a.contributor_industry as industry,
+		  a.period,
+	          SUM(b.register_emp) as empnr5
+	FROM cqpv a, 
+	     contributor_period b
+        WHERE a.acell IN ('N')
+	AND a.contributor_reference = b.contributor_reference
+	AND a.period = b.period
+	AND a.quest_order = 10
+	AND a.period BETWEEN :g_period[:g_periods].period
+		       AND :g_period[1].period
+	AND a.contributor_industry IN
+	            (SELECT industry FROM :g_results_industry)
+	AND b.register_emp >  99
+	GROUP BY a.contributor_industry,
+		 a.period;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val > 1
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating data 12' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+	UPDATE :h_copy_table1 a
+	FROM temp_table_sas b
+	SET empnr5 = b.empnr5
+        WHERE a.industry = b.industry
+	AND a.period = b.period;
+
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error in updating emp and sal1',
+                  h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+    /*------------------------------------------------------------------
+     Loading selected counts 
+    ------------------------------------------------------------------*/
+
+
+     MESSAGE 'Creating selected count ';
+
+
+	ret_val = CALLPROC sas_fp_drop_table(h_table = 'temp_table_sas');
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+
+        CREATE TABLE temp_table_sas 
+	AS SELECT contributor_industry as industry,
+		  period,
+	          SUM(register_emp) as empns1
+	FROM contributor_period 
+        WHERE period BETWEEN :g_period[:g_periods].period
+		       AND :g_period[1].period
+	AND contributor_industry IN
+	            (SELECT industry FROM :g_results_industry)
+	AND register_emp BETWEEN 0 and 9
+	GROUP BY contributor_industry,
+		 period;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val > 1
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating data 13' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+	UPDATE :h_copy_table1 a
+	FROM temp_table_sas b
+	SET empns1 = b.empns1
+        WHERE a.industry = b.industry
+	AND a.period = b.period;
+
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error in updating emp and sal1',
+                  h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+     MESSAGE 'Creating selected count 2';
+
+	ret_val = CALLPROC sas_fp_drop_table(h_table = 'temp_table_sas');
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+
+        CREATE TABLE temp_table_sas 
+	AS SELECT contributor_industry as industry,
+		  period,
+	          SUM(register_emp) as empns2
+	FROM contributor_period 
+        WHERE period BETWEEN :g_period[:g_periods].period
+		       AND :g_period[1].period
+	AND contributor_industry IN
+	            (SELECT industry FROM :g_results_industry)
+	AND register_emp BETWEEN 10 and 19
+	GROUP BY contributor_industry,
+		 period;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val > 1
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating data 14' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+	UPDATE :h_copy_table1 a
+	FROM temp_table_sas b
+	SET empns2 = b.empns2
+        WHERE a.industry = b.industry
+	AND a.period = b.period;
+
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error in updating emp and sal1',
+                  h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+     MESSAGE 'Creating selected count 3';
+
+	ret_val = CALLPROC sas_fp_drop_table(h_table = 'temp_table_sas');
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        CREATE TABLE temp_table_sas 
+	AS SELECT contributor_industry as industry,
+		  period,
+	          SUM(register_emp) as empns3
+	FROM  contributor_period 
+        WHERE period BETWEEN :g_period[:g_periods].period
+		       AND :g_period[1].period
+	AND contributor_industry IN
+	            (SELECT industry FROM :g_results_industry)
+	AND register_emp BETWEEN 20 and 49
+	GROUP BY contributor_industry,
+		 period;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val > 1
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating data 15' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+	UPDATE :h_copy_table1 a
+	FROM temp_table_sas b
+	SET empns3 = b.empns3
+        WHERE a.industry = b.industry
+	AND a.period = b.period;
+
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error in updating emp and sal1',
+                  h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+
+     MESSAGE 'Creating selected count 4';
+	ret_val = CALLPROC sas_fp_drop_table(h_table = 'temp_table_sas');
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        CREATE TABLE temp_table_sas 
+	AS SELECT contributor_industry as industry,
+		  period,
+	          SUM(register_emp) as empns4
+	FROM  contributor_period 
+	WHERE period BETWEEN :g_period[:g_periods].period
+		       AND :g_period[1].period
+	AND contributor_industry IN
+	            (SELECT industry FROM :g_results_industry)
+	AND register_emp BETWEEN 50 and 99
+	GROUP BY contributor_industry,
+		 period;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val > 1
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating data 16' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+	UPDATE :h_copy_table1 a
+	FROM temp_table_sas b
+	SET empns4 = b.empns4
+        WHERE a.industry = b.industry
+	AND a.period = b.period;
+
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error in updating emp and sal1',
+                  h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+     MESSAGE 'Creating selected count 5';
+
+	ret_val = CALLPROC sas_fp_drop_table(h_table = 'temp_table_sas');
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        CREATE TABLE temp_table_sas 
+	AS SELECT contributor_industry as industry,
+		  period,
+	          SUM(register_emp) as empns5
+	FROM  contributor_period 
+	WHERE period BETWEEN :g_period[:g_periods].period
+		       AND :g_period[1].period
+	AND contributor_industry IN
+	            (SELECT industry FROM :g_results_industry)
+	AND register_emp >  99
+	GROUP BY contributor_industry,
+		 period;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val > 1
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating data 17' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+	UPDATE :h_copy_table1 a
+	FROM temp_table_sas b
+	SET empns5 = b.empns5
+        WHERE a.industry = b.industry
+	AND a.period = b.period;
+
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error in updating emp and sal1',
+                  h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+    MESSAGE 'Copying SAS table to delimited file';
+    
+    COPY table :h_copy_table1
+    (
+	  industry = c(0)'^',
+	  period                = c(0)'^' ,
+	  salcnt1              = c(0)'^' ,
+	  salcnt2              = c(0)'^' ,
+	  salcnt3              = c(0)'^' ,
+	  salcnt4              = c(0)'^' ,
+	  salcnt5              = c(0)'^' ,
+	  salemp1              = c(0)'^' ,
+	  salemp2              = c(0)'^' ,
+	  salemp3              = c(0)'^' ,
+	  salemp4              = c(0)'^' ,
+	  salemp5              = c(0)'^' ,
+	  empnr1              = c(0)'^' ,
+	  empnr2              = c(0)'^' ,
+	  empnr3              = c(0)'^' ,
+	  empnr4              = c(0)'^' ,
+	  empnr5              = c(0)'^' ,
+	  empns1              = c(0)'^' ,
+	  empns2              = c(0)'^' ,
+	  empns3              = c(0)'^' ,
+	  empns4              = c(0)'^' ,
+	  empns5              = c0nl) 
+    INTO :g_path_name2 + '/totdata';
+
+
+    ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+    IF ret_val <> 0
+    THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error updating lag data  ' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+}

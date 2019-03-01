@@ -1,0 +1,646 @@
+INITIALIZE () =
+
+DECLARE h_retries_allowed  = INTEGER1 NOT NULL,
+        h_retries          = INTEGER1 NOT NULL,
+        h_retry_or_not     = CHAR(5) NOT NULL,
+        h_frpr_name        = VARCHAR(24) NOT NULL,
+        h_field            = VARCHAR(24) NOT NULL,
+        h_job_number       = INTEGER4 NOT NULL,
+        int_industry       = INTEGER4 NOT NULL,
+        h_job_type         = VARCHAR(20) NOT NULL,
+        h_code             = VARCHAR(1200) NOT NULL,
+        h_job_inserted     = CHAR(1) NOT NULL,
+        h_yesno            = CHAR(1) NOT NULL,
+        ret_val            = INTEGER1 NOT NULL,
+        lp_setup_fields    = PROCEDURE RETURNING NONE,
+        lp_load_industries = PROCEDURE RETURNING INTEGER
+
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msag_fr_add_asi_results';
+    msa_date = 'now';
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+    results_span = 3;
+    start_proc = 1;
+
+    CALLPROC lp_setup_fields (h_update = 1);
+
+    h_job_type = 'asi results';
+
+    h_code = '$IMAGES/msacresapp' +
+             ' -d' + :g_database + ' -a 14 >> ' + :g_error_log +
+             ' 2>> ' + :g_error_log;
+
+    ret_val = CALLPROC msag_fp_get_jobno (
+               h_job_number = BYREF(:h_job_number));
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC msag_fp_check_job (
+              h_job_type = :h_job_type);
+
+    IF ret_val = 0
+    THEN
+        /*--------------------------------------------------------------
+          Results is NOT due to run today - empty the table
+        --------------------------------------------------------------*/
+
+        h_job_inserted = 'n';
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            DELETE FROM results_industry_14;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in emptying results_industry_14'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ENDIF;
+
+        RESUME FIELD period;
+    ELSE
+        /*--------------------------------------------------------------
+          Results IS due to run today - load up already saved data
+        --------------------------------------------------------------*/
+
+        h_job_inserted = 'y';
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            SELECT period,
+                   results_span,
+                   start_proc,
+                   end_proc,
+                   transfer,
+                   store
+            FROM   results_industry_14;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in loading data from results_industry_14'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No rows loaded from results_industry_14'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+          Load up industries
+        --------------------------------------------------------------*/
+
+        ret_val = CALLPROC lp_load_industries ();
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+        CALLPROC lp_setup_fields (h_update = 0);
+
+        RESUME FIELD industry;
+
+    ENDIF;
+}
+
+FIELD period =
+{
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT period
+        FROM   inquiry_period
+        WHERE  period = :period
+        AND    inquiry = 14;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This period is not a valid Annual Period'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    RESUME FIELD end_proc;
+}
+
+FIELD end_proc =
+{
+    IF end_proc <> 6 AND :end_proc <> 11
+    THEN
+        MESSAGE 'End Process must be 6' +
+                ' (Provisional Results) or 11 (Final Results)'
+        WITH STYLE = POPUP;
+        RESUME FIELD end_proc;
+    ENDIF;
+
+    transfer = 'N';
+    RESUME FIELD transfer;
+}
+
+FIELD transfer =
+{
+    IF :transfer <> 'N' AND :transfer <> 'Y'
+    THEN
+        MESSAGE 'Transfer may only be Y or N'
+        WITH STYLE = POPUP;
+        RESUME FIELD transfer;
+    ENDIF;
+
+    IF :transfer <> 'N' AND end_proc <> 11
+    THEN
+        MESSAGE 'Sorry, but you can only transfer to harrydb when' +
+                ' you run Process 11'
+        WITH STYLE = POPUP;
+        RESUME FIELD transfer;
+    ENDIF;
+
+    IF end_proc = 6
+    THEN
+        store = 'N';
+    ELSE
+        store = 'Y';
+    ENDIF;
+
+    RESUME FIELD store;
+}
+
+FIELD store =
+{
+    IF :store <> 'N' AND :store <> 'Y'
+    THEN
+        MESSAGE 'Store may only be Y or N'
+        WITH STYLE = POPUP;
+        RESUME FIELD store;
+    ENDIF;
+
+    RESUME FIELD industry;
+}
+
+FIELD industry =
+{
+    MESSAGE 'Checking Industry . . . ';
+
+    IF :industry <> 'ALL'
+    AND :industry NOT LIKE '\[0-9\]\[0-9\]\[0-9\]\[0-9\]\[0-9\]' ESCAPE '\'
+    THEN
+        MESSAGE 'Industry should be ALL or a 5 digit industry'
+        WITH STYLE = POPUP;
+        RESUME FIELD industry;
+    ENDIF;
+
+    IF :industry = 'ALL'
+    THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            INSERT INTO results_industry_14 (
+                        inquiry,
+                        industry,
+                        period,
+                        results_span,
+                        start_proc,
+                        end_proc,
+                        transfer,
+                        store)
+            SELECT      inquiry,
+                        industry,
+                        :period,
+                        :results_span,
+                        :start_proc,
+                        :end_proc,
+                        :transfer,
+                        :store
+            FROM        industry
+            WHERE       inquiry = 14
+            AND         industry NOT IN (
+                        SELECT industry FROM results_industry_14);
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in loading all industries'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ENDIF;
+
+    ELSE
+        /*--------------------------------------------------------------
+          Add industry (if it's not already on the table)
+        --------------------------------------------------------------*/
+
+        int_industry = INT4(:industry);
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            INSERT INTO results_industry_14 (
+                        inquiry,
+                        industry,
+                        period,
+                        results_span,
+                        start_proc,
+                        end_proc,
+                        transfer,
+                        store)
+            SELECT      inquiry,
+                        industry,
+                        :period,
+                        :results_span,
+                        :start_proc,
+                        :end_proc,
+                        :transfer,
+                        :store
+            FROM        industry
+            WHERE       inquiry = 14
+            AND         industry = :int_industry
+            AND         industry NOT IN (
+                        SELECT industry
+                        FROM   results_industry_14);
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in loading single industry'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'This Industry is either already scheduled to' +
+                    ' run or is not valid for this Inquiry'
+            WITH STYLE = POPUP;
+            RESUME FIELD industry;
+        ENDIF;
+
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_industries ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    IF :count_industries > 0
+    THEN
+        CALLPROC lp_setup_fields (h_update = 0);
+    ENDIF;
+
+    RESUME FIELD industry;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Delete', KEY FRSKEY4 =
+{
+    IF :count_industries = 0
+    THEN
+        MESSAGE 'No Industries have been set up yet to delete'
+        WITH STYLE = POPUP;
+        RESUME;
+    ELSEIF :count_industries = 1
+    THEN
+        MESSAGE 'There is only one Industry scheduled to run.' +
+                ' If you want to delete this Industry' +
+                ' (and with it, the entire Results run), please do it' +
+                ' via the DELETE JOBS option within the' +
+                ' VIEW JOBS DUE TO RUN screen.'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS FORM (h_field = FIELD);
+    IF h_field <> 'tf'
+    THEN
+        MESSAGE 'Please highlight the required Industry'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_yesno = '';
+    WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+    DO
+        h_yesno = PROMPT 'Really delete the Results run for Industry ' +
+                         VARCHAR(:tf.industry) + '? Type Y/N and' +
+                         ' press <return>'
+                  WITH STYLE = POPUP;
+        h_yesno = LOWERCASE(h_yesno);
+    ENDWHILE;
+
+    IF h_yesno = 'n'
+    THEN
+        RESUME;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        DELETE FROM results_industry_14
+        WHERE       industry = :tf.industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in deleting from results_industry_14'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows deleted from results_industry_14'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_industries ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                 L O C A L    P R O C E D U R E S
+
+ Procedure to allow fields to be completed if no data has been input,
+ and to prevent them from being filled in if data has been input.
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_setup_fields (
+
+          h_update = INTEGER1 NOT NULL) =
+
+DECLARE h_off = INTEGER1 NOT NULL,
+        h_on  = INTEGER1 NOT NULL
+
+{
+    IF :h_update = 1
+    THEN
+        h_off = 0;
+        h_on = 1;
+    ELSE
+        h_off = 1;
+        h_on = 0;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(period)       = :h_off,
+                        DISPLAYONLY(end_proc)     = :h_off,
+                        DISPLAYONLY(transfer)     = :h_off,
+                        DISPLAYONLY(store)        = :h_off,
+                        REVERSE(period)           = :h_off,
+                        REVERSE(end_proc)         = :h_off,
+                        REVERSE(transfer)         = :h_off,
+                        REVERSE(store)            = :h_off,
+                        UNDERLINE(period)         = :h_on,
+                        UNDERLINE(end_proc)       = :h_on,
+                        UNDERLINE(transfer)       = :h_on,
+                        UNDERLINE(store)          = :h_on);
+
+    RETURN;
+}
+
+/*----------------------------------------------------------------------
+  Loads industries on results_industry_14 into screen table
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_industries () =
+{
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf = SELECT   industry
+             FROM     results_industry_14
+             ORDER BY industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:count_industries),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading industries from results_industry_14'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No industries loaded from results_industry_14'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    IF :count_industries > 0 AND :h_job_inserted = 'n'
+    THEN
+
+        /*----------------------------------------------------------
+        Add job to batch_jobs table
+        ----------------------------------------------------------*/
+
+        ret_val = CALLPROC msag_fp_insert_job (
+                  h_job_number = :h_job_number,
+                  h_job_type   = :h_job_type,
+                  h_code       = :h_code);
+
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+        h_job_inserted = 'y';
+
+    ENDIF;
+
+    RETURN 0;
+
+}

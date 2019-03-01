@@ -1,0 +1,450 @@
+/*-s--------------------------------------------------------------------
+Create new question
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msaee_fp_cr_question (
+
+        inquiry           = INTEGER1 NOT NULL,
+        question_industry = INTEGER4 NOT NULL,
+        question          = INTEGER4 NOT NULL,
+        uk_only           = CHAR(1) NOT NULL,
+        brief_text        = CHAR(40) NOT NULL,
+        owner_question    = INTEGER4 NOT NULL,
+        h_quest_order     = INTEGER1 NOT NULL,
+        period            = INTEGER4 NOT NULL,
+        volumes           = INTEGER1 NOT NULL,
+        h_rep_quest       = CHAR(1) NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        text_question     = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        h_yesno           = CHAR(1) NOT NULL,
+        h_lag             = INTEGER1 NOT NULL,
+        line1             = CHAR(57) NOT NULL,
+        line2             = CHAR(57) NOT NULL,
+        line3             = CHAR(57) NOT NULL,
+        line4             = CHAR(57) NOT NULL,
+        line5             = CHAR(57) NOT NULL,
+        line6             = CHAR(57) NOT NULL,
+        line7             = CHAR(57) NOT NULL,
+        line8             = CHAR(57) NOT NULL,
+        line9             = CHAR(57) NOT NULL,
+        line10            = CHAR(57) NOT NULL,
+        h_text_quest      = INTEGER4 NOT NULL,
+        h_line_count      = INTEGER1 NOT NULL
+{
+    h_frpr_name = 'msaaa_fp_cr_question';
+    h_retries_allowed = 3;
+
+    IF h_rep_quest = 'Y'
+    THEN
+        ret_val = CALLFRAME msaee_fr_cr_quest_hist (
+                  question_industry  = :question_industry,
+                  replacing_question = :question,
+                  owner_question     = :owner_question,
+                  uk_only            = :uk_only,
+                  volumes            = :volumes,
+                  end_year           = :period - 100,
+                  period             = :period);
+
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+    ENDIF;
+
+    IF h_rep_quest = 'N' AND uk_only = 'Y'
+    THEN
+        ret_val = CALLFRAME msaee_fr_cr_mult_cons (
+                  question_industry  = :question_industry,
+                  multi_question     = :question,
+                  owner_question     = :owner_question,
+                  volumes            = :volumes,
+                  period             = :period);
+
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+    ENDIF;
+
+    IF h_rep_quest = 'Y'
+    THEN
+
+        h_yesno = '';
+        WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+        DO
+            h_yesno = PROMPT 'As a question has been replaced, do you' +
+                             ' wish to use the text from a replaced' +
+                             ' question for the new question?' +
+                             ' Type Y/N and press <return>'
+                      WITH STYLE = POPUP;
+            h_yesno = LOWERCASE(:h_yesno);
+        ENDWHILE;
+
+        IF h_yesno = 'y'
+        THEN
+
+            ret_val = CALLFRAME msaee_fr_cr_rep_quest (
+                      question           = :question,
+                      period             = :period,
+                      owner_question     = :owner_question,
+                      uk_only            = :uk_only,
+                      text_from_question = BYREF(:text_question));
+
+            IF ret_val > 1
+            THEN
+                RETURN 9;
+            ELSEIF ret_val = 1
+            THEN
+                h_rep_quest = 'N';
+            ENDIF;
+
+        ELSE
+            h_rep_quest = 'N';
+        ENDIF;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    If the text from a replaced question is to be used, load it
+    ----------------------------------------------------------------e-*/
+
+    IF h_rep_quest = 'Y'
+    THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            SELECT line_count AS h_line_count,
+                   text_line1 AS line1,
+                   text_line2 AS line2,
+                   text_line3 AS line3,
+                   text_line4 AS line4,
+                   text_line5 AS line5,
+                   text_line6 AS line6,
+                   text_line7 AS line7,
+                   text_line8 AS line8,
+                   text_line9 AS line9,
+                   text_line10 AS line10
+            FROM   question_library
+            WHERE  question = :text_question
+            AND    period = :period;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing question_library'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No replaced question text found on question_library'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+    ELSE
+        /*-s------------------------------------------------------------
+        Get the text to update the question with
+        ------------------------------------------------------------e-*/
+
+        ret_val = CALLFRAME msaee_fr_cr_quest_text (
+                  question     = :question,
+                  h_line_count = BYREF(h_line_count),
+                  line1        = BYREF(:line1),
+                  line2        = BYREF(:line2),
+                  line3        = BYREF(:line3),
+                  line4        = BYREF(:line4),
+                  line5        = BYREF(:line5),
+                  line6        = BYREF(:line6),
+                  line7        = BYREF(:line7),
+                  line8        = BYREF(:line8),
+                  line9        = BYREF(:line9),
+                  line10       = BYREF(:line10),
+                  period       = :period);
+
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+    ENDIF;
+
+    IF uk_only = 'Y'
+    THEN
+        h_lag = 2;
+    ELSE
+        h_lag = 0;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Insert the new record into the question_library
+    ----------------------------------------------------------------e-*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        INSERT INTO question_library (
+                    question,
+                    period,
+                    desc_quest_code,
+                    inquiry,
+                    question_industry,
+                    quest_order,
+                    cred_q,
+                    cred_k1,
+                    cred_k2,
+                    cred_t1,
+                    cred_t2,
+                    gate,
+                    lag,
+                    start_period,
+                    end_period,
+                    brief_text,
+                    line_count,
+                    unit_1,
+                    text_line1,
+                    text_line2,
+                    text_line3,
+                    text_line4,
+                    text_line5,
+                    text_line6,
+                    text_line7,
+                    text_line8,
+                    text_line9,
+                    text_line10,
+                    diff_pub)
+        VALUES (    :question,
+                    :period,
+                    0,
+                    :inquiry,
+                    :question_industry,
+                    :h_quest_order,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    :h_lag,
+                    :period,
+                    0,
+                    :brief_text,
+                    :h_line_count,
+                    '£000',
+                    :line1,
+                    :line2,
+                    :line3,
+                    :line4,
+                    :line5,
+                    :line6,
+                    :line7,
+                    :line8,
+                    :line9,
+                    :line10,
+                    '');
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in inserting into question_library'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows inserted into question_library'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Create default credibility gates for the new question
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msaee_fp_cr_credibility (
+              question          = :question,
+              inquiry           = :inquiry,
+              question_industry = :question_industry,
+              quest_order       = :h_quest_order);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Create question on question_period / question_sph_gross
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msaee_fp_insert_qp (
+              question          = :question,
+              inquiry           = :inquiry,
+              question_industry = :question_industry,
+              period            = :period);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Owner Question
+    ------------------------------------------------------------------*/
+
+    IF uk_only = 'Y'
+    THEN
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            UPDATE question_library
+            SET    lag = 1
+            WHERE  question = :owner_question
+            AND    period = :period;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in updating lag on question_library'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No rows updated on question_library for owner '
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+        /*-s------------------------------------------------------------
+        Insert the link into owner_question if not a multi creation
+        ------------------------------------------------------------e-*/
+        IF uk_only = 'Y' AND :question <> :owner_question
+	THEN
+            h_retry_or_not      = 'RETRY';
+            h_retries           = 0;
+
+            WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+            DO
+
+                h_retries = :h_retries + 1;
+
+                INSERT INTO owner_question (
+                            owner_question,
+                            question,
+                            period)
+                VALUES (    :owner_question,
+                            :question,
+                            :period);
+
+                ret_val = CALLPROC check_inq_ing (
+                          h_num_row_ck      = 1,
+                          h_commit          = 'Y',
+                          h_rollback        = 'N',
+                          h_retries         = :h_retries,
+                          h_retries_allowed = :h_retries_allowed,
+                          h_frpr_name       = :h_frpr_name);
+
+                IF ret_val <> 7
+                THEN
+                    h_retry_or_not = '';
+                ENDIF;
+
+            ENDWHILE;
+
+            IF ret_val = 7
+            THEN
+                RETURN 7;
+
+            ELSEIF ret_val = 9
+            THEN
+                MESSAGE 'System error inserting into owner_question'
+                WITH STYLE = POPUP;
+                RETURN 9;
+
+            ELSEIF ret_val = 1
+            THEN
+                MESSAGE 'No rows inserted into owner_question'
+                WITH STYLE = POPUP;
+                RETURN 9;
+            ENDIF;
+        ENDIF;
+    ENDIF;
+
+    RETURN 0;
+}

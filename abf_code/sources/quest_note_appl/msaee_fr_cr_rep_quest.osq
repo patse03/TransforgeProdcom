@@ -1,0 +1,163 @@
+INITIALIZE (
+
+        question           = INTEGER4 NOT NULL,
+        period             = INTEGER4 NOT NULL,
+        owner_question     = INTEGER4 NOT NULL,
+        uk_only            = CHAR(1) NOT NULL,
+        text_from_question = INTEGER4 NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_message         = VARCHAR(1000) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+
+{
+    msa_date = 'now';
+    h_frpr_name = 'msaee_fr_cr_rep_quest';
+    h_retries_allowed = 3;
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+    MESSAGE 'Selecting Questions . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+    
+        IF :uk_only = 'Y'
+        THEN
+    
+            tf =
+    
+            SELECT :owner_question AS question;
+
+        ELSE
+
+            tf =
+    
+            SELECT old_question AS question
+            FROM   question_history
+            WHERE  new_question = :question
+            AND    period       = :period
+            AND    MOD(:question,10) = 1;
+        ENDIF;
+    
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+    
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question_history'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No questions found on question_history'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'ViewText' =
+{
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT text_line1 + X'0D' +
+               text_line2 + X'0D' +
+               text_line3 + X'0D' +
+               text_line4 + X'0D' +
+               text_line5 + X'0D' +
+               text_line6 + X'0D' +
+               text_line7 + X'0D' +
+               text_line8 + X'0D' +
+               text_line9 + X'0D' +
+               text_line10 AS h_message
+        FROM   question_library
+        WHERE  question = :tf.question
+        AND    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question_library'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows loaded from question_library'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    h_message = 'TEXT FOR QUESTION ' + VARCHAR(:tf.question) + X'0D0D' +
+                :h_message;
+
+    MESSAGE :h_message WITH STYLE = POPUP;
+}
+
+'Select', KEY FRSKEY4 =
+{
+    text_from_question = :tf.question;
+    RETURN 0;
+}
+
+'EndWithoutSelecting', KEY FRSKEY6 =
+{
+    RETURN 1;
+}

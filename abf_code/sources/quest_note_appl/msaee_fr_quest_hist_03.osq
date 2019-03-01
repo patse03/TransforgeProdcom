@@ -1,0 +1,268 @@
+INITIALIZE (
+
+        date              = DATE     NOT NULL,
+        question          = INTEGER4 NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_yesno           = CHAR(1) NOT NULL,
+        h_period          = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msaee_fr_quest_hist_03';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT MAX(period) AS h_period
+        FROM   inquiry_period
+        WHERE  inquiry = 14;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows found on inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     If the date of a valid record has been passed through, this is an
+     update and not an insert, so load up the data to be updated
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT period,
+               reason,
+               text
+        FROM   question_changes
+        WHERE  question = :question
+        AND    date = :date;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading from question_changes'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+}
+
+FIELD period =
+{
+    IF period <> :h_period - 100
+    AND period <> :h_period
+    AND period <> :h_period + 100
+    THEN
+        MESSAGE 'The only Periods for which changes can be made are ' +
+                VARCHAR(:h_period - 100) + ', ' + VARCHAR(:h_period) +
+                ' and ' + VARCHAR(:h_period + 100)
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    RESUME FIELD reason;
+}
+
+FIELD reason =
+{
+    IF :reason <> 'E' AND :reason <> 'D' AND :reason <> 'O'
+    AND :reason <> 'T' AND :reason <> 'R'
+    THEN
+        MESSAGE 'The reason must be one of O, D, E, T and R'
+        WITH STYLE = POPUP;
+        RESUME FIELD reason;
+    ENDIF;
+
+    RESUME FIELD text;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Save', KEY FRSKEY4 =
+{
+
+    /*------------------------------------------------------------------
+     Re-test the screen fields
+    ------------------------------------------------------------------*/
+
+    IF period <> :h_period - 100
+    AND period <> :h_period
+    AND period <> :h_period + 100
+    THEN
+        MESSAGE 'The only Periods for which changes can be made are ' +
+                VARCHAR(:h_period - 100) + ', ' + VARCHAR(:h_period) +
+                ' and ' + VARCHAR(:h_period + 100)
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    IF :reason <> 'O' AND :reason <> 'D' AND :reason <> 'E'
+    AND :reason <> 'T' AND :reason <> 'R'
+    THEN
+        MESSAGE 'The Originator must be one of O, D, E, T and R'
+        WITH STYLE = POPUP;
+        RESUME FIELD reason;
+    ENDIF;
+
+    IF text = ''
+    THEN
+        MESSAGE 'No text has been entered'
+        WITH STYLE = POPUP;
+        RESUME FIELD text;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     If it's a valid date, it's an update. Otherwise, it's an insert
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        IF :date = date('01/01/1900')
+        THEN
+            INSERT INTO question_changes (
+                        question,
+                        date,
+                        period,
+                        reason,
+                        text)
+            VALUES (    :question,
+                        'now',
+                        :period,
+                        :reason,
+                        :text);
+        ELSE
+            UPDATE question_changes
+            SET    date     = 'now',
+                   period   = :period,
+                   reason   = :reason,
+                   text     = :text
+            WHERE  question = :question
+            AND    date     = :date;
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in saving onto question_changes'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows saved onto question_changes'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    MESSAGE 'Details saved OK' WITH STYLE = POPUP;
+
+    RETURN 0;
+}
+
+'End', KEY FRSKEY6 =
+{
+    h_yesno = '';
+    WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+    DO
+        h_yesno = PROMPT 'Do you really wish to end without saving' +
+                         ' any changes? Type Y/N and press <return>'
+                  WITH STYLE = POPUP;
+        h_yesno = LOWERCASE(:h_yesno);
+    ENDWHILE;
+
+    IF :h_yesno <> 'y'
+    THEN
+        RESUME;
+    ENDIF;
+
+    RETURN 0;
+}

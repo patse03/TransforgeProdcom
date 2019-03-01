@@ -1,0 +1,79 @@
+/*------------------------------------------------------------------
+                      msag_fp_start_jobs
+
+  This is designed to start the batch jobs on the scheduler. It
+  identifies all jobs that are due to start on the day, starts
+  them & notes start/end time.
+------------------------------------------------------------------*/
+
+PROCEDURE msag_fp_start_jobs () =
+
+DECLARE h_frpr_name       = VARCHAR(24) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        h_code            = VARCHAR(1200) NOT NULL,
+        h_type            = VARCHAR(20) NOT NULL,
+        h_jobno           = INTEGER4 NOT NULL
+
+{
+    h_frpr_name = 'msag_fp_start_jobs';
+
+    /*--------------------------------------------------------------
+     Start any jobs that were put on today or yesterday 
+     (if now past midnight)
+    --------------------------------------------------------------*/
+
+    SELECT   job_no   AS h_jobno,
+             code     AS h_code,
+             job_type AS h_type
+    FROM     batch_jobs
+    WHERE    (input_date = DATE('today') - DATE('1 day')
+             OR input_date = DATE('today'))
+    AND      start_time = ''
+    ORDER BY h_type
+    {
+        MESSAGE 'Running job ' + VARCHAR(:h_jobno) + ' (' +
+                 :h_type + ') . . .';
+
+        /*--------------------------------------------------------------
+         Job starts
+        --------------------------------------------------------------*/
+
+        UPDATE    batch_jobs
+        SET       start_time  = 'now'
+        WHERE     job_no      = :h_jobno;
+
+        ret_val := CALLPROC batch_check_inq_ing(
+                   h_num_row_ck      = 1,
+                   h_commit          = 'Y',
+                   h_rollback        = 'N',
+                   h_frpr_name       = :h_frpr_name);
+
+        /*--------------------------------------------------------------
+         Job runs
+        --------------------------------------------------------------*/
+
+        ret_val = CALLPROC msa_cp_callsys ( :h_code );
+
+        IF ret_val <> 0
+        THEN
+
+            UPDATE    batch_jobs
+            SET       end_time    = 'now',
+                      result      = 'FAIL'
+            WHERE     job_no      = :h_jobno;
+        ELSE  
+            UPDATE    batch_jobs
+            SET       end_time    = 'now',
+                      result      = 'OK'
+            WHERE     job_no      = :h_jobno;
+        ENDIF;
+
+        ret_val := CALLPROC batch_check_inq_ing(
+                   h_num_row_ck      = 1,
+                   h_commit          = 'Y',
+                   h_rollback        = 'N',
+                   h_frpr_name       = :h_frpr_name);
+    };
+
+    RETURN 0;
+}

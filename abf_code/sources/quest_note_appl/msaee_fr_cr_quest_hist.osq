@@ -1,0 +1,872 @@
+INITIALIZE (
+
+        volumes             = INTEGER1 NOT NULL,
+        uk_only             = CHAR(1) NOT NULL,
+        owner_question      = INTEGER4 NOT NULL,
+        question_industry   = INTEGER4 NOT NULL,
+        period              = INTEGER4 NOT NULL) =
+
+DECLARE h_retries_allowed   = INTEGER1 NOT NULL,
+        h_retries           = INTEGER1 NOT NULL,
+        h_retry_or_not      = CHAR(5) NOT NULL,
+        h_frpr_name         = VARCHAR(24) NOT NULL,
+        h_table             = VARCHAR(24) NOT NULL,
+        ret_val             = INTEGER1 NOT NULL,
+        h_question_industry = INTEGER4 NOT NULL,
+        h_field_name        = VARCHAR(24) NOT NULL,
+        h_yesno             = CHAR(1) NOT NULL,
+        h_rows              = INTEGER2 NOT NULL,
+        h_display           = INTEGER1 NOT NULL,
+        h_questions         = INTEGER1 NOT NULL,
+        lp_load_table       = PROCEDURE RETURNING INTEGER
+
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msaee_fr_cr_quest_hist';
+    h_table = 'temp_cr_rep_quest';
+    form_message = '';
+
+    MESSAGE 'Checking Data . . .';
+
+    SET_FORMS FIELD '' (MODE(tf) = 'READ',
+                        INVISIBLE(tf) = 1,
+                        REVERSE(rep_type) = 0,
+                        DISPLAYONLY(rep_type) = 0,
+                        UNDERLINE(rep_type) = 1,
+                        REVERSE(replaced_question) = 0,
+                        DISPLAYONLY(replaced_question) = 0,
+                        UNDERLINE(replaced_question) = 1);
+
+    ret_val = CALLPROC msa_fp_drop_table (h_table = :h_table);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table (question INTEGER4 NOT NULL);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     If it's a member question, set the rep_type to 3 and make the
+     replaced question the owner question. Load the table with the
+     replacing member questions too.
+    ------------------------------------------------------------------*/
+
+    IF :uk_only = 'Y'
+    THEN
+        SET_FORMS FIELD '' (INVISIBLE(tf) = 0);
+        rep_type = 3;
+        form_message = 'Replacing Questions';
+        replaced_question = :owner_question;
+        SET_FORMS FIELD '' (REVERSE(rep_type) = 1,
+                            DISPLAYONLY(rep_type) = 1,
+                            UNDERLINE(rep_type) = 0,
+                            REVERSE(replaced_question) = 1,
+                            DISPLAYONLY(replaced_question) = 1,
+                            UNDERLINE(replaced_question) = 0);
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            tf =
+
+            SELECT   new_question AS question
+            FROM     question_history
+            WHERE    old_question = :replaced_question
+            AND      rep_type = 3
+            AND      period = :period
+            UNION
+            SELECT   :replacing_question AS question
+            ORDER BY question;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing question_history'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ENDIF;
+
+        /*--------------------------------------------------------------
+         Load replaced question into :h_table
+        --------------------------------------------------------------*/
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+    
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+    
+            h_retries = :h_retries + 1;
+    
+            INSERT INTO :h_table
+            SELECT      question
+            FROM        question_library
+            WHERE       question = :replaced_question
+            AND         period = :period;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+    
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+    
+        ENDWHILE;
+    
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+    
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing ' + :h_table
+            WITH STYLE = POPUP;
+            RETURN 9;
+    
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No rows insered into ' + :h_table
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+    ENDIF;
+	
+}
+
+FIELD rep_type =
+{
+    IF rep_type < 1 OR rep_type > 3
+    THEN
+        MESSAGE 'Replacement_Type must be 1, 2 or 3'
+        WITH STYLE = POPUP;
+        RESUME FIELD rep_type;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    If rep_type = 2 (replaces more than 1 question)
+    or rep_type = 3 (more than 1 question replaces 1 question),
+    show a table that will hold these questions
+    ------------------------------------------------------------------*/
+
+    IF rep_type = 2 OR rep_type = 3
+    THEN
+        SET_FORMS FIELD '' (INVISIBLE(tf) = 0);
+        IF rep_type = 2
+        THEN
+            form_message = 'Replaced Questions';
+        ELSE
+            form_message = 'Replacing Questions';
+        ENDIF;
+    ELSE
+        SET_FORMS FIELD '' (INVISIBLE(tf) = 1);
+    ENDIF;
+
+    SET_FORMS FIELD '' (REVERSE(rep_type) = 1,
+                        DISPLAYONLY(rep_type) = 1,
+                        UNDERLINE(rep_type) = 0);
+
+    RESUME FIELD replaced_question;
+}
+
+FIELD replaced_question =
+{
+    IF ASCII(:replaced_question) NOT LIKE '%1'
+    THEN
+        MESSAGE 'You may only replace Value Questions'
+        WITH STYLE = POPUP;
+        RESUME FIELD replaced_question;
+    ENDIF;
+
+    MESSAGE 'Checking Question . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT question_industry AS h_question_industry
+        FROM   question_library
+        WHERE  question = :replaced_question
+        AND    period   = :end_year;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question_library'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Replaced Question ' + VARCHAR(:replaced_question) +
+                ' does not exist for Period ' + VARCHAR(:end_year)
+        WITH STYLE = POPUP;
+        RESUME FIELD replaced_question;
+
+    ENDIF;
+
+    IF :h_question_industry <> :question_industry
+    THEN
+
+        h_yesno = '';
+        WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+        DO
+            h_yesno = PROMPT 'The Replaced Question and the Replacing' +
+                             ' Question belong to different' +
+                             ' Industries. Is this correct?' +
+                             ' Type Y/N and press <return>'
+                      WITH STYLE = POPUP;
+            h_yesno = LOWERCASE(:h_yesno);
+        ENDWHILE;
+
+        IF h_yesno = 'n'
+        THEN
+            RESUME FIELD replaced_question;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Checks replaced question hasn't already been entered
+    ------------------------------------------------------------------*/
+
+    IF rep_type = 1 OR rep_type = 2
+    THEN
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            SELECT question AS replaced_question
+            FROM   :h_table
+            WHERE  question = :replaced_question;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing ' + :h_table
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 0
+        THEN
+            MESSAGE 'This Question has already been marked as a' +
+                    ' Question that has been replaced'
+            WITH STYLE = POPUP;
+            RESUME FIELD replaced_question;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Checks replaced question isn't already on the question_history
+     table as a question that's been replaced by a different new one.
+     (It could appear as a rep_type=3 as >1 question could replace it)
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT old_question AS replaced_question
+        FROM   question_history
+        WHERE  old_question = :replaced_question
+        AND    period = :period
+        AND    rep_type <> 3;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question_history'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 0
+    THEN
+        MESSAGE 'This Question is already on the question_history' +
+                ' table for this Period as having been replaced'
+        WITH STYLE = POPUP;
+        RESUME FIELD replaced_question;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Inserts replaced question into table.
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        INSERT INTO :h_table
+        SELECT      question
+        FROM        question_library
+        WHERE       question = :replaced_question
+        AND         period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in inserting into ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows inserted into ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    If rep_type = 3 (more than 1 question replaces 1 question),
+    load the table that will hold these replacing questions
+    ------------------------------------------------------------------*/
+
+    IF rep_type = 3
+    THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            tf =
+
+            SELECT   new_question AS question
+            FROM     question_history
+            WHERE    old_question = :replaced_question
+            AND      rep_type = 3
+            AND      period = :period
+            UNION
+            SELECT   :replacing_question AS question
+            ORDER BY question;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing question_history'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ENDIF;
+    ENDIF;
+
+    IF rep_type <> 2
+    THEN
+        SET_FORMS FIELD '' (REVERSE(replaced_question) = 1,
+                            DISPLAYONLY(replaced_question) = 1,
+                            UNDERLINE(replaced_question) = 0);
+        RESUME;
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    RESUME FIELD tf;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Delete' =
+{
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(rep_type));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'You can only delete Replaced Questions when Type is 2'
+        WITH STYLE = POPUP;
+        RESUME FIELD rep_type;
+    ENDIF;
+
+    IF rep_type <> 2
+    THEN
+        MESSAGE 'You can only delete Replaced Questions when Type is 2'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name <> 'tf'
+    THEN
+        MESSAGE 'Please highlight the required Question'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'Please highlight the required Question'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_yesno = '';
+    WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+    DO
+        h_yesno = PROMPT 'Do you really wish to delete Question ' +
+                         VARCHAR(:tf.question) + ' from the list of' +
+                         ' Questions that will be replaced?' +
+                         ' Type Y/N and press <return>'
+                  WITH STYLE = POPUP;
+        h_yesno = LOWERCASE(:h_yesno);
+    ENDWHILE;
+
+    IF :h_yesno = 'n'
+    THEN
+        RESUME;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        DELETE FROM :h_table
+        WHERE       question = :tf.question;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in deleting from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows deleted from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    RESUME FIELD tf;
+}
+
+'Go', KEY FRSKEY4 =
+{
+
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(rep_type));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please enter a type' WITH STYLE = POPUP;
+        RESUME FIELD rep_type;
+    ENDIF;
+
+    IF rep_type <> 2
+    THEN
+        INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(replaced_question));
+        IF :h_display = 0
+        THEN
+            MESSAGE 'Please enter a Replaced Question' WITH STYLE = POPUP;
+            RESUME FIELD replaced_question;
+        ENDIF;
+
+    ELSEIF h_questions < 2
+    THEN
+        MESSAGE 'Replacement Type is 2, so please enter at least' +
+                ' two replaced Questions'
+        WITH STYLE = POPUP;
+        RESUME FIELD replaced_question;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Insert details into question_history table - but NOT for UK Only
+    ------------------------------------------------------------------*/
+
+    IF :uk_only <> 'Y'
+    THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+    
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+    
+            h_retries = :h_retries + 1;
+    
+            INSERT INTO question_history  (
+                        new_question,
+                        old_question,
+                        period,
+                        rep_type)
+            SELECT      :replacing_question,
+                        question,
+                        :period,
+                        :rep_type
+            FROM        :h_table;
+    
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+    
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+    
+        ENDWHILE;
+    
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+    
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in inserting into question_history'
+            WITH STYLE = POPUP;
+            RETURN 9;
+    
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No rows inserted into question_history'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Update question_library setting end_date of REPLACED questions
+     Note: if period = 1996, end_date = 1995
+     (Do this for ANY VOLUMES too).
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        /*--------------------------------------------------------------
+         Set lag to 9 for all replaced questions that aren't members
+        --------------------------------------------------------------*/
+
+        IF :uk_only = 'Y'
+        THEN
+            UPDATE question_library a
+            FROM   :h_table b
+            SET    end_period = :end_year
+            WHERE  a.question IN (b.question, b.question + 1,
+                                  b.question + 3, b.question + 4,
+                                  b.question + 5, b.question + 7,
+                                  b.question + 9)
+            AND    a.period = :period;
+        ELSE
+            UPDATE question_library a
+            FROM   :h_table b
+            SET    end_period = :end_year,
+                   lag = 9
+            WHERE  a.question IN (b.question, b.question + 1,
+                                  b.question + 3, b.question + 4,
+                                  b.question + 5, b.question + 7,
+                                  b.question + 9)
+            AND    a.period = :period;
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating question_library'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows updated on question_library'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+
+}
+
+'AbandonCreation', KEY FRSKEY6 =
+{
+    RETURN 1;
+}
+
+/*----------------------------------------------------------------------
+                 L O C A L    P R O C E D U R E
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_table () =
+{
+
+    /*------------------------------------------------------------------
+     Selects table to screen - Just the value questions
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT   question
+        FROM     :h_table
+        ORDER BY question;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:h_questions),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in selecting from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    RETURN 0;
+}

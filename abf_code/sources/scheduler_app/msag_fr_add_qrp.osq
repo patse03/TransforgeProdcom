@@ -1,0 +1,245 @@
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_inquiry         = INTEGER1 NOT NULL,
+        h_industry        = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+{
+    msa_date = 'now';
+    h_retries_allowed = 3;
+    h_frpr_name = 'msag_fr_add_qrp';
+}
+
+FIELD period =
+{
+    MESSAGE 'Checking Period . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT inquiry AS h_inquiry
+        FROM   inquiry_period
+        WHERE  period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Period does not exist'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    RESUME FIELD uvprint;
+}
+
+FIELD uvprint =
+{
+    IF :uvprint <> 'Q' AND :uvprint <> 'A' AND :uvprint <> 'U' 
+    THEN 
+        MESSAGE 'UV Print must be Q, A or U'
+        WITH STYLE = POPUP;
+        RESUME FIELD uvprint;
+    ENDIF;
+
+    RESUME FIELD industry;
+}
+
+FIELD industry =
+{
+    IF industry <> 'ALL' AND industry NOT LIKE
+    '/[0-9/]/[0-9/]/[0-9/]/[0-9/]/[0-9/]' escape '/'
+    THEN
+        MESSAGE 'Please type ALL or a 5 digit Industry'
+        WITH STYLE = POPUP;
+        RESUME FIELD industry;
+    ENDIF;
+   
+    IF industry <> 'ALL'
+    THEN
+        
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+    
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+    
+            h_retries = :h_retries + 1;
+    
+            SELECT industry AS h_industry
+            FROM   industry_period
+            WHERE  industry = INT4(:industry)
+            AND    period = :period;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+    
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+    
+        ENDWHILE;
+    
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+    
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing industry'
+            WITH STYLE = POPUP;
+            RETURN 9;
+    
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'This Industry does not exist for the Period ' +
+                    VARCHAR(:period)
+            WITH STYLE = POPUP;
+            RESUME FIELD industry;
+        ENDIF;
+    
+        IF h_inquiry = 14
+        THEN
+            ret_val = CALLPROC msag_fp_add_asi_qrp (
+                      industry = :h_industry,
+                      inquiry  = :h_inquiry,
+                      uvprint  = :uvprint,
+                      period   = :period);
+        ELSE
+            ret_val = CALLPROC msag_fp_add_qsi_qrp (
+                      industry = :h_industry,
+                      inquiry  = :h_inquiry,
+                      uvprint  = :uvprint,
+                      period   = :period);
+        ENDIF;
+    
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+        RESUME FIELD industry;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Add all jobs
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT industry AS h_industry
+        FROM   industry_period
+        WHERE  period = :period
+        {
+
+            IF h_inquiry = 14
+            THEN
+                ret_val = CALLPROC msag_fp_add_asi_qrp (
+                          industry = :h_industry,
+                          inquiry  = :h_inquiry,
+                          uvprint  = :uvprint,
+                          period   = :period);
+            ELSE
+                ret_val = CALLPROC msag_fp_add_qsi_qrp (
+                          industry = :h_industry,
+                          inquiry  = :h_inquiry,
+                          uvprint  = :uvprint,
+                          period   = :period);
+            ENDIF;
+
+            IF ret_val <> 0
+            THEN
+                RETURN ret_val;
+            ENDIF;
+        };
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing industry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No Industries exist for this Period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    RESUME FIELD industry;
+}
+
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}

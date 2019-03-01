@@ -1,0 +1,310 @@
+
+/*----------------------------------------------------------------------
+View new and replaced questions by industry or inquiry
+----------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+
+DECLARE ret_val                = INTEGER4 NOT NULL,
+        h_industry             = INTEGER4 NOT NULL,
+        h_pages                = INTEGER4 NOT NULL,
+        h_retries              = INTEGER1 NOT NULL,
+        h_retries_allowed      = INTEGER1 NOT NULL,
+        h_retry_or_not         = CHAR(5)  NOT NULL,
+        h_yesno                = CHAR(1)  NOT NULL,
+        h_table                = VARCHAR(24) NOT NULL,
+        h_command              = VARCHAR(200) NOT NULL,
+        h_file                 = VARCHAR(24) NOT NULL,
+        h_title                = VARCHAR(17) NOT NULL,
+        h_field_name           = VARCHAR(24) NOT NULL,
+        h_rows                 = INTEGER4 NOT NULL,
+	h_question_count       = INTEGER4 NOT NULL,	
+        h_frpr_name            = VARCHAR(30) NOT NULL
+{
+    msa_date = 'now'; 
+    h_retries_allowed   = 3;
+    h_question_count = 0;
+    h_frpr_name = 'msaee_fr_view_new';
+    h_table = 'new_replaced';
+
+    SET_FORMS FIELD '' (MODE(tf) = 'READ',
+                        UNDERLINE(industry) = 1,
+                        REVERSE(industry) = 0,
+                        DISPLAYONLY(industry) = 0,
+                        UNDERLINE(period) = 1,
+                        REVERSE(period) = 0,
+                        DISPLAYONLY(period) = 0);
+
+    title = 'NEW/REPLACED QUESTION TABLE';
+
+    RESUME FIELD industry;
+}
+
+FIELD industry = 
+{
+    IF :industry <> 'ALL' AND 
+    :industry NOT LIKE '/[0-9/]/[0-9/]/[0-9/]/[0-9/]/[0-9/]' escape '/'
+    THEN
+        MESSAGE 'Industry must be ALL or a 5 digit code'
+        WITH STYLE = POPUP;
+        RESUME FIELD industry;
+    ENDIF;
+
+    IF :industry <> 'ALL'
+    THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+        
+        WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+        DO
+            h_retries = :h_retries + 1;
+        
+            SELECT industry AS h_industry
+            FROM   industry
+            WHERE  industry = INT4(:industry)
+            AND    inquiry = 14;
+        
+            ret_val = CALLPROC check_inq_ing(
+                      h_num_row_ck      = 1,
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_commit          = 'Y',
+                      h_frpr_name       = :h_frpr_name);
+        
+            IF ret_val <> 7 
+            THEN
+                h_retry_or_not = ''; 
+            ENDIF;
+        
+        ENDWHILE;
+        
+        IF ret_val = 7 
+        THEN 
+            RETURN 7;
+        ELSEIF ret_val = 9
+        THEN 
+            MESSAGE 'System error accessing industry table'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ELSEIF ret_val = 1
+        THEN 
+            MESSAGE 'Industry does not exist.'
+            WITH STYLE = POPUP;
+            RESUME FIELD industry;
+        ENDIF;
+    ENDIF;
+
+    SET_FORMS FIELD '' (UNDERLINE(industry) = 0,
+                        REVERSE(industry) = 1,
+                        DISPLAYONLY(industry) = 1);
+
+    RESUME FIELD period;
+}
+
+FIELD period =
+{
+    MESSAGE 'Checking Period . . .';
+
+    ret_val = CALLPROC msaee_fp_check_year (period = :period);
+    IF ret_val = 9
+    THEN
+        RETURN ret_val;
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This is not a valid annual Period'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    SET_FORMS FIELD '' (REVERSE(period) = 1,
+                        UNDERLINE(period) = 0,
+                        DISPLAYONLY(period) = 1);
+
+
+    /*------------------------------------------------------------------
+      Create table of all questions for required industry/period
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Data . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    MESSAGE 'Creating List of questions . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+    DO
+        h_retries = :h_retries + 1;
+
+	IF :industry = 'ALL'
+	THEN
+
+            CREATE TABLE :h_table
+	    AS SELECT    b.question_industry,
+			 a.new_question,
+			 b.lag as n_lag,
+			 a.old_question,
+			 10 as o_lag
+            FROM         question_history a,
+			 question_library b
+	    WHERE        b.inquiry = 14
+	    AND          a.period = :period
+	    AND          a.period = b.period
+	    AND 	 a.new_question = b.question;	 		
+
+            UPDATE    :h_table
+	    FROM      question_library
+            SET       o_lag =lag
+            WHERE     old_question = question
+	    AND       period = :period - 100;
+        ELSE
+            CREATE TABLE :h_table
+	    AS SELECT    b.question_industry,
+			 a.new_question,
+			 b.lag as n_lag,
+			 a.old_question,
+			 10 as o_lag
+            FROM         question_history a,
+			 question_library b
+	    WHERE        b.inquiry = 14
+	    AND          b.question_industry = :industry
+	    AND          a.period = :period
+	    AND          a.period = b.period
+	    AND 	 a.new_question = b.question;	 		
+
+            UPDATE    :h_table
+	    FROM      question_library
+            SET       o_lag =lag
+            WHERE     old_question = question
+	    AND       period = :period - 100;
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing(
+                       h_num_row_ck      = 1,
+                       h_rollback        = 'N',
+                       h_commit          = 'Y',
+                       h_retries         = :h_retries,
+                       h_retries_allowed = :h_retries_allowed,
+                       h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+    ELSEIF ret_val = 9
+    THEN
+        RETURN 9;
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No data exists for this period.'
+        WITH STYLE = POPUP;
+        RESUME FIELD industry;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+       Set up screen table
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting to Screen . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf = 
+
+        SELECT   question_industry,
+                 new_question,
+                 n_lag,
+                 old_question,
+		 o_lag
+        FROM     :h_table
+        ORDER BY question_industry,
+                 new_question;
+        
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:h_question_count),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No data exists for this period.'
+        WITH STYLE = POPUP;
+        RESUME FIELD industry;
+    ENDIF;
+
+    RESUME FIELD tf;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Clear' =
+{
+    CLEAR FIELD industry, period, tf;
+    SET_FORMS FIELD '' (UNDERLINE(industry) = 1,
+                        REVERSE(industry) = 0,
+                        DISPLAYONLY(industry) = 0,
+                        UNDERLINE(period) = 1,
+                        REVERSE(period) = 0,
+                        DISPLAYONLY(period) = 0);
+    msa_date = 'now';
+    RESUME FIELD industry;
+}
+
+
+'End', KEY FRSKEY6 =
+{
+    MESSAGE 'Exiting New Question Screen . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = :h_table);
+    RETURN 0;
+}

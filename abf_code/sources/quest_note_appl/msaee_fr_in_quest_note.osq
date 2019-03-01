@@ -1,0 +1,199 @@
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_rows            = INTEGER4 NOT NULL,
+        h_field_name      = VARCHAR(24) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+ 
+{
+    msa_date = 'now';
+    h_retries_allowed = 3;
+    h_frpr_name = 'msaee_fr_in_quest_note';
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+}
+
+FIELD period =
+{
+    MESSAGE 'Checking Period . . .';
+
+    ret_val = CALLPROC msaee_fp_check_year (period = :period);
+    IF ret_val = 9
+    THEN
+        RETURN ret_val;
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This is not a valid annual Period'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    RESUME FIELD question;
+}
+
+FIELD question =
+{
+
+    MESSAGE 'Checking Question . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT text_line1,
+               text_line2,
+               text_line3,
+               text_line4,
+               text_line5,
+               text_line6,
+               text_line7,
+               text_line8,
+               text_line9,
+               text_line10
+        FROM   question_library
+        WHERE  question = :question
+        AND    MOD(question,10) = 1
+        AND    period   = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question_library'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This is not a valid Value Question for this Period'
+        WITH STYLE = POPUP;
+        RESUME FIELD question;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Look for Notes
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf = 
+
+        SELECT   note_code
+        FROM     question_note_link
+        WHERE    question = :question
+        AND      period =  :period
+        ORDER BY note_code;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question_note_link'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        REDISPLAY;
+        MESSAGE 'There are no notes linked to this question'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    RESUME FIELD tf;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Clear ' = 
+{
+    CLEAR FIELD ALL;
+    msa_date = 'now';
+    RESUME FIELD period;
+}
+
+'ViewNoteText', KEY FRSKEY4 = 
+{
+
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name <> 'tf'
+    THEN
+        MESSAGE 'Please highlight the required note'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'No Note to Display'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    ret_val = CALLFRAME msaee_fr_vi_note_text (
+              note_code = :tf.note_code,
+              period    = :period);
+
+    RESUME FIELD tf;
+
+}
+
+
+'End', KEY FRSKEY6 = 
+{
+    RETURN 0; 
+}

@@ -1,0 +1,227 @@
+INITIALIZE (
+
+        question          = INTEGER4 NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_yesno           = CHAR(1) NOT NULL,
+        h_rows            = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        lp_load_details   = PROCEDURE RETURNING INTEGER
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msaee_fr_quest_hist_02';
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+    ret_val = CALLPROC lp_load_details ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    RESUME FIELD tf;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'New' =
+{
+    IF :g_access_level <> 99 AND :g_access_level <> 90
+    THEN
+        MESSAGE 'Sorry, but your access level isn''t high enough' +
+                ' to call this option'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    ret_val = CALLFRAME msaee_fr_quest_hist_03 (
+              date     = date('01/01/1900'),
+              question = :question);
+
+    ret_val = CALLPROC lp_load_details ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+}
+
+'Update' =
+{
+    IF :g_access_level <> 99 AND :g_access_level <> 90
+    THEN
+        MESSAGE 'Sorry, but your access level isn''t high enough' +
+                ' to call this option'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'Nothing to update'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    ret_val = CALLFRAME msaee_fr_quest_hist_03 (
+              date     = :tf.date,
+              question = :question);
+
+    ret_val = CALLPROC lp_load_details ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+}
+
+'Delete' =
+{
+    IF :g_access_level <> 99 AND :g_access_level <> 90
+    THEN
+        MESSAGE 'Sorry, but your access level isn''t high enough' +
+                ' to call this option'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'Nothing to delete'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_yesno = '';
+    WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+    DO
+        h_yesno = PROMPT 'Really delete these details?' +
+                         ' Type Y/N and press <return>'
+        WITH STYLE = POPUP;
+        h_yesno = LOWERCASE(:h_yesno);
+    ENDWHILE;
+
+    IF h_yesno = 'n'
+    THEN
+        RESUME;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        DELETE FROM question_changes
+        WHERE       question = :question
+        AND         date = :tf.date;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in deleting from question_changes'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Unable to delete this record from question_changes'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_details ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                   L O C A L   P R O C E D U R E S
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_details () =
+{
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf = 
+
+        SELECT   date,
+                 period,
+                 reason,
+                 text
+        FROM     question_changes
+        WHERE    question = :question
+        ORDER BY date DESC;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:h_rows),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question_changes'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    RETURN 0;
+}

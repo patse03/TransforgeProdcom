@@ -1,0 +1,513 @@
+
+/*--------------------------------------------------------------
+                         SAS_FP_START
+--------------------------------------------------------------*/
+
+PROCEDURE sas_fp_start () =
+
+DECLARE   ret_val           = INTEGER1 NOT NULL,
+          period            = INTEGER4 NOT NULL,
+          h_inds            = INTEGER4 NOT NULL,
+          results_span      = INTEGER1 NOT NULL,
+          start_proc        = INTEGER1 NOT NULL,
+          end_proc          = INTEGER1 NOT NULL,
+          transfer          = CHAR(1) NOT NULL,
+          store             = CHAR(1) NOT NULL,
+          h_frpr_name       = VARCHAR(25) NOT NULL,
+          h_params          = VARCHAR(80) NOT NULL
+
+{
+    h_frpr_name = 'sas_fp_start';
+
+    SELECT DBMSINFO('username') AS :g_user_id;
+    SELECT DBMSINFO('database') AS g_dbname;
+
+    IF g_dbname = 'prodlivedb'
+    THEN
+	g_path_name1 = '/prodcom/live5/files/sas';
+	g_path_name2 = '/prodcom/live5/files/sas';
+    ELSE
+	g_path_name1 = '/prodcom/source/produser/files/sas';
+	g_path_name2 = '/prodcom/source/produser/files/sas';
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Find out whether Annual or Quarterly results is to run
+    ------------------------------------------------------------------*/
+
+    h_params = CALLPROC CommandLineParameters();
+    h_params = SQUEEZE (h_params);
+    g_inquiry = INT1(:h_params);
+
+    IF :g_inquiry <> 14 AND :g_inquiry <> 15
+    THEN
+        ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Invalid Inquiry = ' + VARCHAR(:g_inquiry),
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    IF :g_inquiry = 14
+    THEN
+        g_results_industry = 'results_industry_14_sas';
+    ELSE
+        g_results_industry = 'results_industry_15_sas';
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Blank out copy of error_log that Control look at
+    ------------------------------------------------------------------*/
+
+    /*------------------------------------------------------------------
+     Check table-supplied parameters
+    ------------------------------------------------------------------*/
+
+    SELECT period,
+           results_span,
+           start_proc,
+           end_proc,
+           transfer,
+           store
+    FROM   :g_results_industry;
+
+    ret_val = CALLPROC sas_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit = 'Y',
+              h_rollback = 'N',
+              h_frpr_name = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'System Error selecting industries from ' +
+                           :g_results_industry,
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ELSEIF ret_val = 1
+    THEN
+        ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'No industries to run',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Check count no. of industries on table-supplied parameters
+    ------------------------------------------------------------------*/
+
+    SELECT COUNT(*) AS h_inds
+    FROM   :g_results_industry;
+
+    ret_val = CALLPROC sas_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit = 'Y',
+              h_rollback = 'N',
+              h_frpr_name = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'System Error selecting industries from ' +
+                           :g_results_industry,
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Validate parameters
+    ------------------------------------------------------------------*/
+
+    IF :g_inquiry = 15
+    THEN
+        IF :results_span > 6 OR :results_span < 1
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Quarterly span must be between 1 & 5',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    ELSE
+        IF :results_span > 3 OR :results_span < 1
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Annual span must be between 1 & 3',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    ENDIF;
+
+    SELECT   period
+    FROM     inquiry_period
+    WHERE    period = :period
+    AND      inquiry = :g_inquiry;
+
+    ret_val = CALLPROC sas_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit = 'Y',
+              h_rollback = 'N',
+              h_frpr_name = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'System Error selecting period from inquiry_period',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ELSEIF ret_val = 1
+    THEN
+        ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Inquiry/Period incompatible',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    IF :start_proc < 1 OR :start_proc > 10
+    THEN
+        ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Invalid start process',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    IF :end_proc < 1 OR :end_proc > 10
+    THEN
+        ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Invalid end process',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    IF :start_proc > :end_proc
+    THEN
+        ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Start Proc > End Proc',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    IF :transfer <> 'N' AND :transfer <> 'Y'
+    THEN
+        ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Transfer should be Y or N not (' +
+                           :transfer + ')',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    g_results_span = :results_span;
+    g_input_period = :period;
+
+    h_params = SQUEEZE(VARCHAR(:g_inquiry) + ' ' + VARCHAR(:period) + ' ' +
+               VARCHAR(:results_span) + ' ' + VARCHAR(:start_proc)+ ' '+
+               VARCHAR(:end_proc) + ' ' +
+               ' (' + VARCHAR(:h_inds) + ' Inds)');
+
+    ret_val = CALLPROC sas_fp_log_message(
+              h_text = 'sas_files_app - Start of Run ' + :h_params,
+              h_frpr_name = :h_frpr_name);
+
+    /*------------------------------------------------------------------
+          Procedure sas_fp_period_selects sets various
+          global variables used throughout the results run.
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC sas_fp_period_select(
+              h_input_period = :period);
+
+    IF ret_val <> 0
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+       P R O C E S S   1    -   contributor data 
+    --------------------------------------------------------------*/
+
+    IF start_proc = 1
+    THEN
+
+        ret_val = CALLPROC sas_fp_contdata();
+
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Process 1 Failure (please notify IS - contdata)',
+                      h_frpr_name = :h_frpr_name);
+
+            RETURN 9;
+        ENDIF;
+
+        ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'sas_files_app - End Process 1 - ' + :h_params,
+                  h_frpr_name = :h_frpr_name);
+
+        IF end_proc = start_proc
+        THEN
+            ret_val = CALLPROC sas_fp_log_message(
+                      h_text = 'sas_files_app - run ends at process ' +
+                                VARCHAR(:start_proc) + ' OK',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 0;
+        ELSE
+            start_proc = start_proc + 1;
+        ENDIF;
+
+    ENDIF;
+
+    /*--------------------------------------------------------------
+       P R O C E S S   2    -   total data      
+    --------------------------------------------------------------*/
+
+    IF start_proc = 2
+    THEN
+
+        ret_val = CALLPROC sas_fp_totdata();
+
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Process 2 Failure (please notify IS - totals)',
+                      h_frpr_name = :h_frpr_name);
+
+            RETURN 9;
+        ENDIF;
+
+        ret_val = CALLPROC sas_fp_log_message(
+                  h_text = 'sas_files_app - End Process 2 - ' + :h_params,
+                  h_frpr_name = :h_frpr_name);
+
+        IF end_proc = start_proc
+        THEN
+            ret_val = CALLPROC sas_fp_log_message(
+                      h_text = 'sas_files_app - run ends at process ' +
+                                VARCHAR(:start_proc) + ' OK',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 0;
+        ELSE
+            start_proc = start_proc + 1;
+        ENDIF;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+       P R O C E S S   3    -   lookup tables
+    --------------------------------------------------------------*/
+
+    IF start_proc = 3
+    THEN
+
+        ret_val = CALLPROC sas_fp_lookup_tables();
+
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Process 3 lookup table Failure' +
+                               ' (please notify IS - imp_uncleared)',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        ret_val = CALLPROC sas_fp_log_message(
+                  h_text = 'sas_files_app - End Process 3 - ' + :h_params,
+                  h_frpr_name = :h_frpr_name);
+
+        IF end_proc = start_proc
+        THEN
+            ret_val = CALLPROC sas_fp_log_message(
+                      h_text = 'sas_files_app - run ends at process ' +
+                                VARCHAR(:start_proc) + ' OK',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 0;
+        ELSE
+            start_proc = start_proc + 1;
+        ENDIF;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+       P R O C E S S   4    -   aggregation
+    --------------------------------------------------------------*/
+
+    IF start_proc = 4
+    THEN
+
+        IF g_inquiry = 15
+        THEN
+            IF ret_val <> 0
+            THEN
+                ret_val = CALLPROC sas_fp_log_message (
+                          h_text = 'Process 4 Create AggSim Failure' +
+                                  ' (please notify IS - imp_uncleared)',
+                          h_frpr_name = :h_frpr_name);
+                RETURN 9;
+            ENDIF;
+
+            ret_val = CALLPROC sas_fp_log_message(
+                      h_text = 'sas_files_app - End Process 4 - ' + :h_params,
+                      h_frpr_name = :h_frpr_name);
+        ENDIF;
+
+        IF end_proc = start_proc
+        THEN
+            ret_val = CALLPROC sas_fp_log_message(
+                      h_text = 'sas_files_app - run ends at process ' +
+                                VARCHAR(:start_proc) + ' OK',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 0;
+        ELSE
+            start_proc = start_proc + 1;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+       P R O C E S S   5    -   update question_period from sim_tables
+    ------------------------------------------------------------------*/
+
+    IF start_proc = 5
+    THEN
+        IF ret_val <> 0
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'sas_files_app - End Process 5 - ' + :h_params,
+                  h_frpr_name = :h_frpr_name);
+
+        IF end_proc = start_proc
+        THEN
+            ret_val = CALLPROC sas_fp_log_message(
+                      h_text = 'sas_files_app - run ends at process ' +
+                                VARCHAR(:start_proc) + ' OK',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 0;
+        ELSE
+            start_proc = start_proc + 1;
+        ENDIF;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+       P R O C E S S   6    -   calculate sph ratios
+    --------------------------------------------------------------*/
+
+    IF start_proc = 6
+    THEN
+
+        IF ret_val <> 0
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'sas_files_app - End Process 6 - ' + :h_params,
+                  h_frpr_name = :h_frpr_name);
+
+        IF end_proc = start_proc
+        THEN
+            ret_val = CALLPROC sas_fp_log_message(
+                      h_text = 'sas_files_app - run ends at process ' +
+                                VARCHAR(:start_proc) + ' OK',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 0;
+        ELSE
+            start_proc = start_proc + 1;
+        ENDIF;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+       P R O C E S S   7    -   calculate grossing factor
+    --------------------------------------------------------------*/
+
+    IF start_proc = 7
+    THEN
+
+        IF ret_val <> 0
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'sas_files_app - End Process 7 - ' + :h_params,
+                  h_frpr_name = :h_frpr_name);
+
+        IF end_proc = start_proc
+        THEN
+            ret_val = CALLPROC sas_fp_log_message(
+                      h_text = 'sas_files_app - run ends at process ' +
+                                VARCHAR(:start_proc) + ' OK',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 0;
+        ELSE
+            start_proc = start_proc + 1;
+        ENDIF;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+       P R O C E S S   8    -   applying grossing factor
+    --------------------------------------------------------------*/
+
+    IF start_proc = 8
+    THEN
+        IF ret_val <> 0
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'sas_files_app - End Process 8 - ' + :h_params,
+                  h_frpr_name = :h_frpr_name);
+
+        IF end_proc = start_proc
+        THEN
+            ret_val = CALLPROC sas_fp_log_message(
+                      h_text = 'sas_files_app - run ends at process ' +
+                                VARCHAR(:start_proc) + ' OK',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 0;
+        ELSE
+            start_proc = start_proc + 1;
+        ENDIF;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+       P R O C E S S   9    -   disclosure & rollup
+    --------------------------------------------------------------*/
+
+    IF start_proc = 9
+    THEN
+        IF ret_val <> 0
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'sas_files_app - End Process 9 - ' + :h_params,
+                  h_frpr_name = :h_frpr_name);
+
+        IF end_proc = start_proc
+        THEN
+            ret_val = CALLPROC sas_fp_log_message(
+                      h_text = 'sas_files_app - run ends at process ' +
+                                VARCHAR(:start_proc) + ' OK',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 0;
+        ELSE
+            start_proc = start_proc + 1;
+        ENDIF;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+       P R O C E S S   10    -   update previously published figures
+    --------------------------------------------------------------*/
+
+    IF start_proc = 10
+    THEN
+
+        ret_val = CALLPROC sas_fp_xfer_tables ();
+        IF ret_val <> 0
+        THEN
+           RETURN 9;
+        ENDIF;
+
+    ENDIF;
+
+    RETURN 0;
+}

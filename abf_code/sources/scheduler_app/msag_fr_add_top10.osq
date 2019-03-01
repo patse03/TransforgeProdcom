@@ -1,0 +1,207 @@
+/*----------------------------------------------------------------------
+                      msag_fr_add_top10
+----------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries          = INTEGER1 NOT NULL,
+        h_retries_allowed  = INTEGER1 NOT NULL,
+        h_retry_or_not     = CHAR(5)  NOT NULL,
+        h_frpr_name        = VARCHAR(25) NOT NULL,
+        h_inquiry          = INTEGER1 NOT NULL,
+        h_job_number       = INTEGER4 NOT NULL,
+        year               = INTEGER4 NOT NULL,
+        q1                 = INTEGER4 NOT NULL,
+        q2                 = INTEGER4 NOT NULL,
+        q3                 = INTEGER4 NOT NULL,
+        q4                 = INTEGER4 NOT NULL,
+        temp_table         = VARCHAR(25) NOT NULL,
+        output_file        = VARCHAR(40) NOT NULL,
+        h_code             = VARCHAR(1200) NOT NULL,
+        h_job_type         = VARCHAR(20) NOT NULL,
+        ret_val            = INTEGER1 NOT NULL
+
+{
+    msa_date = 'now';
+    h_frpr_name = 'msag_fr_add_top10';
+    h_retries_allowed = 3;
+}
+
+FIELD period =
+{
+    MESSAGE 'Checking Period . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT inquiry AS h_inquiry
+        FROM   inquiry_period
+        WHERE  period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This period is not valid'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Declarations for the report writer
+    ------------------------------------------------------------------*/
+
+    IF h_inquiry = 14
+    THEN
+        h_job_type = 'top 10 asi ' + VARCHAR(:period);
+        temp_table = 'top10_asi_temp';
+        output_file = '$PRINTOUT/top10_' + VARCHAR(:period) + '.rpt';
+
+        q1 = period + 3;
+        q2 = period + 6;
+        q3 = period + 9;
+        q4 = period + 12;
+
+        /*--------------------------------------------------------------
+          Drop the table in case it's left over from before
+        --------------------------------------------------------------*/
+
+        h_code = 'echo "drop ' + :temp_table +
+                 ' \p\g " | sql ' + :g_database + 
+                 ' >> ' + :g_error_log + '; ' +
+
+                 'report ' + 
+                 :g_database +
+                 ' ''(temp_table = "' + :temp_table + '"' + 
+                 ',period = ' + VARCHAR(:period) +
+                 ',q1 = ' + VARCHAR(:q1) +
+                 ',q2 = ' + VARCHAR(:q2) +
+                 ',q3 = ' + VARCHAR(:q3) +
+                 ',q4 = ' + VARCHAR(:q4) +
+                 ')'' -i$REPORTS/msag_rw_top10_asi.rw' +
+                 ' -f' + :output_file +
+                 ' >> ' +:g_error_log + ' 2>>' + :g_error_log +';' +
+                 'lp -drxp -oPOR1+NPN+SIMPLEX+?CONTROL?+%' +
+                 :g_room + '% ' +
+                 CONCAT(' ',:output_file) +
+                 ' >> ' + :g_error_log + ' 2>>' + :g_error_log;
+                 
+    ELSE
+
+        h_job_type = 'top 10 qsi ' + VARCHAR(:period);
+        temp_table = 'top10_qsi_temp';
+        output_file = '$PRINTOUT/top10_' + VARCHAR(:period) + '.rpt';
+
+        year = period/100 * 100;
+
+        /*--------------------------------------------------------------
+          Drop the table in case it's left over from before
+        --------------------------------------------------------------*/
+
+        h_code = 'echo "drop ' + :temp_table +
+                 ' \p\g " | sql ' + :g_database + 
+                 ' >> ' + :g_error_log + '; ' +
+
+                 'report ' + 
+                 :g_database +
+                 ' ''(temp_table = "' + :temp_table + '"' + 
+                 ',period = ' + VARCHAR(:period) +
+                 ',year = ' + VARCHAR(:year) +
+                 ')'' -i$REPORTS/msag_rw_top10_qsi.rw' +
+                 ' -f' + :output_file +
+                 ' >> ' +:g_error_log + ' 2>>' + :g_error_log +';' +
+                 'lp -drxp -oPOR1+NPN+SIMPLEX+?CONTROL?+%' +
+                 :g_room + '% ' +
+                 CONCAT(' ',:output_file) +
+                 ' >> ' + :g_error_log + ' 2>>' + :g_error_log;
+                 
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Check job isn't already on table
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msag_fp_check_job (
+              h_job_type = :h_job_type);
+
+    IF ret_val <> 0
+    THEN
+        IF ret_val = 1
+        THEN
+            MESSAGE 'This job is already on the schedule'
+            WITH STYLE = POPUP;
+            RETURN 0;
+        ELSE
+            RETURN ret_val;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Get job number
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msag_fp_get_jobno (
+              h_job_number = BYREF(:h_job_number));
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Add job to batch_jobs table
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msag_fp_insert_job (
+              h_job_number = :h_job_number,
+              h_job_type   = :h_job_type,
+              h_code       = :h_code);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    RETURN 0;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    msa_date = 'now';
+    HELP_FORMS(SUBJECT = 'help',
+	       FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}

@@ -1,0 +1,216 @@
+/*----------------------------------------------------------------------
+                      msag_fr_add_large_sub
+----------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries          = INTEGER1 NOT NULL,
+        h_retries_allowed  = INTEGER1 NOT NULL,
+        h_retry_or_not     = CHAR(5)  NOT NULL,
+        h_frpr_name        = VARCHAR(25) NOT NULL,
+        h_job_number       = INTEGER4 NOT NULL,
+        h_table            = VARCHAR(25) NOT NULL,
+        h_view             = VARCHAR(25) NOT NULL,
+        output_file        = VARCHAR(50) NOT NULL,
+        h_code             = VARCHAR(1200) NOT NULL,
+        h_job_type         = VARCHAR(20) NOT NULL,
+        ret_val            = INTEGER1 NOT NULL
+
+{
+    msa_date = 'now';
+    h_frpr_name = 'msag_fr_add_large_sub';
+    h_retries_allowed = 3;
+
+    MESSAGE 'Checking Period . . .';
+
+    /*------------------------------------------------------------------
+     Get latest annual periods
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT MAX(period) AS next_aperiod
+        FROM   inquiry_period
+        WHERE  inquiry = 14;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Unable to find annual period on inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+}
+
+FIELD period =
+{
+    MESSAGE 'Checking Period . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT period
+        FROM   inquiry_period
+        WHERE  period = :period
+        AND    inquiry = 14;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This period is not a valid Annual period'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Declarations for the report writer
+    ------------------------------------------------------------------*/
+
+    h_job_type = 'large sub ' + VARCHAR(:period);
+
+    h_view = 'large_sub_view';
+    h_table = 'large_sub_temp';
+    output_file = '$PRINTOUT/large_subclass_' + VARCHAR(:period) + '.rpt';
+
+    /*------------------------------------------------------------------
+    Drop the tables in case they're left over from before
+    ------------------------------------------------------------------*/
+
+    h_code = 'echo "drop ' + :h_table +
+             ' \p\g " | sql ' + :g_database +
+             ' >> ' + :g_error_log + '; ' +
+
+             'report ' +
+             :g_database +
+             ' ''(h_table = "' + :h_table + '"' +
+             ',h_view = "' + :h_view + '"' +
+             ',period = ' + VARCHAR(:period) +
+             ',next_aperiod = ' + VARCHAR(:next_aperiod) +
+             ')'' -i$REPORTS/msag_rw_large_subclass.rw' +
+             ' -f' + :output_file +
+             ' >> ' +:g_error_log + ' 2>>' + :g_error_log +';' +
+             'lp -drxp -oLANZ+NPN+SIMPLEX+?CONTROL?+%' +
+             :g_room + '% ' +
+             CONCAT(' ',:output_file) +
+             ' >> ' + :g_error_log + ' 2>>' + :g_error_log;
+
+    /*------------------------------------------------------------------
+     Check job isn't already on table
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msag_fp_check_job (
+              h_job_type = :h_job_type);
+
+    IF ret_val <> 0
+    THEN
+        IF ret_val = 1
+        THEN
+            MESSAGE 'This job is already on the schedule'
+            WITH STYLE = POPUP;
+            RETURN 0;
+        ELSE
+            RETURN ret_val;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Get job number
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msag_fp_get_jobno (
+              h_job_number = BYREF(:h_job_number));
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Add job to batch_jobs table
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msag_fp_insert_job (
+              h_job_number = :h_job_number,
+              h_job_type   = :h_job_type,
+              h_code       = :h_code);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    RETURN 0;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    msa_date = 'now';
+    HELP_FORMS(SUBJECT = 'help',
+	       FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}

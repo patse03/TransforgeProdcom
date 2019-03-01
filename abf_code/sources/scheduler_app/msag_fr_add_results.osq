@@ -1,0 +1,1044 @@
+/*----------------------------------------------------------------------
+Puts results jobs on the scheduler.
+
+You enter a period, and you are presented with a list of industries
+that you mark either F (final), P (Provisional) or D (do not run).
+
+Final       industries are inserted into: results_industry_nn_F
+Provisional industries are inserted into: results_industry_nn_P
+            (where nn = 14 or 15)
+
+If the jobs are already on the schedule, the industries from the above
+two tables are loaded to the screen, and may be changed.
+
+
+06/01/2015 - MPC - MIN0507 - the span on the results_industry_nn_f/p table is 
+                   defaulting to 4 but if archiving has run it should
+                   be 3. So use table arc_period_status to determine the
+                   span of periods.
+----------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed    = INTEGER1 NOT NULL,
+        h_retries            = INTEGER1 NOT NULL,
+        h_retry_or_not       = CHAR(5) NOT NULL,
+        h_frpr_name          = VARCHAR(24) NOT NULL,
+        ret_val              = INTEGER1 NOT NULL,
+        h_span               = INTEGER1 NOT NULL,
+        h_code               = VARCHAR(1200) NOT NULL,
+        h_job_number         = INTEGER4 NOT NULL,
+        h_record             = INTEGER4 NOT NULL,
+        h_max_arc_per        = INTEGER4 NOT NULL,   /* MIN 0507 */
+        h_range              = INTEGER4 NOT NULL,   /* MIN 0507 */
+        h_job_type_p         = VARCHAR(20) NOT NULL,
+        h_type               = VARCHAR(20) NOT NULL,
+        h_job_type_f         = VARCHAR(20) NOT NULL,
+        h_results_industry_p = VARCHAR(24) NOT NULL,
+        h_results_industry_f = VARCHAR(24) NOT NULL,
+        h_f_missing          = CHAR(1) NOT NULL,
+        h_p_missing          = CHAR(1) NOT NULL,
+        h_yesno              = CHAR(1) NOT NULL,
+        h_display            = INTEGER1 NOT NULL,
+        h_message            = VARCHAR(200) NOT NULL,
+        h_inquiry            = INTEGER1 NOT NULL,
+        tf.h_col             = INTEGER4 NOT NULL,
+        h_count_rows         = INTEGER4 NOT NULL,
+        h_counter            = INTEGER4 NOT NULL,
+        h_command            = INTEGER4 NOT NULL,
+        lp_load_tf           = PROCEDURE RETURNING INTEGER,
+        lp_delete            = PROCEDURE RETURNING INTEGER,
+        lp_recount           = PROCEDURE RETURNING INTEGER
+
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msag_fr_add_results';
+    msa_date = 'now';
+    SET_FORMS FIELD '' (MODE(tf) = 'READ',
+                        DISPLAYONLY(period) = 0,
+                        REVERSE(period)     = 0,
+                        UNDERLINE(period)   = 1);
+    no_final = 0;
+    no_provisional = 0;
+    no_do_not_run = 0;
+    act_final = 0;
+    act_provisional = 0;
+    act_do_not_run = 0;
+
+/* MIN0507 - get the maximum period on arc_period_status */
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT MAX(period) AS :h_max_arc_per
+        FROM   arc_period_status ;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error(1) in accessing arc_period_status'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'System error(2) in accessing arc_period_status ret_val = 1'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+}
+
+FIELD period =
+{
+    MESSAGE 'Checking Period . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT inquiry AS h_inquiry
+        FROM   inquiry_period
+        WHERE  period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This is not a valid Period'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(period) = 1,
+                        REVERSE(period)     = 1,
+                        UNDERLINE(period)   = 0,
+                        MODE(tf) = 'UPDATE');
+
+    IF h_inquiry = 14
+    THEN
+        h_type = 'Annual';
+        h_job_type_p = 'prov asi results';
+        h_job_type_f = 'final asi results';
+        h_results_industry_p = 'results_industry_14p';
+        h_results_industry_f = 'results_industry_14f';
+    /*  MIN 0507 - removed original setting of h_span and changed to */
+        h_range = h_max_arc_per - period ;
+        h_range = h_range / 100 ;
+        h_span  = 4 - h_range ;
+    ELSE
+        h_type = 'Quarterly';
+        h_job_type_p = 'prov qsi results';
+        h_job_type_f = 'final qsi results';
+        h_results_industry_p = 'results_industry_15p';
+        h_results_industry_f = 'results_industry_15f';
+        h_span = 5;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Check if we're running results today: look for both the FINAL and
+    PROVISIONAL jobs, and insert whichever ones are not on the schedule.
+    ------------------------------------------------------------------*/
+
+    h_f_missing = 'n';
+
+    ret_val = CALLPROC msag_fp_check_job (
+              h_job_type = :h_job_type_f);
+
+    IF ret_val = 0
+    THEN
+        h_f_missing = 'y';
+    ENDIF;
+
+    h_p_missing = 'n';
+
+    ret_val = CALLPROC msag_fp_check_job (
+              h_job_type = :h_job_type_p);
+
+    IF ret_val = 0
+    THEN
+        h_p_missing = 'y';
+    ENDIF;
+
+    IF h_f_missing = 'y' OR h_p_missing = 'y'
+    THEN
+
+        ret_val = CALLPROC lp_delete ();
+
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+        MESSAGE h_type + ' Results have not yet been set up.' + X'0D0D'+
+                'This will insert two jobs on the scheduler:' + X'0D0D'+
+                '    ' + h_type + ' Final Results' + X'0D' +
+                '    ' + h_type + ' Provisional' + X'0D0D' +
+                'Please mark industries to run on the following screen.'
+        WITH STYLE = POPUP;
+
+        /*--------------------------------------------------------------
+        And final job
+        --------------------------------------------------------------*/
+
+        IF h_f_missing = 'y'
+        THEN
+            ret_val = CALLPROC msag_fp_get_jobno (
+                      h_job_number = BYREF(:h_job_number));
+
+            IF ret_val <> 0
+            THEN
+                RETURN ret_val;
+            ENDIF;
+
+	    IF (:h_inquiry = 14 AND :period < 200000)
+            OR (:h_inquiry = 15 AND :period <= 200012)
+            THEN
+                h_code = '$IMAGES/msacresapp_1999' +
+			 ' -numeric_overflow=ignore' +
+                         ' -d' + :g_database + ' -a ' +
+                         VARCHAR(h_inquiry) + ' f ' +
+                         ' >> ' + :g_error_log +
+                         ' 2>> ' + :g_error_log;
+            ELSE 
+                h_code = '$IMAGES/msacresapp' +
+			 ' -numeric_overflow=ignore' +
+                         ' -d' + :g_database + ' -a ' +
+                         VARCHAR(h_inquiry) + ' f ' +
+                         ' >> ' + :g_error_log +
+                         ' 2>> ' + :g_error_log;
+            ENDIF;
+
+                ret_val = CALLPROC msag_fp_insert_job (
+                          h_job_number = :h_job_number,
+                          h_job_type   = :h_job_type_f,
+                          h_code       = :h_code,
+                          h_popup      = 'n');
+
+                IF ret_val <> 0
+                THEN
+                    RETURN ret_val;
+                ENDIF;
+
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        Add provisional job
+        --------------------------------------------------------------*/
+
+        IF h_p_missing = 'y'
+        THEN
+            ret_val = CALLPROC msag_fp_get_jobno (
+                      h_job_number = BYREF(:h_job_number));
+
+            IF ret_val <> 0
+            THEN
+                RETURN ret_val;
+            ENDIF;
+
+	    IF (:h_inquiry = 14 AND :period < 200000)
+            OR (:h_inquiry = 15 AND :period <= 200012)
+            THEN
+            h_code = '$IMAGES/msacresapp_1999' +
+                     ' -numeric_overflow=ignore' +
+                     ' -d' + :g_database + ' -a ' +
+                     VARCHAR(h_inquiry) + ' p ' +
+                     ' >> ' + :g_error_log +
+                     ' 2>> ' + :g_error_log;
+            ELSE 
+            h_code = '$IMAGES/msacresapp' +
+                     ' -numeric_overflow=ignore' +
+                     ' -d' + :g_database + ' -a ' +
+                     VARCHAR(h_inquiry) + ' p ' +
+                     ' >> ' + :g_error_log +
+                     ' 2>> ' + :g_error_log;
+            ENDIF;
+
+            ret_val = CALLPROC msag_fp_insert_job (
+                      h_job_number = :h_job_number,
+                      h_job_type   = :h_job_type_p,
+                      h_code       = :h_code,
+                      h_popup      = 'n');
+
+            IF ret_val <> 0
+            THEN
+                RETURN ret_val;
+            ENDIF;
+
+        ENDIF;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    If the job was on the schedule, it could have been on for a
+    different period to that just entered. Because of this, update the
+    results tables with the new period that has been entered.
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_results_industry_f
+        SET    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error updating period on ' + :h_results_industry_f
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_results_industry_p
+        SET    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error updating period on ' + :h_results_industry_p
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_tf ();
+    IF ret_val <> 0
+    THEN
+
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC lp_recount ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    act_provisional = no_provisional;
+    act_final = no_final;
+    act_do_not_run = no_do_not_run;
+
+    REDISPLAY;
+
+    MESSAGE h_type + ' Results will run for Period ' + VARCHAR(period)
+    WITH STYLE = POPUP;
+}
+
+FIELD tf.type =
+{
+    IF tf.type <> 'F' AND tf.type <> 'P' AND tf.type <> 'D'
+    THEN
+        MESSAGE 'Type should be F, P or D'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    IF tf._state = 3
+    THEN
+        ret_val = CALLPROC lp_recount ();
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Because the tablefield is updateable, this seems to have disabled
+    the PageDowns/PageUps. To get around this (as the tf has up to 207
+    rows which takes ages scrolling one at a time), use the following
+    code from TakeOn's msab_fr_load_codes to see how much to scroll
+    up/down by.
+    ------------------------------------------------------------------*/
+
+    INQUIRE_FORMS FRS (h_command = command);
+
+    IF (:h_command = 6   /*  down arrow  */
+    OR :h_command = 4    /*  tab         */
+    OR :h_command = 8)   /*  return      */
+    THEN
+        IF :tf.h_col <> :h_count_rows
+        THEN
+            h_counter = :tf.h_col + 1;
+            SCROLL tf TO :h_counter;
+        ENDIF;
+
+    ELSEIF h_command = 7  /*   up arrow    */
+    THEN
+        IF :tf.h_col <> 1
+        THEN
+            h_counter = :tf.h_col - 1;
+            SCROLL tf TO :h_counter;
+        ENDIF;
+
+    ELSEIF :h_command = 10  /*   pagedown  */
+    THEN
+        IF :tf.h_col = :h_count_rows
+        THEN
+            /* MESSAGE 'End of Form'; */
+        ELSEIF :tf.h_col > (h_count_rows - 13)
+        THEN
+            SCROLL tf TO :h_count_rows;
+        ELSE
+            h_counter = :tf.h_col + 13;
+            SCROLL tf TO :h_counter;
+        ENDIF;
+
+    ELSEIF :h_command = 11 /*   pageup  */
+    THEN
+        IF :tf.h_col = 1
+        THEN
+            /* MESSAGE 'This is the first industry'; */
+        ELSEIF :tf.h_col < 14
+        THEN
+            SCROLL tf TO 1;
+        ELSE
+            h_counter = :tf.h_col - 13;
+            SCROLL tf TO :h_counter;
+        ENDIF;
+    ELSE
+        IF :tf.h_col <> :h_count_rows
+        THEN
+            h_counter = :tf.h_col + 1;
+            SCROLL tf TO :h_counter;
+        ENDIF;
+    ENDIF;
+
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+KEY FRSKEY1 =
+{
+}
+
+'AllProv' =
+{
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(period));
+    IF h_display = 0
+    THEN
+        MESSAGE 'Please complete the Period' WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    UNLOADTABLE tf
+    {
+        tf.type = 'P';
+    };
+
+    ret_val = CALLPROC lp_recount();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'AllFinal' =
+{
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(period));
+    IF h_display = 0
+    THEN
+        MESSAGE 'Please complete the Period' WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    UNLOADTABLE tf
+    {
+        tf.type = 'F';
+    };
+
+    ret_val = CALLPROC lp_recount();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'AllDoNotRun' =
+{
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(period));
+    IF h_display = 0
+    THEN
+        MESSAGE 'Please complete the Period' WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    UNLOADTABLE tf
+    {
+        tf.type = 'D';
+    };
+
+    ret_val = CALLPROC lp_recount();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'Print' =
+{
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(period));
+    IF h_display = 0
+    THEN
+        MESSAGE 'Please complete the Period' WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    MESSAGE 'Preparing Report . . .';
+    msa_date = 'now';
+
+    ret_val = CALLPROC msa_cp_callsys (
+              'report ' +
+              :g_database +
+              ' ''(user_name = "' + :g_user_name + '"' +
+              ',final_table = "' + :h_results_industry_f + '"' +
+              ',prov_table = "' + :h_results_industry_p + '"' +
+              ',res_type = "' + UPPERCASE(h_type) + '"' +
+              ',period = ' + VARCHAR(:period) +
+              ',inquiry = ' + VARCHAR(:h_inquiry) +
+              ')'' -i$REPORTS/msag_rw_add_results.rw' +
+              ' > report.output 2> report.output');
+
+    IF ret_val <> 0
+    THEN
+        MESSAGE 'Error producing report'
+        WITH STYLE = POPUP;
+    ELSE
+        /*--------------------------------------------------------------
+         Remove last line - so a blank end page is not printed
+        --------------------------------------------------------------*/
+
+        ret_val = CALLPROC msa_cp_callsys (
+              'lines=`wc -l < msag_rw_add_results.rpt`;' +
+              'lines=`expr ${lines} - 1`;' +
+              'head -${lines} msag_rw_add_results.rpt | ' +
+              'lp -o12p -d' + :g_printer +
+              ' >> report.output 2>> report.output');
+
+        IF ret_val <> 0
+        THEN
+            MESSAGE 'Error sending report to printer ' +
+                    :g_printer
+            WITH STYLE = POPUP;
+        ELSE
+            MESSAGE 'Report sent to printer ' +
+                    :g_printer + ' OK'
+            WITH STYLE = POPUP;
+        ENDIF;
+
+    ENDIF;
+}
+
+'ResultsHelp' =
+{
+    ret_val = CALLFRAME msag_fr_results_help ();
+}
+
+'Update', KEY FRSKEY4 =
+{
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(period));
+    IF h_display = 0
+    THEN
+        MESSAGE 'Please complete the Period' WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     1. Empties the two results tables.
+     2. Insert into the two results tables from the tablefield.
+     3. Recreate the tablefield from the results table (so _state is
+        reset).
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Updating Industries . . .';
+
+    /*------------------------------------------------------------------
+    1. Empty the two results tables
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC lp_delete ();
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     2. Insert the contents of the tf into the two results tables.
+    ------------------------------------------------------------------*/
+
+    UNLOADTABLE tf
+    {
+        IF tf.type = 'F' OR tf.type = 'P'
+        THEN
+
+            h_retry_or_not      = 'RETRY';
+            h_retries           = 0;
+
+            WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+            DO
+
+                h_retries = :h_retries + 1;
+
+                IF tf.type = 'F'
+                THEN
+                    INSERT INTO :h_results_industry_f (
+                                inquiry,
+                                industry,
+                                period,
+                                results_span,
+                                start_proc,
+                                end_proc,
+                                transfer,
+                                store)
+                    VALUES (    :h_inquiry,
+                                :tf.industry,
+                                :period,
+                                :h_span,
+                                1,
+                                11,
+                                'Y',
+                                'N');
+                ELSE
+                    INSERT INTO :h_results_industry_p (
+                                inquiry,
+                                industry,
+                                period,
+                                results_span,
+                                start_proc,
+                                end_proc,
+                                transfer,
+                                store)
+                    VALUES (    :h_inquiry,
+                                :tf.industry,
+                                :period,
+                                :h_span,
+                                1,
+                                6,
+                                'Y',
+                                'N');
+                ENDIF;
+
+                ret_val = CALLPROC check_inq_ing (
+                          h_num_row_ck      = 1,
+                          h_commit          = 'Y',
+                          h_rollback        = 'N',
+                          h_retries         = :h_retries,
+                          h_retries_allowed = :h_retries_allowed,
+                          h_frpr_name       = :h_frpr_name);
+
+                IF ret_val <> 7
+                THEN
+                    h_retry_or_not = '';
+                ENDIF;
+
+            ENDWHILE;
+
+            IF ret_val = 7
+            THEN
+                RETURN 7;
+
+            ELSEIF ret_val = 9
+            THEN
+                MESSAGE 'System error inserting into results table'
+                WITH STYLE = POPUP;
+                RETURN 9;
+
+            ELSEIF ret_val = 1
+            THEN
+                MESSAGE 'No row inserted into results table for ' +
+                        VARCHAR(:tf.industry)
+                WITH STYLE = POPUP;
+                RETURN 9;
+            ENDIF;
+        ENDIF;
+    };
+
+    /*------------------------------------------------------------------
+     3. Reload the tablefield
+    ------------------------------------------------------------------*/
+
+    h_record = tf._record;
+
+    ret_val = CALLPROC lp_load_tf ();
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC lp_recount ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    act_provisional = no_provisional;
+    act_final = no_final;
+    act_do_not_run = no_do_not_run;
+
+    h_message = h_type + ' Final Results will run for ' +
+                VARCHAR(act_final);
+    IF act_final = 1
+    THEN
+        h_message = h_message + ' industry.';
+    ELSE
+        h_message = h_message + ' industries.';
+    ENDIF;
+
+    h_message = h_message + X'0D' + h_type +
+                ' Provisional Results will run for ' +
+                VARCHAR(act_provisional);
+
+    IF act_provisional = 1
+    THEN
+        h_message = h_message + ' industry.';
+    ELSE
+        h_message = h_message + ' industries.';
+    ENDIF;
+
+    MESSAGE h_message WITH STYLE = POPUP;
+
+    SCROLL tf TO h_record;
+}
+
+'End', KEY FRSKEY6 =
+{
+    /*------------------------------------------------------------------
+     Put up a for-info message when the screen is exited.
+    ------------------------------------------------------------------*/
+
+    IF act_final <> 0 OR act_provisional <> 0
+    THEN
+
+        h_message = 'Period ' + VARCHAR(:period) + ', ' +
+                     h_type + ' Results:' + X'0D0D' +
+                     '   Final Results will run for ' +
+                     VARCHAR(act_final);
+        IF act_final = 1
+        THEN
+            h_message = h_message + ' industry.';
+        ELSE
+            h_message = h_message + ' industries.';
+        ENDIF;
+
+        h_message = h_message + X'0D' +
+                    '   Provisional Results will run for ' +
+                    VARCHAR(act_provisional);
+
+        IF act_provisional = 1
+        THEN
+            h_message = h_message + ' industry.';
+        ELSE
+            h_message = h_message + ' industries.';
+        ENDIF;
+
+        MESSAGE h_message WITH STYLE = POPUP;
+    ENDIF;
+
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                  L O C A L   P R O C E D U R E   1
+
+Remove entries from the two results tables:
+
+   results_industry_nn_f &
+   results_industry_nn_p (where nn is 14 or 15)
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_delete () =
+{
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        DELETE FROM :h_results_industry_f;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error emptying ' + :h_results_industry_f
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        DELETE FROM :h_results_industry_p;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error emptying ' + :h_results_industry_p
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    RETURN 0;
+
+}
+
+/*----------------------------------------------------------------------
+                  L O C A L   P R O C E D U R E   2
+
+Load up the industries by merging:
+
+   results_industry_nn_f for the F's
+   results_industry_nn_p for the P's
+   industry              for the D's
+
+Amended June 2000 so that dummy industry 23300 is not selected (Processing of
+Nuclear Fuel) as results will never be run for it - commented out at
+sic 2007 introduction.
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_tf () =
+{
+    MESSAGE 'Loading Industries . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT   industry,
+                 'F' AS type
+        FROM     :h_results_industry_f
+        UNION
+        SELECT   industry,
+                 'P' AS type
+        FROM     :h_results_industry_p
+        UNION
+        SELECT   industry,
+                 'D' AS type
+        FROM     industry
+        WHERE    inquiry = :h_inquiry
+        AND      industry NOT IN (
+                 SELECT industry FROM :h_results_industry_f)
+        AND      industry NOT IN (
+                 SELECT industry FROM :h_results_industry_p)
+	/* AND      industry NOT IN (23300) */
+
+        ORDER BY industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing industry'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No industries loaded'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    h_count_rows = 0;
+    UNLOADTABLE tf
+    {
+        h_count_rows = h_count_rows + 1;
+        tf.h_col = h_count_rows;
+    };
+
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                  L O C A L   P R O C E D U R E   3
+
+Recount the number of Fs, Ps and Ds in the tablefield.
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_recount () =
+{
+    no_provisional = 0;
+    no_final = 0;
+    no_do_not_run = 0;
+
+    UNLOADTABLE tf
+    {
+        IF tf.type = 'F'
+        THEN
+            no_final = no_final + 1;
+        ELSEIF tf.type = 'P'
+        THEN
+            no_provisional = no_provisional + 1;
+        ELSE
+            no_do_not_run = no_do_not_run + 1;
+        ENDIF;
+    };
+
+    RETURN 0;
+}

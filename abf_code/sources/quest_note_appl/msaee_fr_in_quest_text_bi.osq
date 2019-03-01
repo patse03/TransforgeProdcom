@@ -1,0 +1,416 @@
+/*-s--------------------------------------------------------------------
+Lists all questions to an industry
+--------------------------------------------------------------------e-*/
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_volume_text     = VARCHAR(20) NOT NULL,
+        h_question        = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        h_display         = INTEGER1 NOT NULL,
+        total_questions   = INTEGER4 NOT NULL,
+        h_counter         = INTEGER4 NOT NULL,
+        lp_load_question  = PROCEDURE RETURNING INTEGER
+
+{
+    msa_date = 'now';
+    h_retries_allowed = 3;
+    h_frpr_name = 'msaee_fr_in_quest_text_bi';
+    SET_FORMS FIELD '' (DISPLAYONLY(period) = 0,
+                        REVERSE(period) = 0,
+                        UNDERLINE(period) = 1,
+                        DISPLAYONLY(industry) = 0,
+                        REVERSE(industry) = 0,
+                        UNDERLINE(industry) = 1);
+}
+
+FIELD period =
+{
+    MESSAGE 'Checking Period . . .';
+
+    ret_val = CALLPROC msaee_fp_check_year (period = :period);
+    IF ret_val = 9
+    THEN
+        RETURN ret_val;
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This is not a valid annual Period'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(period) = 1,
+                        REVERSE(period) = 1,
+                        UNDERLINE(period) = 0);
+
+    RESUME FIELD industry;
+}
+
+FIELD industry =
+{
+    MESSAGE 'Checking Industry . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT industry
+        FROM   industry
+        WHERE  industry = :industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing industry'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This Industry does not exist'
+        WITH STYLE = POPUP;
+        RESUME FIELD industry;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Load up array of possible questions
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Questions . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        g_question_array =
+
+        SELECT   question
+        FROM     question_library
+        WHERE    question_industry = :industry
+        AND      period = :period
+        AND      quest_order = 1
+        AND      MOD(question,10) = 1
+	AND	 lag <> 9
+        ORDER BY question;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question_library'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No questions found for this Industry and this Period'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(industry) = 1,
+                        REVERSE(industry) = 1,
+                        UNDERLINE(industry) = 0);
+
+    total_questions = ARRAYALLROWS(g_question_array);
+    h_counter = 1;
+    question = :g_question_array[:h_counter].question;
+
+    ret_val = CALLPROC lp_load_question ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Clear' =
+{
+    CLEAR FIELD ALL;
+    msa_date = 'now';
+    SET_FORMS FIELD '' (DISPLAYONLY(period) = 0,
+                        REVERSE(period) = 0,
+                        UNDERLINE(period) = 1,
+                        DISPLAYONLY(industry) = 0,
+                        REVERSE(industry) = 0,
+                        UNDERLINE(industry) = 1);
+    RESUME FIELD period;
+}
+
+'PreviousQuestion' =
+{
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(period));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Period' WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(industry));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Industry' WITH STYLE = POPUP;
+        RESUME FIELD industry;
+    ENDIF;
+
+    IF h_counter = 1
+    THEN
+        MESSAGE 'No more questions'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_counter = :h_counter - 1;
+    question = :g_question_array[:h_counter].question;
+
+    ret_val = CALLPROC lp_load_question ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+    
+}
+
+'NextQuestion' =
+{
+
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(period));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Period' WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(industry));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Industry' WITH STYLE = POPUP;
+        RESUME FIELD industry;
+    ENDIF;
+
+    IF h_counter = :total_questions
+    THEN
+        MESSAGE 'No more questions'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_counter = :h_counter + 1;
+    question = :g_question_array[:h_counter].question;
+
+    ret_val = CALLPROC lp_load_question ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+    
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                     L O C A L   P R O C E D U R E
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_question () =
+{
+    MESSAGE 'Selecting Question ' + VARCHAR(:question) + ' . . .';
+
+    form_msg = VARCHAR(:h_counter) + ' of ' + VARCHAR(:total_questions);
+
+    text_line1 = '';
+    text_line2 = '';
+    text_line3 = '';
+    text_line4 = '';
+    text_line5 = '';
+    text_line6 = '';
+    text_line7 = '';
+    text_line8 = '';
+    text_line9 = '';
+    text_line10 = '';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT lag,
+               text_line1,
+               text_line2,
+               text_line3,
+               text_line4,
+               text_line5,
+               text_line6,
+               text_line7,
+               text_line8,
+               text_line9,
+               text_line10
+        FROM   question_library
+        WHERE  question = :question
+        AND    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question_library'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Unable to find question ' + VARCHAR(:question)
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Units for the Volume Questions
+    ------------------------------------------------------------------*/
+
+    question2 = '';
+    question4 = '';
+    question5 = '';
+    question6 = '';
+    question8 = '';
+
+    MESSAGE 'Selecting Volumes . . .';
+   
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT unit_1 AS h_volume_text,
+               question AS h_question
+        FROM   question_library
+        WHERE  question IN (:question + 1, :question + 3, :question + 4,
+                            :question + 5, :question + 7)
+        AND    period = :period
+        {
+            IF MOD(h_question,10) = 2
+            THEN
+                question2 = :h_volume_text;
+            ELSEIF MOD(h_question,10) = 4
+            THEN
+                question4 = :h_volume_text;
+            ELSEIF MOD(h_question,10) = 5
+            THEN
+                question5 = :h_volume_text;
+            ELSEIF MOD(h_question,10) = 6
+            THEN
+                question6 = :h_volume_text;
+            ELSEIF MOD(h_question,10) = 8
+            THEN
+                question8 = :h_volume_text;
+            ENDIF;
+        };
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question_library'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    RETURN 0;
+}

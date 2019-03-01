@@ -1,0 +1,172 @@
+/*----------------------------------------------------------------------
+Create default credibility gates for the new question 
+(if it doesn't already have them)
+
+Table credibility_defaults has 4 rows (of which we only want one):
+
+    annual value  question (question ends with 1)
+    annual volume question (question ends with 2)
+
+    quarterly value  question (question ends with 1)
+    quarterly volume question (question ends with 2)
+
+Get the right row by matching on :inquiry (14 or 15) and 
+:type_of_question (1 for value, 2 for ALL volumes)
+----------------------------------------------------------------------*/
+
+PROCEDURE msaee_fp_cr_credibility (
+
+        question          = INTEGER4 NOT NULL,
+        question_industry = INTEGER4 NOT NULL,
+        quest_order       = INTEGER1 NOT NULL,
+        inquiry           = INTEGER1 NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        type_of_question  = INTEGER1 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+{
+    h_frpr_name = 'msaee_fp_cr_credibility';
+    h_retries_allowed = 3;
+
+    IF MOD(:question,10) = 1
+    THEN
+        type_of_question = 1;
+    ELSE
+        type_of_question = 2;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT question
+        FROM   credibility
+        WHERE  question = :question;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing credibility'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+    
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+    
+            h_retries = :h_retries + 1;
+    
+            INSERT INTO credibility (
+                        question,
+                        question_industry,
+                        quest_order,
+                        inquiry,
+                        minimum_change,
+                        maximum_value,
+                        increase,
+                        decrease,
+                        uv_increase,
+                        uv_decrease,
+                        sph_increase,
+                        sph_decrease,
+                        key_minimum_change,
+                        key_maximum_value,
+                        key_increase,
+                        key_decrease,
+                        key_uv_increase,
+                        key_uv_decrease,
+                        new_uv_range_from,
+                        new_uv_range_to,
+                        new_sph_range_from,
+                        new_sph_range_to)
+            SELECT      :question,
+                        :question_industry,
+                        :quest_order,
+                        :inquiry,
+                        minimum_change,
+                        maximum_value,
+                        increase,
+                        decrease,
+                        uv_increase,
+                        uv_decrease,
+                        sph_increase,
+                        sph_decrease,
+                        key_minimum_change,
+                        key_maximum_value,
+                        key_increase,
+                        key_decrease,
+                        key_uv_increase,
+                        key_uv_decrease,
+                        new_uv_range_from,
+                        new_uv_range_to,
+                        new_sph_range_from,
+                        new_sph_range_to
+            FROM        credibility_defaults
+            WHERE       inquiry = :inquiry
+            AND         MOD(question,10) = :type_of_question;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+    
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+    
+        ENDWHILE;
+    
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+    
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in inserting into credibility'
+            WITH STYLE = POPUP;
+            RETURN 9;
+    
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No rows inserted into credibility'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+    ENDIF;
+
+    RETURN 0;
+}

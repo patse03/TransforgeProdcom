@@ -1,0 +1,409 @@
+PROCEDURE msag_fp_add_asi_qrp (
+
+        industry           = INTEGER4 NOT NULL,
+        inquiry            = INTEGER1 NOT NULL,
+        uvprint            = CHAR(1) NOT NULL,
+        period             = INTEGER4 NOT NULL) = 
+
+DECLARE h_retries          = INTEGER1 NOT NULL,
+        h_retries_allowed  = INTEGER1 NOT NULL,
+        h_retry_or_not     = CHAR(5)  NOT NULL,
+        h_frpr_name        = VARCHAR(25) NOT NULL,
+        h_coordinator      = VARCHAR(25) NOT NULL,
+        h_job_number       = INTEGER4 NOT NULL,
+        h_new_sim_table    = VARCHAR(21) NOT NULL,
+        h_check_table      = VARCHAR(21) NOT NULL,
+        yr1                = INTEGER4 NOT NULL,
+        yr2                = INTEGER4 NOT NULL,
+        yr3                = INTEGER4 NOT NULL,
+        yr4                = INTEGER4 NOT NULL,
+        temp_table         = VARCHAR(25) NOT NULL,
+        temp_total_table   = VARCHAR(25) NOT NULL,
+        contributor_table  = VARCHAR(25) NOT NULL,
+        total_table        = VARCHAR(25) NOT NULL,
+        question_table     = VARCHAR(25) NOT NULL,
+        uv_table           = VARCHAR(25) NOT NULL,
+        agguv_table        = VARCHAR(25) NOT NULL,
+        sumuv_table        = VARCHAR(25) NOT NULL,
+        minuv_table        = VARCHAR(25) NOT NULL,
+        maxuv_table        = VARCHAR(25) NOT NULL,
+        avguv_table        = VARCHAR(25) NOT NULL,
+        output_file        = VARCHAR(40) NOT NULL,
+        output_file1       = VARCHAR(40) NOT NULL,
+        output_file2       = VARCHAR(40) NOT NULL,
+        h_code             = VARCHAR(1200) NOT NULL,
+        h_job_type         = VARCHAR(20) NOT NULL,
+        ret_val            = INTEGER1 NOT NULL
+
+{
+    h_frpr_name = 'msag_fp_add_asi_qrp';
+    h_retries_allowed = 3;
+
+    MESSAGE 'Setting up QRP for Industry ' +
+            VARCHAR(:industry) + ' . . .';
+
+    /*------------------------------------------------------------------
+      Find out the data_coordinator
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msag_fp_get_coordinator (
+                       h_coordinator = BYREF(:h_coordinator),
+                       h_industry    = :industry);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Check the results_table exists
+    ------------------------------------------------------------------*/
+
+    h_new_sim_table = 'sim_' + VARCHAR(:industry) + '_' +
+                      VARCHAR(:period) + '_cqpv';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT table_name AS h_check_table
+        FROM   iitables
+        WHERE  table_name = :h_new_sim_table;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing iitables'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Sorry, but there is no results table for Industry ' +
+                VARCHAR(:industry) + ' for Period ' + 
+                VARCHAR(:period)
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Get the previous periods
+    ------------------------------------------------------------------*/
+
+    yr4 = :period;
+
+    ret_val = CALLPROC msa_fp_prev_periods (
+              inquiry      = :inquiry,
+              period       = :period,
+              prev_period1 = BYREF(:yr3),
+              prev_period2 = BYREF(:yr2),
+              prev_period3 = BYREF(:yr1));
+                  
+    /*------------------------------------------------------------------
+      Declarations for the report writer
+    ------------------------------------------------------------------*/
+
+    h_job_type = 'qrp ' + VARCHAR(:industry);
+
+    temp_table        := 'qrp_' + VARCHAR(:industry) + '_temp';
+    contributor_table := 'qrp_' + VARCHAR(:industry) + '_contributor';
+    temp_total_table  := 'qrp_' + VARCHAR(:industry) + '_temp_total';
+    total_table       := 'qrp_' + VARCHAR(:industry) + '_total';
+    question_table    := 'qrp_' + VARCHAR(:industry) + '_quest';
+    uv_table          := 'qrp_' + VARCHAR(:industry) + '_uv';
+    agguv_table       := 'qrp_' + VARCHAR(:industry) + '_agguv';
+    sumuv_table       := 'qrp_' + VARCHAR(:industry) + '_sumuv';
+    minuv_table       := 'qrp_' + VARCHAR(:industry) + '_minuv';
+    maxuv_table       := 'qrp_' + VARCHAR(:industry) + '_maxuv';
+    avguv_table       := 'qrp_' + VARCHAR(:industry) + '_avguv';
+
+    output_file    := '$PRINTOUT/qrp_' + VARCHAR(:industry) + '.rpt';
+
+    IF :uvprint = 'A' OR :uvprint = 'Q'
+    THEN
+
+        /*--------------------------------------------------------------
+         Drop the three tables in case they're left over from before
+        --------------------------------------------------------------*/
+    
+        h_code = 'echo "drop ' + :temp_table +
+                 '; drop ' + :contributor_table +
+                 '; drop ' + :total_table +
+                 '; drop ' + :question_table +
+                 ' \p\g " | sql ' + :g_database + 
+                 ' >> ' + :g_error_log + '; ' +
+    
+                 'report ' + 
+                 :g_database +
+                 ' ''(temp_table = "' + :temp_table + '"' + 
+                 ',total_table = "' + :total_table + '"' +
+                 ',question_table = "' + :question_table + '"' +
+                 ',simtable = "' + :h_new_sim_table + '"' +
+                 ',industry = "' + VARCHAR(:industry) + '"' +
+                 ',coordinator = "' + :h_coordinator + '"' +
+                 ',q1 = ' + VARCHAR(:yr2) +
+                 ',q2 = ' + VARCHAR(:yr3) +
+                 ',q3 = ' + VARCHAR(:yr4) +
+                 ',q6 = ' + VARCHAR(:yr1) +
+                 ')'' -i$REPORTS/msag_rw_annual_qrp_new.rw' +
+                 ' -f' + :output_file +
+                 ' >> ' +:g_error_log + ' 2>>' + :g_error_log +';' +
+                 'lp -drxp -oLANZ+NPN+SIMPLEX+?CONTROL?+%' +
+                 :g_room + '% ' +
+                 CONCAT(' ',:output_file) +
+                 ' >> ' + :g_error_log + ' 2>>' + :g_error_log;
+                     
+        /*----------------------------------------------------------
+         Check job isn't already on table
+        ----------------------------------------------------------*/
+    
+        ret_val = CALLPROC msag_fp_check_job (
+                  h_job_type = :h_job_type);
+    
+        IF ret_val <> 0
+        THEN
+            IF ret_val = 1
+            THEN
+                /*------------------------------------------------------
+                MESSAGE 'This job is already on the schedule'
+                ------------------------------------------------------*/
+                RETURN 0;
+            ELSE
+                RETURN ret_val;
+            ENDIF;
+        ENDIF;
+    
+        /*----------------------------------------------------------
+         Get job number
+        ----------------------------------------------------------*/
+    
+        ret_val = CALLPROC msag_fp_get_jobno (
+                  h_job_number = BYREF(:h_job_number));
+    
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+    
+        /*----------------------------------------------------------
+        Add job to batch_jobs table
+        ----------------------------------------------------------*/
+    
+        ret_val = CALLPROC msag_fp_insert_job (
+                  h_job_number = :h_job_number,
+                  h_job_type   = :h_job_type,
+                  h_popup      = 'n',
+                  h_code       = :h_code);
+    
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+    ENDIF;
+
+    IF :uvprint = 'A' OR :uvprint = 'U'
+    THEN
+
+        h_job_type = 'uv ' + VARCHAR(:industry);
+    
+        output_file1    := '$PRINTOUT/qrpuv2_' + VARCHAR(:industry) + '.rpt';
+        output_file2    := '$PRINTOUT/qrpuv4_' + VARCHAR(:industry) + '.rpt';
+    
+        /*--------------------------------------------------------------
+          Drop the three tables in case they're left over from before
+        --------------------------------------------------------------*/
+    
+        h_code = 'echo "drop ' + :temp_table +
+                 '; drop ' + :uv_table +
+                 '; drop ' + :agguv_table +
+                 '; drop ' + :sumuv_table +
+                 '; drop ' + :minuv_table +
+                 '; drop ' + :maxuv_table +
+                 '; drop ' + :avguv_table +
+                 ' \p\g " | sql ' + :g_database + 
+                 ' >> ' + :g_error_log + '; ' +
+    
+                 'report ' + 
+                 :g_database +
+                 ' ''(temp_table = "' + :temp_table + '"' + 
+                 ',simtable = "' + :h_new_sim_table + '"' +
+                 ',uv_table = "' + :uv_table + '"' +
+                 ',agguv_table = "' + :agguv_table + '"' +
+                 ',sumuv_table = "' + :sumuv_table + '"' +
+                 ',minuv_table = "' + :minuv_table + '"' +
+                 ',maxuv_table = "' + :maxuv_table + '"' +
+                 ',avguv_table = "' + :avguv_table + '"' +
+                 ',industry = "' + VARCHAR(:industry) + '"' +
+                 ',coordinator = "' + :h_coordinator + '"' +
+                 ',q1 = ' + VARCHAR(:yr2) +
+                 ',q2 = ' + VARCHAR(:yr3) +
+                 ',q3 = ' + VARCHAR(:yr4) +
+                 ',q6 = ' + VARCHAR(:yr1) +
+                 ')'' -i$REPORTS/msag_rw_annual_uv2_new.rw' +
+                 ' -f' + :output_file1 +
+                 ' >> ' +:g_error_log + ' 2>>' + :g_error_log +';' +
+                 'lp -drxp -oLANZ+NPN+SIMPLEX+?CONTROL?+%' +
+                 :g_room + '% ' +
+                 CONCAT(' ',:output_file1) +
+                 ' >> ' + :g_error_log + ' 2>>' + :g_error_log + ';' +
+    
+                 'if test -s ' +
+                 CONCAT(' ',:output_file1) + '; then' +
+                 ' lp -drxp -oLANZ+NPN+SIMPLEX+?CONTROL?+%' +
+                 :g_room + '% ' +
+                 CONCAT(' ',:output_file1) +
+                 ' >> ' + :g_error_log + ' 2>>' + :g_error_log +
+                 '; fi';
+                     
+        /*----------------------------------------------------------
+         Check job isn't already on table
+        ----------------------------------------------------------*/
+    
+        ret_val = CALLPROC msag_fp_check_job (
+                  h_job_type = :h_job_type);
+    
+        IF ret_val <> 0
+        THEN
+            IF ret_val = 1
+            THEN
+                RETURN 0;
+            ELSE
+                RETURN ret_val;
+            ENDIF;
+        ENDIF;
+    
+        /*----------------------------------------------------------
+         Get job number
+        ----------------------------------------------------------*/
+    
+        ret_val = CALLPROC msag_fp_get_jobno (
+                  h_job_number = BYREF(:h_job_number));
+    
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+    
+        /*----------------------------------------------------------
+        Add job to batch_jobs table
+        ----------------------------------------------------------*/
+    
+        ret_val = CALLPROC msag_fp_insert_job (
+                  h_job_number = :h_job_number,
+                  h_job_type   = :h_job_type,
+                  h_popup      = 'n',
+                  h_code       = :h_code);
+    
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+    
+        h_job_type = 'uv4 ' + VARCHAR(:industry);
+    
+        h_code = 'echo " \p\g " | sql ' + :g_database + 
+                 ' >> ' + :g_error_log + '; ' +
+                 'report ' + 
+                 :g_database +
+                 ' ''(temp_table = "' + :temp_table + '"' + 
+                 ',simtable = "' + :h_new_sim_table + '"' +
+                 ',uv_table = "' + :uv_table + '"' +
+                 ',industry = "' + VARCHAR(:industry) + '"' +
+                 ',agguv_table = "' + :agguv_table + '"' +
+                 ',sumuv_table = "' + :sumuv_table + '"' +
+                 ',minuv_table = "' + :minuv_table + '"' +
+                 ',maxuv_table = "' + :maxuv_table + '"' +
+                 ',avguv_table = "' + :avguv_table + '"' +
+                 ',coordinator = "' + :h_coordinator + '"' +
+                 ',q1 = ' + VARCHAR(:yr2) +
+                 ',q2 = ' + VARCHAR(:yr3) +
+                 ',q3 = ' + VARCHAR(:yr4) +
+                 ',q6 = ' + VARCHAR(:yr1) +
+                 ')'' -i$REPORTS/msag_rw_annual_uv4_new.rw' +
+                 ' -f' + :output_file2 +
+                 ' >> ' +:g_error_log + ' 2>>' + :g_error_log +';' +
+                 'lp -drxp -oLANZ+NPN+SIMPLEX+?CONTROL?+%' +
+                 :g_room + '% ' +
+                 CONCAT(' ',:output_file2) +
+                 ' >> ' + :g_error_log + ' 2>>' + :g_error_log + ';' +
+    
+                 'if test -s ' +
+                 CONCAT(' ',:output_file2) + '; then' +
+                 ' lp -drxp -oLANZ+NPN+SIMPLEX+?CONTROL?+%' +
+                 :g_room + '% ' +
+                 CONCAT(' ',:output_file2) +
+                 ' >> ' + :g_error_log + ' 2>>' + :g_error_log +
+                 '; fi';
+    
+        /*----------------------------------------------------------
+         Check job isn't already on table
+        ----------------------------------------------------------*/
+    
+        ret_val = CALLPROC msag_fp_check_job (
+                  h_job_type = :h_job_type);
+    
+        IF ret_val <> 0
+        THEN
+            IF ret_val = 1
+            THEN
+                RETURN 0;
+            ELSE
+                RETURN ret_val;
+            ENDIF;
+        ENDIF;
+    
+        /*----------------------------------------------------------
+         Get job number
+        ----------------------------------------------------------*/
+    
+        ret_val = CALLPROC msag_fp_get_jobno (
+                  h_job_number = BYREF(:h_job_number));
+    
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+    
+        /*----------------------------------------------------------
+        Add job to batch_jobs table
+        ----------------------------------------------------------*/
+    
+        ret_val = CALLPROC msag_fp_insert_job (
+                  h_job_number = :h_job_number,
+                  h_job_type   = :h_job_type,
+                  h_popup      = 'n',
+                  h_code       = :h_code);
+    
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+    ENDIF;
+
+    RETURN 0;
+
+}

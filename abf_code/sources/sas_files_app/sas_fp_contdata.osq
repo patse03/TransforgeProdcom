@@ -1,0 +1,1195 @@
+
+/*--------------------------------------------------------------
+    This procedure transfers tables to harrydb
+--------------------------------------------------------------*/
+
+
+PROCEDURE sas_fp_contdata ()=
+
+DECLARE   ret_val           = INTEGER4 NOT NULL,
+          h_frpr_name       = VARCHAR(25) NOT NULL,
+          h_period          = INTEGER4 NOT NULL,
+          start_period      = INTEGER4 NOT NULL,
+          end_period        = INTEGER4 NOT NULL,
+          froz_period       = INTEGER4 NOT NULL,
+          h_industry        = INTEGER4 NOT NULL,
+          h_count           = INTEGER4 NOT NULL,
+          h_table           = VARCHAR(24) NOT NULL,
+          h_table1          = VARCHAR(24) NOT NULL,
+          h_table2          = VARCHAR(24) NOT NULL,
+          h_table3          = VARCHAR(24) NOT NULL,
+          h_table4          = VARCHAR(24) NOT NULL,
+          h_table5          = VARCHAR(24) NOT NULL,
+          h_table6          = VARCHAR(24) NOT NULL,
+          h_table7          = VARCHAR(24) NOT NULL,
+          h_copy_table1     = VARCHAR(24) NOT NULL,
+          h_copy_out     = VARCHAR(60) NOT NULL,
+          h_command         = VARCHAR(500) NOT NULL,
+          h_directory       = VARCHAR(100) NOT NULL,
+          h_to_database     = VARCHAR(10) NOT NULL,
+          h_save_name       = VARCHAR(30) NOT NULL,
+          h_now             = VARCHAR(24) NOT NULL,
+	  tables_exist      = procedure returning integer
+{
+    h_frpr_name  = 'sas_fp_sas_tables';
+    h_copy_table1 = 'euroconts';
+    h_table2 = 'asi_carry_contributors';
+    h_table3 = 'asi_carry';
+    h_table4 = 'asi_carry_avg';
+    h_table5 = 'asi_carry_ent';
+    h_table6 = 'asi_carry_ent6';
+    h_table7 = 'asi_carry_ent7';
+    IF g_inquiry = 14
+    then
+        start_period = :g_period[:g_periods].period - 100;
+    else
+        start_period = :g_period[:g_periods].period;
+    endif;
+    end_period = :g_period[1].period;
+				     
+    h_now = VARCHAR(DATE('now'));
+    h_save_name = 'eurodata_' +
+                VARCHAR(DATE_PART('year','now')) +
+                RIGHT(LEFT(h_now,5),2) +
+                LEFT(h_now,2) + '.' + ascii(:g_inquiry);
+
+    h_copy_out = :g_path_name1 + :h_save_name;
+    ret_val = CALLPROC sas_fp_drop_table (
+              h_table = :h_copy_table1);
+
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC sas_fp_drop_table (
+              h_table = :h_table2);
+
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC sas_fp_drop_table (
+              h_table = :h_table3);
+
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC sas_fp_drop_table (
+              h_table = :h_table4);
+
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+
+    ret_val = CALLPROC sas_fp_drop_table (
+              h_table = :h_table5);
+
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+
+    ret_val = CALLPROC sas_fp_drop_table (
+              h_table = :h_table6);
+
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+
+    ret_val = CALLPROC sas_fp_drop_table (
+              h_table = :h_table7);
+
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    CREATE TABLE :h_copy_table1 (
+	  contributor_reference char(11) not null,
+	  period                integer4 not null,
+	  question              integer4 not null,
+	  quest_order           integer1 not null,
+	  question_industry     integer4 not null,
+	  
+	  contributor_inquiry   integer2 not null,
+	  contributor_industry  integer4 not null,
+	  proposed_industry     integer4 not null,
+	  enterprise            char(10) not null,
+	  register_emp          integer4 not null,
+	  acell                 char(2) not null,
+	  avalue                integer4 not null)
+	  WITH LOCATION = (live3);
+
+
+
+    ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error creating ' + :h_copy_table1,
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Copy the sim tables over one at a time
+    ------------------------------------------------------------------*/
+
+    SELECT   industry AS h_industry,
+             period AS h_period
+    FROM     :g_results_industry
+    ORDER BY h_industry
+    {
+        h_table = 'sim_' + VARCHAR(:h_industry) + '_' +
+                  VARCHAR(:h_period) + '_cqpv';
+
+        ret_val = CALLPROC tables_exist ( table_name = :h_table);
+
+        IF ret_val > 1
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+      IF ret_val = 0
+      THEN
+        MESSAGE 'Inserting table - '+:h_table;
+
+        INSERT INTO :h_copy_table1
+	SELECT a.contributor_reference,
+	       a.qperiod as period,
+	       a.question,
+	       a.quest_order,
+	       a.question_industry,
+	      
+	       a.inquiry,
+	       a.contributor_industry,
+	       a.contributor_industry as proposed_industry,
+	       a.enterprise,
+	       int4(0) as register_emp,
+	       acell,
+	       avalue
+        FROM :h_table a
+	WHERE quest_order = 1
+	AND mod(question,10) = 1;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val > 1
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error inserting data  ' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+
+      ENDIF;
+
+    };
+
+    ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error in select-loop for sim_tables',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ELSEIF ret_val = 1
+    THEN
+        ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'No rows in select-loop for sim_tables',
+                  h_frpr_name = :h_frpr_name);
+    ENDIF;
+/*
+    MESSAGE 'Inserting non responders into SAS table ';
+
+    INSERT INTO :h_copy_table1
+    SELECT a.contributor_reference,
+	       a.period as period,
+	       a.question,
+	       a.quest_order,
+	       a.question_industry,
+	       '0' as lag,
+	       :g_inquiry as inquiry,
+	       a.contributor_industry,
+	       a.contributor_industry as proposed_industry,
+	       b.enterprise,
+	       b.register_emp as register_emp,
+	       a.acell,
+	       a.avalue
+    FROM cqpv a,
+         contributor_period b
+    WHERE acell = 'N'
+    AND a.contributor_reference = b.contributor_reference
+    AND a.period = b.period
+    AND a.period BETWEEN :start_period
+	   AND :end_period
+    AND a.contributor_inquiry = :g_inquiry
+    AND question_industry IN
+		(SELECT industry FROM :g_results_industry);
+
+    ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+    IF ret_val > 1
+    THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error inserting data from cqpv ' ,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+    ENDIF;
+*/
+    IF g_inquiry = 14
+    THEN
+
+       MESSAGE 'Creating table for carry';
+        
+	CREATE TABLE :h_table2
+	AS SELECT DISTINCT contributor_industry
+	FROM mid_carryout
+	WHERE question_industry in     
+		(SELECT industry FROM :g_results_industry)
+        AND period BETWEEN :start_period
+		   AND :end_period;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating carry annual data  ' + :h_table2,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+/*
+        MESSAGE 'Creating table3 for total_sales - carry';
+        
+	CREATE TABLE :h_table3
+	AS SELECT b.contributor_reference ,
+                  b.period as period,
+		  b.period/100*100 as asi_period,
+                  b.question,
+                  b.quest_order,
+                  b.question_industry,
+                  b.contributor_industry,
+                  b.avalue
+								     
+	FROM :h_table2 a,
+	     cqpv b
+        WHERE a.contributor_industry = b.contributor_industry
+	AND mod(question,10000) = 9200
+        AND b.period/100*100 BETWEEN :start_period
+		   AND :end_period;
+	     
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating carry annual data  ' + :h_table3,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+
+        MESSAGE 'Creating table4 for total_sales - carry';
+        
+	CREATE TABLE :h_table4
+	AS SELECT contributor_reference ,
+                  asi_period as period,
+                  question,
+                  quest_order,
+                  question_industry,
+                  contributor_industry,
+                  sum(avalue) as avalue
+								     
+	FROM :h_table3 
+        GROUP BY contributor_reference,asi_period,question,quest_order,
+	question_industry,contributor_industry;
+	     
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating carry annual data  ' + :h_table4,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+
+        MESSAGE 'Creating table5 for total_sales - carry';
+        
+	CREATE TABLE :h_table5
+	AS SELECT contributor_reference ,
+                  a.period as period,
+                  a.question,
+                  a.quest_order,
+                  a.question_industry,
+                  '0' as lag,
+                  :g_inquiry as inquiry,
+                  a.contributor_industry,
+                  a.contributor_industry as proposed_industry,
+                  '            ' as enterprise,
+                  int4(0) as register_emp,
+                  'N' as acell,
+                   avalue
+								     
+	FROM :h_table4 a;
+	     
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating carry annual data  ' + :h_table5,
+
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+
+        MESSAGE 'Updating table5 for total sales - carry';
+
+        UPDATE :h_table5 a
+        FROM contributor_period b
+        SET enterprise = b.enterprise
+        WHERE a.contributor_reference = b.contributor_reference
+        AND a.period+12 = b.period
+	AND a.enterprise in ('','0')
+        AND b.inquiry = 15;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error updating carry data 1' + :h_table5,
+                  h_frpr_name = :h_frpr_name);
+        ENDIF;
+
+
+        UPDATE :h_table5 a
+        FROM contributor_period b
+        SET enterprise = b.enterprise
+        WHERE a.contributor_reference = b.contributor_reference
+        AND a.period+9 = b.period
+        AND b.inquiry = 15;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error updating carry data 2' + :h_table5,
+                  h_frpr_name = :h_frpr_name);
+        ENDIF;
+
+        UPDATE :h_table5 a
+        FROM contributor_period b
+        SET enterprise = b.enterprise
+        WHERE a.contributor_reference = b.contributor_reference
+        AND a.period+6 = b.period
+        AND b.inquiry = 15;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error updating carry data 3' + :h_table5,
+                  h_frpr_name = :h_frpr_name);
+        ENDIF;
+
+        UPDATE :h_table5 a
+        FROM contributor_period b
+        SET enterprise = b.enterprise
+        WHERE a.contributor_reference = b.contributor_reference
+        AND a.period+3 = b.period
+        AND b.inquiry = 15;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error updating carry data 4' + :h_table5,
+                  h_frpr_name = :h_frpr_name);
+        ENDIF;
+
+        UPDATE :h_table5 a
+        SET    acell = 'I'
+        WHERE  contributor_reference IN(
+          SELECT contributor_reference FROM :h_table3 b
+          WHERE acell = 'I'
+          AND a.question = b.question
+          AND b.period BETWEEN b.period/100*100+3 AND b.period/100*100+12);
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error updating carry data 6' + :h_table5,
+                  h_frpr_name = :h_frpr_name);
+        ENDIF;
+
+
+        UPDATE :h_table5 a
+        SET    acell = 'A'
+        WHERE  contributor_reference IN(
+          SELECT contributor_reference FROM :h_table3 b
+          WHERE acell = 'A'
+          AND a.question = b.question
+          AND b.period BETWEEN b.period/100*100+3 AND b.period/100*100+12)
+	AND acell <> 'I';
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error updating carry data 7 ' + :h_table5,
+                  h_frpr_name = :h_frpr_name);
+        ENDIF;
+
+        UPDATE :h_table5 a
+        SET    acell = 'C'
+        WHERE  contributor_reference IN(
+          SELECT contributor_reference FROM :h_table3 b
+          WHERE acell = 'C'
+          AND a.question = b.question
+          AND b.period BETWEEN b.period/100*100+3 AND b.period/100*100+12)
+	AND acell NOT IN ('I','A');
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error updating carry data 8' + :h_table5,
+                  h_frpr_name = :h_frpr_name);
+        ENDIF;
+
+
+        UPDATE :h_table5 a
+        SET    acell = 'P'
+        WHERE  contributor_reference IN(
+          SELECT contributor_reference FROM :h_table3 b
+          WHERE acell = 'P'
+          AND a.question = b.question
+          AND b.period BETWEEN b.period/100*100+3 AND b.period/100*100+12)
+	AND acell NOT IN ('I','A','C');
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error updating carry data 9' + :h_table5,
+                  h_frpr_name = :h_frpr_name);
+        ENDIF;
+
+
+        UPDATE :h_table5 a
+        SET    acell = 'V'
+        WHERE  contributor_reference IN(
+          SELECT contributor_reference FROM :h_table3 b
+          WHERE acell = 'V'
+          AND a.question = b.question
+          AND b.period BETWEEN b.period/100*100+3 AND b.period/100*100+12)
+	AND acell NOT IN ('I','A','C','P');
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error updating carry data 10' + :h_table5,
+                  h_frpr_name = :h_frpr_name);
+        ENDIF;
+
+
+        UPDATE :h_table5 a
+        SET    acell = 'B'
+        WHERE  contributor_reference IN(
+          SELECT contributor_reference FROM :h_table3 b
+          WHERE acell = 'B'
+          AND a.question = b.question
+          AND b.period BETWEEN b.period/100*100+3 AND b.period/100*100+12)
+	AND acell NOT IN ('I','A','C','P','V');
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error updating carry data 11' + :h_table5,
+                  h_frpr_name = :h_frpr_name);
+        ENDIF;
+
+        MESSAGE 'Inserting table5 for total sales - carry';
+        
+	INSERT INTO :h_copy_table1
+	SELECT * FROM :h_table5;
+	     
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error inserting carry annual data  ' ,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+*/
+    ELSE
+     
+        
+	CREATE TABLE :h_table2
+	AS SELECT DISTINCT contributor_industry
+	FROM asi_to_qsi_link
+	WHERE question_industry in     
+		(SELECT industry FROM :g_results_industry)
+        AND asi_period BETWEEN :start_period
+		   AND :end_period;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating carry quarterly data  ' + :h_table2,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+/*
+        MESSAGE 'Creating table3 for total_sales - carry';
+        
+	CREATE TABLE :h_table3
+	AS SELECT b.contributor_reference ,
+                  b.period as period,
+                  b.question,
+                  b.quest_order,
+                  b.question_industry,
+                  '0' as lag,
+                  :g_inquiry as inquiry,
+                  a.contributor_industry,
+                  a.contributor_industry as proposed_industry,
+                  '            ' as enterprise,
+                  int4(0) as register_emp,
+                  b.acell,
+                  b.avalue
+								     
+	FROM :h_table2 a,
+	     cqpv b
+        WHERE a.contributor_industry = b.contributor_industry
+	AND mod(question,10000) = 9200
+        AND b.period BETWEEN :start_period/100*100
+		   AND :end_period/100*100;
+	     
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating carry quarterly data  ' + :h_table3,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+
+        MESSAGE 'Creating table4 for total_sales - carry';
+        
+	CREATE TABLE :h_table4
+	AS SELECT contributor_reference ,
+                  period/100*100+3 as period,
+                  question,
+                  quest_order,
+                  question_industry,
+                  lag,
+                  inquiry,
+                  contributor_industry,
+                  proposed_industry,
+                  enterprise,
+                  register_emp,
+                  acell,
+                  avalue/4 as avalue
+								     
+	FROM :h_table3; 
+	     
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating carry quarterly data  ' + :h_table4,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+	INSERT INTO :h_copy_table1
+	SELECT * FROM :h_table4;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error inserting carry quarterly data  ' ,
+                      h_frpr_name = :h_frpr_name);
+        ENDIF;
+
+	UPDATE :h_table4
+	SET period = period + 3;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error updating carry quarterly data 1' ,
+                      h_frpr_name = :h_frpr_name);
+        ENDIF;
+
+	INSERT INTO :h_copy_table1
+	SELECT * FROM :h_table4;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error inserting carry quarterly data 1' ,
+                      h_frpr_name = :h_frpr_name);
+        ENDIF;
+
+	UPDATE :h_table4
+	SET period = period + 3;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error updating carry quarterly data 2' ,
+                      h_frpr_name = :h_frpr_name);
+        ENDIF;
+
+	INSERT INTO :h_copy_table1
+	SELECT * FROM :h_table4;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error inserting carry quarterly data 2' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+        ENDIF;
+
+	UPDATE :h_table4
+	SET period = period + 3;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error updating carry quarterly data 3' ,
+                      h_frpr_name = :h_frpr_name);
+        ENDIF;
+
+	INSERT INTO :h_copy_table1
+	SELECT * FROM :h_table4;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error inserting carry quarterly data 3' ,
+                      h_frpr_name = :h_frpr_name);
+        ENDIF;
+*/
+    ENDIF;
+/*
+    MESSAGE 'Deleting duplicates SAS table ';
+
+    DELETE FROM :h_copy_table1 a
+    WHERE contributor_reference IN (
+	SELECT contributor_reference FROM :h_copy_table1 b
+	WHERE a.quest_order = b.quest_order 
+	AND a.question = b.question
+	AND a.period = b.period
+	AND a.tid != b.tid)
+    AND a.acell = 'N';
+
+    ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+    IF ret_val > 1
+    THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error inserting data from cqpv ' ,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+    ENDIF;
+*/
+    MESSAGE 'Modifying SAS table ';
+
+    MODIFY :h_copy_table1 TO BTREE UNIQUE ON  contributor_reference,
+                                              quest_order,
+					      question,
+					      period;
+
+    ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Modifying sas table',
+                  h_frpr_name = :h_frpr_name);
+    ENDIF;
+
+
+    MESSAGE 'Updating SAS table for employment ';
+
+    UPDATE :h_copy_table1 a
+    FROM contributor_period b
+    SET register_emp = b.register_emp
+    WHERE a.contributor_reference = b.contributor_reference
+    AND a.period = b.period;
+
+    ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+    IF ret_val <> 0
+    THEN
+        ret_val = CALLPROC sas_fp_log_message (
+                  h_text = 'Error updating employment data  ' + :h_table,
+                  h_frpr_name = :h_frpr_name);
+    ENDIF;
+
+    IF g_inquiry = 15
+    THEN
+
+    MESSAGE 'Updating SAS table for employment - carry';
+
+        UPDATE :h_copy_table1 a
+        FROM contributor_period b
+        SET register_emp = b.register_emp,
+	    enterprise = b.enterprise
+        WHERE a.contributor_reference = b.contributor_reference
+        AND a.period/100*100 = b.period
+        AND b.inquiry = 14;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error updating emp/ent quarterly data  ' ,
+                      h_frpr_name = :h_frpr_name);
+        ENDIF;
+
+    ELSE
+
+    MESSAGE 'Creating table6 for employment - carry';
+        
+	CREATE TABLE :h_table6
+	AS SELECT b.contributor_reference ,
+		  b.period as qsi_period,
+		  b.period/100*100 as asi_period,
+		  register_emp
+	FROM asi_carry_contributors a,
+	     contributor_period b
+	WHERE a.contributor_industry = b.contributor_industry
+        AND b.period/100*100 BETWEEN :start_period
+		   AND :end_period;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating carry annual data  ' + :h_table6,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+    MESSAGE 'Creating table7 for employment - carry';
+        
+	CREATE TABLE :h_table7
+	AS SELECT contributor_reference ,
+		  asi_period as period,
+		  avg(register_emp) as register_emp
+	FROM :h_table6
+	GROUP BY contributor_reference,asi_period;
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error creating carry annual data  ' + :h_table7,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+    MESSAGE 'Updating SAS table for employment - carry';
+
+        UPDATE :h_copy_table1 a
+        FROM :h_table7 b
+        SET register_emp = b.register_emp
+        WHERE a.contributor_reference = b.contributor_reference
+        AND a.period = b.period;
+
+
+        ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error updating carry annual data from ' + :h_table7,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+    ENDIF;
+/*
+    MESSAGE 'Updating SAS table for lag';
+
+    UPDATE :h_copy_table1 a
+    FROM question_library b
+    SET lag = varchar(b.lag)
+    WHERE a.question = b.question
+    AND a.period/100*100 = b.period;
+
+    ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+    IF ret_val <> 0
+    THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error updating lag data  ' + :h_copy_table1,
+                      h_frpr_name = :h_frpr_name);
+    ENDIF;
+
+
+    MESSAGE 'Updating SAS table for reclassification 1';
+
+    UPDATE :h_copy_table1 a
+    FROM reclass_contrib_archive b
+    SET proposed_industry = b.proposed_ind
+    WHERE a.contributor_reference = b.contributor_reference
+    AND a.period = b.period;
+
+    ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+    IF ret_val > 1
+    THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error updating reclass archive data  ' + :h_copy_table1,
+                      h_frpr_name = :h_frpr_name);
+    ENDIF;
+
+
+    MESSAGE 'Updating SAS table for reclassification 2';
+
+    UPDATE :h_copy_table1 a
+    FROM reclass_contrib b
+    SET proposed_industry = b.proposed_ind
+    WHERE a.contributor_reference = b.contributor_reference
+    AND a.period = b.period;
+
+    ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+    IF ret_val > 1
+    THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error updating reclass data 2 ' + :h_copy_table1,
+                      h_frpr_name = :h_frpr_name);
+    ENDIF;
+*/
+    MESSAGE 'Copying SAS table to delimited file';
+    
+    COPY table :h_copy_table1
+    (
+	  contributor_reference = c(0)'^',
+	  period                = c(0)'^' ,
+	  question              = c(0)'^' ,
+	  quest_order           = c(0)'^' ,
+	  question_industry     = c(0)'^' ,
+	
+	  contributor_inquiry   = c(0)'^' ,
+	  contributor_industry  = c(0)'^' ,
+	  proposed_industry     = c(0)'^' ,
+	  enterprise            = c(0)'^',
+	  register_emp          = c(0)'^' ,
+	  acell                 = c(0)'^',
+	  avalue                = c0nl )
+    INTO :h_copy_out;
+
+
+    ret_val = CALLPROC sas_check_inq_ing (
+              h_num_row    = BYREF(:h_count),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+
+    IF ret_val <> 0
+    THEN
+            ret_val = CALLPROC sas_fp_log_message (
+                      h_text = 'Error updating lag data  ' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+}
+PROCEDURE tables_exist(table_name = char(24) not null) =
+
+{
+
+  SELECT table_name
+  FROM   iitables
+  WHERE  table_name = :table_name
+  AND    table_owner = :g_user_id;
+
+  ret_val = CALLPROC sas_check_inq_ing(h_num_row_ck = 1,
+			      h_commit     = 'Y',
+                              h_rollback   = 'N',
+                              h_frpr_name = :h_frpr_name);
+
+  RETURN ret_val;
+
+}
