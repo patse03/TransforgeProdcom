@@ -1,0 +1,1680 @@
+PROCEDURE msadb_fp_reprint_batch () = 
+
+DECLARE h_letter                = CHAR(1) NOT NULL,
+        country                 = CHAR(2) NOT NULL,
+        h_temp_username         = VARCHAR(24) NOT NULL,
+        h_int_username          = INTEGER1 NOT NULL,
+        h_name1                 = VARCHAR(24) NOT NULL,
+        h_name2                 = VARCHAR(24) NOT NULL,
+        h_user_name             = VARCHAR(24) NOT NULL,
+        h_frpr_name             = VARCHAR(24) NOT NULL,
+        h_colour                = VARCHAR(24) NOT NULL,
+        ret_val                 = INTEGER1 NOT NULL,        
+	f_barcode               = INTEGER4 NOT NULL,
+        faxbar1                 = CHAR(100) NOT NULL,
+	faxbar2                 = CHAR(100) NOT NULL,
+	faxbar3                 = CHAR(100) NOT NULL,
+	faxbar4                 = CHAR(100) NOT NULL,
+	faxbar5                 = CHAR(100) NOT NULL,
+        first_table             = CHAR(25) NOT NULL,
+        form_table              = CHAR(25) NOT NULL,
+        in_string               = CHAR(30) NOT NULL,
+        out_string              = CHAR(100) NOT NULL,
+        h_period                = INTEGER4 NOT NULL,
+        h_region                = CHAR(2) NOT NULL,
+        h_contributor_reference = CHAR(11) NOT NULL,
+        h_contributor_industry  = INTEGER4 NOT NULL,
+        h_output_category       = CHAR(1) NOT NULL,
+        h_form_type             = CHAR(1) NOT NULL,
+        h_print_yesno           = CHAR(1) NOT NULL,
+        h_industry              = INTEGER4 NOT NULL,
+        h_inquiry               = INTEGER1 NOT NULL,
+        s_user_name             = VARCHAR(24) NOT NULL,
+        h_user_id               = VARCHAR(8) NOT NULL,
+        h_room_number           = VARCHAR(6) NOT NULL,
+        h_ao_name1              = CHAR(24) NOT NULL,
+        h_ao_ext1               = CHAR(4) NOT NULL,
+        h_ao_name2              = VARCHAR(24) NOT NULL,
+        h_ao_ext2               = CHAR(4) NOT NULL,
+        h_ao_name3              = VARCHAR(24) NOT NULL,
+        h_ao_ext3               = CHAR(4) NOT NULL,
+        h_ao_name4              = CHAR(24) NOT NULL,
+        h_ao_ext4               = CHAR(4) NOT NULL,
+        h_ao_name5              = VARCHAR(24) NOT NULL,
+        h_ao_ext5               = CHAR(4) NOT NULL,
+        h_ao_name6              = VARCHAR(24) NOT NULL,
+        h_ao_ext6               = CHAR(4) NOT NULL,
+        h_ao_name7              = VARCHAR(24) NOT NULL,
+        h_ao_ext7               = CHAR(4) NOT NULL,
+        h_database              = VARCHAR(10) NOT NULL,
+
+        report_name            = VARCHAR(30) NOT NULL,
+        print_name             = VARCHAR(30) NOT NULL,
+        print_date             = DATE NOT NULL,
+	h_now                  = VARCHAR(24) NOT NULL,
+	h_dow		       = VARCHAR(3) NOT NULL,	
+        order_date             = CHAR(8) NOT NULL
+
+{
+    h_frpr_name = 'msadb_fp_reprint_batch';
+
+    h_dow = dow('today');	
+    IF h_dow = 'Sat' THEN
+    	h_now = VARCHAR(DATE('now') - '1 days');
+    ELSEIF h_dow = 'Sun' THEN
+    	h_now = VARCHAR(DATE('now') - '2 days');
+    ELSE
+    	h_now = VARCHAR(DATE('now'));
+    ENDIF;
+
+    order_date = VARCHAR(DATE_PART('year','now')) +
+  		 RIGHT(LEFT(h_now,5),2) +
+		 LEFT(h_now,2);
+
+
+    MODIFY control_results_log to TRUNCATED;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck      = 0,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error truncating control_results_log ',
+                    :h_frpr_name,
+		    :ret_val,
+		    :g_user_id);
+        COMMIT;
+    ENDIF;
+
+    INSERT INTO error_log
+    VALUES(     'now',
+            'Batch Reprint starts',
+            :h_frpr_name,
+	    :ret_val,
+	    :g_user_id);
+    COMMIT;
+
+    INSERT INTO control_results_log
+    VALUES(     'now',
+            'Batch Reprint starts',
+            :h_frpr_name,
+	    :ret_val,
+	    :g_user_id);
+    COMMIT;
+
+
+    /*-s----------------------------------------------------------------
+    Using a select loop, select one contributor at a time, for which a
+    reprint is required, from the batch_reprints table. Insert the 
+    details from each temporary table into the main reprint tables -
+    reprint_first_table , reprint_form_table
+    ----------------------------------------------------------------e-*/
+
+    /*-s----------------------------------------------------------------
+    Remove existing rows from reprint_first_table
+    ----------------------------------------------------------------e-*/
+
+    DELETE from reprint_first_table;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error deleting from reprint_first_table',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Remove existing rows from reprint_form_table
+    ----------------------------------------------------------------e-*/
+
+    DELETE from reprint_form_table;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error deleting from reprint_form_table',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+/** beginning of main selection loop for printing **/    
+
+    SELECT contributor_reference as h_contributor_reference,
+	   period as h_period,
+	   inquiry as h_inquiry,
+	   region as h_region,
+	   contributor_industry as h_contributor_industry,
+	   output_category as h_output_category,
+	   form_type as h_form_type,
+	   print_yesno as h_print_yesno,
+	   user_id as h_user_id,
+	   user_name as s_user_name,
+	   room_number as h_room_number,
+	   database as h_database,
+           ao_name1 as h_ao_name1,
+           ao_ext1 as h_ao_ext1,
+           ao_name2 as h_ao_name2,
+           ao_ext2 as h_ao_ext2,
+           ao_name3 as h_ao_name3,
+           ao_ext3 as h_ao_ext3,
+           ao_name4 as h_ao_name4,
+           ao_ext4 as h_ao_ext4,
+           ao_name5 as h_ao_name5,
+           ao_ext5 as h_ao_ext5,
+           ao_name6 as h_ao_name6,
+           ao_ext6 as h_ao_ext6,
+           ao_name7 as h_ao_name7,
+           ao_ext7 as h_ao_ext7
+    FROM   batch_reprints
+/*    WHERE  print_date = date('today')  modified 02/06/2011 by MJE */
+    WHERE (
+    (print_date = (date('today') - '1 days') AND dow('today') = 'Sat')
+    )
+    OR (
+    (print_date = (date('today') - '2 days') AND dow('today') = 'Sun')
+    )
+    OR (
+    (print_date = date('today') AND dow('today') NOT IN ('Sat','Sun'))
+    )
+    ORDER BY 1,2
+{
+
+    /*-s----------------------------------------------------------------
+    Create the temporary table by selecting the required information.
+    ----------------------------------------------------------------e-*/
+
+        first_table = 're_first_' + VARCHAR(:h_period) + '_' + :h_user_id;
+        form_table = 're_form_' + VARCHAR(:h_period) + '_' + :h_user_id;
+
+        MESSAGE 'Creating First Table . . .';
+
+        ret_val = CALLPROC batch_fp_drop_table (
+                  h_table = :first_table);
+
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+        ret_val = CALLPROC batch_fp_drop_table (
+                  h_table = :form_table);
+
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+        CREATE TABLE :first_table
+        AS SELECT    a.contributor_reference AS contributor_reference,
+		     a.period,
+                     ' ' AS check_letter,
+                     'N' AS scanned,
+                     :h_output_category as output_category,
+                     a.contributor_industry AS industry,
+		     '                        ' as ao_name1,
+                     :h_ao_ext1 as ao_ext1,
+	  	     d.email as ao_email,
+                     a.structure AS structure,
+		     a.region,
+                     c.addressee AS designator,
+                     c.add_name1 AS addrline1,
+                     c.add_name2 AS addrline2,
+                     c.add_name3 AS addrline3,
+                     c.add_tradstyle1 AS addrline4,
+                     c.add_tradstyle2 AS addrline5,
+                     c.add_tradstyle3 AS addrline6,
+                     c.add_line1 AS addrline7,
+                     c.add_line2 AS addrline8,
+                     c.add_line3 AS addrline9,
+                     c.add_line4 AS addrline10,
+                     c.add_line5 AS addrline11,
+                     c.add_postcode AS addrline12,
+            CONCAT(c.add_line3,CONCAT(c.add_line4,c.add_line5)) AS barcodeline,
+                     a.lu_count AS lu_count,
+		     a.legal_status,
+		     INT1(0) as wales,
+		     a.currency,
+           CONCAT(c.add_line3,CONCAT(c.add_line4,c.add_line5)) AS fax_barcode1,
+           CONCAT(c.add_line3,CONCAT(c.add_line4,c.add_line5)) AS fax_barcode2,
+           CONCAT(c.add_line3,CONCAT(c.add_line4,c.add_line5)) AS fax_barcode3,
+           CONCAT(c.add_line3,CONCAT(c.add_line4,c.add_line5)) AS fax_barcode4,
+           CONCAT(c.add_line3,CONCAT(c.add_line4,c.add_line5)) AS fax_barcode5
+
+        FROM         contributor_period a,
+                     contributor c,
+		     passwords d
+        WHERE        a.period = :h_period
+        AND          a.contributor_reference = :h_contributor_reference
+        AND          a.contributor_reference = c.contributor_reference
+	AND          d.user_name = UPPERCASE(:h_ao_name1);
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+	                'Error creating ' +  :first_table,
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+	    COMMIT;
+
+            INSERT INTO control_results_log
+            VALUES(     'now',
+	            'Unable to create record for ' +  :h_contributor_reference,
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+	    COMMIT;
+
+            h_print_yesno = 'N';
+	    /*ENDLOOP;*/
+        ENDIF;
+
+
+    /*-s----------------------------------------------------------------
+    Update first table with details for ao_name1               
+    ----------------------------------------------------------------e-*/
+
+	UPDATE   :first_table a
+	SET      ao_name1 = :h_ao_name1,
+		 ao_ext1  = :h_ao_ext1
+	WHERE    a.contributor_reference = :h_contributor_reference
+	AND	 a.period = :h_period;
+	
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+	                'Error updating ao_name1 on ' +  :first_table,
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+	    COMMIT;
+	    RETURN ret_val;
+        ENDIF;
+
+
+    /*-s----------------------------------------------------------------
+    Mark the scanned contributors
+    ----------------------------------------------------------------e-*/
+
+        MESSAGE 'Updating Scanned Contributors . . .';
+
+        UPDATE :first_table a
+        FROM   bto_despatch b
+        SET    scanned = 'Y'
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    b.period = a.period;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+	                'Error updating scanned marker on ' +  :first_table,
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+	    COMMIT;
+	    RETURN ret_val;
+        ENDIF;
+
+
+    /*-s----------------------------------------------------------------
+    Update contributors with Welsh postcodes
+    ----------------------------------------------------------------e-*/
+
+        MESSAGE 'Updating Welsh Contributors . . .';
+
+        UPDATE :first_table a
+        FROM   welsh_contributor b
+        SET    wales = 1
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    b.period = a.period;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+	                'Error updating Wales marker on ' +  :first_table,
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+	    COMMIT;
+	    RETURN ret_val;
+        ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update First Table with ao details for 18120 depending on ref range.
+
+    June 2012 - DF - Recoded to remove hard coding, now basing on table
+    industry_analysts which will also be used for take-on screen access
+    control.
+    ----------------------------------------------------------------e-*/
+
+    UPDATE   :first_table a
+    FROM     industry_analysts b
+    SET      ao_name1 = b.name,
+             ao_ext1  = b.ext
+    WHERE    a.industry = 18120
+      AND    a.industry = b.industry
+      AND    a.contributor_reference >= b.low_ref
+      AND    a.contributor_reference <= b.high_ref;
+
+    ret_val = CALLPROC batch_check_inq_ing ( h_num_row_ck = 1,
+                                             h_commit     = 'Y',
+                                             h_rollback   = 'N',
+                                             h_frpr_name  = :h_frpr_name);
+
+    IF ret_val > 1  
+    THEN
+      INSERT INTO error_log
+      VALUES ( 'now',
+               'Error updating analyst details for 18120 on ' + :first_table,
+               :h_frpr_name,
+               :ret_val,
+               :g_user_id);
+      COMMIT;
+      RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Calculate the front page barcode numbers
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Calculating Barcode . . .';
+
+    IF :h_inquiry = 14
+    THEN
+        in_string = '014' +
+                    VARCHAR(:h_contributor_reference) +
+                    VARCHAR(:h_period + 12);
+    ELSE
+        in_string = '015' +
+                    VARCHAR(:h_contributor_reference) +
+                    VARCHAR(:h_period);
+    ENDIF;
+
+    ret_val = CALLPROC msada_cp_calc_barcode (
+                       in_string,
+                       BYREF(out_string));
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error calling msada_cp_calc_barcode',
+		    :h_frpr_name,
+		    :ret_val,
+  		    :g_user_id);
+	COMMIT;
+	RETURN ret_val;
+    ENDIF;
+
+    UPDATE :first_table
+    SET    barcodeline = :out_string;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating barcode on ' + :first_table,
+		    :h_frpr_name,
+		    :ret_val,
+  		    :g_user_id);
+	COMMIT;
+	RETURN ret_val;
+    ENDIF;
+
+
+    /*-s----------------------------------------------------------------
+    Calculate fax barcode
+    ----------------------------------------------------------------e-*/
+
+    f_barcode = 1;
+
+    WHILE f_barcode < 6
+    DO 
+
+    MESSAGE 'Calculating Fax Barcode . . .';
+
+    IF :h_inquiry = 14
+    THEN
+        in_string = '014' +
+                    VARCHAR(:h_contributor_reference) +
+		    '0' +
+		    VARCHAR(f_barcode * 10000 + MOD(:h_period,10000)) ;
+    ELSE
+        in_string = '015' +
+                    VARCHAR(:h_contributor_reference) +
+		    '0' +
+		    VARCHAR(f_barcode * 10000 + MOD(:h_period,10000)) ;
+    ENDIF;
+
+        ret_val = CALLPROC msada_cp_calc_barcode (
+                           in_string,
+                           BYREF(out_string));
+    
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+	                'Error calculating fax barcode for ' + :h_contributor_reference,
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+	    COMMIT;
+	    RETURN ret_val;
+        ENDIF;
+
+        IF f_barcode = 1
+        THEN
+            faxbar1 = out_string;
+        ELSEIF f_barcode = 2
+        THEN
+            faxbar2 = out_string;
+        ELSEIF f_barcode = 3
+        THEN
+            faxbar3 = out_string;
+        ELSEIF f_barcode = 4
+        THEN
+            faxbar4 = out_string;
+        ELSEIF f_barcode = 5
+        THEN
+            faxbar5 = out_string;
+        ENDIF;
+
+        f_barcode = f_barcode + 1;
+
+    ENDWHILE;
+
+    UPDATE :first_table
+    SET    fax_barcode1 = :faxbar1,
+           fax_barcode2 = :faxbar2,
+           fax_barcode3 = :faxbar3,
+           fax_barcode4 = :faxbar4,
+           fax_barcode5 = :faxbar5;
+               
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error in updating barcode on ' + :first_table,
+	   	    :h_frpr_name,
+		    :ret_val,
+		    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+
+    ENDIF;
+
+
+    /*-s----------------------------------------------------------------
+    Calculate the checkletter
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Calculating Checkletter . . .';
+
+    ret_val = CALLPROC msa_cp_check_digit (
+              :h_contributor_reference,
+              BYREF(:h_letter));
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error calling msada_cp_check_digit',
+		    :h_frpr_name,
+		    :ret_val,
+  		    :g_user_id);
+	COMMIT;
+	RETURN ret_val;
+    ENDIF;
+
+    UPDATE :first_table
+    SET    check_letter = :h_letter;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating check_letter on ' + :first_table,
+		    :h_frpr_name,
+		    :ret_val,
+  		    :g_user_id);
+	COMMIT;
+	RETURN ret_val;
+    ENDIF;
+
+
+    /*-s----------------------------------------------------------------
+    Call the procedure to create the form_table
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC msadb_fp_batch_form_table (
+              form_table            = :form_table,
+              period                = :h_period,
+              contributor_reference = :h_contributor_reference,
+              contributor_industry  = :h_contributor_industry,
+              inquiry               = :h_inquiry);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error calling msadb_fp_batch_form_table',
+		    :h_frpr_name,
+		    :ret_val,
+  		    :g_user_id);
+	COMMIT;
+	/**
+	RETURN ret_val;
+	**/
+        h_print_yesno = 'N';
+
+	ENDLOOP;
+    ENDIF;
+
+
+    /*-s----------------------------------------------------------------
+    Call the report writer to produce the form
+    ----------------------------------------------------------------e-*/
+/**** SPC have taken over form printing so the RW is no longer called
+*
+*    MESSAGE 'Calling Print Program . . .';
+*
+*    IF :h_region = 'YY'
+*    THEN
+*        country = 'NI';
+*    ELSE
+*        country = 'GB';
+*    ENDIF;
+*
+*
+*    IF :h_form_type = 'M'
+*    THEN
+*        print_name = 'duplicate_rem_' + :h_contributor_reference;
+*    ELSE
+*        print_name = 'duplicate_form_' + :h_contributor_reference;
+*    ENDIF;
+*
+*    report_name = 'msada_rw_form.rw';
+*
+*
+*    ret_val = CALLPROC msa_cp_callsys (
+*              'report ' +
+*              :h_database + ' ' +
+*              '''(period = ' + VARCHAR(:h_period) +
+*              ', first_out = "' + :first_table +
+*              '", form_out = "' + :form_table +
+*              '", country = "' + :country +
+*              '", inquiry = ' + VARCHAR(:h_inquiry)  +
+*              ', h_count = 1' +
+*              ', form_type = "' + VARCHAR(:h_form_type) + '"' +
+*              ', output_category = "' + :h_output_category  +
+*              '")'''  +
+*              ' -f$PRINTOUT/' + :print_name +
+*              ' -i$REPORTS/' + :report_name + '> report.output');
+*******/
+	      /*******************************
+              ' -f$JW/' + :print_name +
+              ' -i$WIP/' + :report_name + '> report.output');
+	      ********************************/
+/*******
+*
+*    IF ret_val <> 0
+*    THEN
+*        INSERT INTO error_log
+*        VALUES(     'now',
+*                    'Error calling ' + :report_name + 
+*		    ' for Industry ' + VARCHAR(:h_contributor_industry),
+*		    :h_frpr_name,
+*		    :ret_val,
+*  		    :g_user_id);
+*	COMMIT;
+*	RETURN ret_val;
+*    ENDIF;
+***********/
+
+    /*-s----------------------------------------------------------------
+    Put entry in reprint_log
+    ----------------------------------------------------------------e-*/
+
+        INSERT INTO reprint_log (
+                    inquiry,
+                    period,
+                    contributor_industry,
+                    contributor_reference,
+                    user_id,
+                    time)
+        VALUES (    :h_inquiry,
+                    :h_period,
+                    :h_contributor_industry,
+                    :h_contributor_reference,
+                    :h_user_id,
+                    'now');
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error inserting into reprint_log',
+		    :h_frpr_name,
+		    :ret_val,
+  		    :g_user_id);
+	COMMIT;
+	RETURN ret_val;
+
+    ELSEIF ret_val = 1
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'No rows inserted into reprint_log',
+		    :h_frpr_name,
+		    :ret_val,
+  		    :g_user_id);
+	COMMIT;
+	RETURN ret_val;
+    ENDIF;
+
+    h_colour = 'WHITE';
+
+    h_temp_username = SQUEEZE(:s_user_name); 
+
+    h_int_username = LOCATE(h_temp_username, ' ');
+    h_name1        = LEFT(h_temp_username,h_int_username -1);
+    h_temp_username = SHIFT(h_temp_username, - h_int_username);
+    h_int_username = LOCATE(h_temp_username, ' ');
+    h_name2        = LEFT(h_temp_username,h_int_username -1);
+
+    h_user_name = h_name1 + '_' + h_name2;
+
+   /* h_user_name = LEFT(:s_user_name,LOCATE(:s_user_name,' ')-1); */
+
+
+    /*-s----------------------------------------------------------------
+    Print it
+    Use Output Handling's room number as duplicate forms must no longer
+    go to Prodcom users but must go directly to the Output Handling
+    ----------------------------------------------------------------e-*/
+/****** SPC now print forms so do not print
+*    IF :h_print_yesno = 'Y'
+*    THEN
+*	IF h_user_id <> 'prodlive' AND h_user_id <> 'produser'
+*	THEN
+*
+*            ret_val = CALLPROC msa_cp_callsys (
+*                      'lp -drxp -o' + VARCHAR(:h_colour) +
+*		      '_RD_STP+?' + VARCHAR(:h_inquiry) +
+*		      '_DUPLICATE_FORMS?+%D013%' +
+*                      ' $PRINTOUT/' +
+*                      :print_name + ' >> report.output');
+*        ELSE
+*            ret_val = CALLPROC msa_cp_callsys (
+*                      'lp -drxp -o' + VARCHAR(:h_colour) +
+*		      '_RD_STP+?' + VARCHAR(:h_user_name) + '?+%D269%' +
+*                      ' $PRINTOUT/' +
+*                      :print_name + ' >> report.output');
+*	
+*        ENDIF;
+*
+*        IF ret_val <> 0
+*        THEN
+*            INSERT INTO error_log
+*            VALUES(     'now',
+*                        'Batch_reprints - Error Printing form',
+*		        :h_frpr_name,
+*		        :ret_val,
+*  		        :g_user_id);
+*	    COMMIT;
+*	    RETURN ret_val;
+*        ENDIF;
+*    ENDIF;
+*
+*    ret_val = CALLPROC batch_fp_drop_table(h_table = :first_table);
+*    ret_val = CALLPROC batch_fp_drop_table(h_table = :form_table);
+**********/
+
+/*--------------------------------------------------------------------
+  append the data from the contributor first_table into the main
+  reprint_first_table
+--------------------------------------------------------------------*/
+
+    INSERT INTO reprint_first_table
+    SELECT *
+    FROM        :first_table;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting into reprint_first_table from ' + :first_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+  
+/*--------------------------------------------------------------------
+  append the data from the contributor form_table into the main
+  reprint_form_table
+--------------------------------------------------------------------*/
+
+    INSERT INTO reprint_form_table
+    SELECT *
+    FROM        :form_table;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting into reprint_form_table from ' + :form_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :first_table);
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :form_table);
+
+    };
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+	                'Error selecting from batch_reprints',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+	    COMMIT;
+	    RETURN ret_val;
+
+        ELSEIF ret_val = 1
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+	                'Batch_reprints - No rows selected',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+	    COMMIT;
+            INSERT INTO control_results_log
+            VALUES(     'now',
+	                'No rows selected - Please check with IM',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+	    COMMIT;
+	    RETURN ret_val;
+        /*
+        ELSEIF ret_val = 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+	                'Batch Reprints ends OK',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+	    COMMIT;
+            INSERT INTO control_results_log
+            VALUES(     'now',
+	                'Batch Reprints ends OK',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+	    COMMIT;
+            */
+        ENDIF;
+
+    h_dow = dow('today');	
+    IF h_dow = 'Sat' THEN
+    	h_now = VARCHAR(DATE('now') - '1 days');
+    ELSEIF h_dow = 'Sun' THEN
+    	h_now = VARCHAR(DATE('now') - '2 days');
+    ELSE
+    	h_now = VARCHAR(DATE('now'));
+    ENDIF;
+
+    order_date = VARCHAR(DATE_PART('year','now')) +
+  		 RIGHT(LEFT(h_now,5),2) +
+		 LEFT(h_now,2);
+
+    print_date = date('today');
+
+/*--------------------------------------------------------------------
+Create file of first table data for SPC.
+--------------------------------------------------------------------*/
+
+    DELETE FROM reprint_first_table_spc;
+    COMMIT;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error deleting from reprint_first_table_spc',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    INSERT INTO reprint_first_table_spc(
+        ruref,
+        checkletter,
+        frosic92,
+        rusic92,
+        frosic2007,
+        rusic2007,
+        froempees,
+        employees,
+        froempment,
+        employment,
+        frofteempt,
+        fteempt,
+        frotover,
+        turnover,
+        entref,
+        wowentref,
+        vatref,
+        payeref,
+        crn,
+        live_lu,
+        live_vat,
+        live_paye,
+        legalstatus,
+        entrepmkr,
+        region,
+        birthdate,
+        entname1,
+        entname2,
+        entname3,
+        runame1,
+        runame2,
+        runame3,
+        ruaddr1,
+        ruaddr2,
+        ruaddr3,
+        ruaddr4,
+        ruaddr5,
+        rupostcode,
+        tradstyle1,
+        tradstyle2,
+        tradstyle3,
+        contact,
+        telephone,
+        fax,
+        seltype,
+        inclexcl,
+        cell_no,
+        formtype,
+        cso_tel,
+        currency,
+        welsh_mkr,
+        new_ru,
+        nontde_mkr,
+        osmo_mkr,
+        reprint_type,
+        no_sheets,
+        luref,
+        source,
+        inq_code,
+        period)
+        select
+        a.contributor_reference,
+        check_letter,
+        '',
+        '',
+        '',
+        char(industry),
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        '',
+        '',
+        '',
+        '',
+        '',
+        0,
+        0,
+        0,
+        char(legal_status),
+        '',
+        region,
+        '',
+        '',
+        '',
+        '',
+        addrline1,
+        addrline2,
+        addrline3,
+        addrline7,
+        addrline8,
+        addrline9,
+        addrline10,
+        addrline11,
+        addrline12,
+        add_tradstyle1,
+        add_tradstyle2,
+        add_tradstyle3,
+        designator,
+        '',
+        '',
+        '',
+        '',
+        0,
+        '0001',
+        '45' + ao_ext1,
+        currency,
+        '0',
+        'N',
+        '0',
+        'N',
+        '',
+        0,
+        '',
+        '',
+        '014',
+        char(period + 12) as period
+
+    FROM    reprint_first_table a , 
+            contributor b
+    WHERE   a.contributor_reference=b.contributor_reference;
+    
+    COMMIT;
+    
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting into reprint_first_table_spc ',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+/*--------------------------------------------------------------------
+update spc table with markers for region,welsh translation etc..
+--------------------------------------------------------------------*/
+
+    UPDATE   reprint_first_table_spc
+    SET      rusic2007 = '0' + rusic2007
+    WHERE    length(rusic2007) < 5;commit;
+    
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error in updating 4 digit sic to 5 digits on reprint_first_table_spc ',
+	   	    :h_frpr_name,
+		    :ret_val,
+		    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+
+    ENDIF;
+
+    UPDATE   reprint_first_table_spc
+    SET      inclexcl = 'F'
+    WHERE    ruref in(
+             SELECT   contributor_reference from reprint_first_table
+             WHERE    output_category = 'Y');
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating enforcement marker reprint_first_table_spc ',
+	   	    :h_frpr_name,
+		    :ret_val,
+		    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+
+    ENDIF;
+
+    UPDATE    reprint_first_table_spc
+    SET       inclexcl = 'T'
+    WHERE     ruref in (
+              SELECT    contributor_reference 
+              FROM      reprint_first_table
+              WHERE     output_category = 'X');
+    
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error marking desk despatch forms on reprint_first_table_spc ',
+	   	    :h_frpr_name,
+		    :ret_val,
+		    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+
+    ENDIF;
+
+    UPDATE  reprint_first_table_spc
+    SET     formtype = '0002'
+    WHERE   region = 'YY';
+    
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error marking Irish contributors on reprint_first_table_spc ',
+	   	    :h_frpr_name,
+		    :ret_val,
+		    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+
+    ENDIF;
+    
+    UPDATE  reprint_first_table_spc
+    SET     welsh_mkr = 'P'
+    WHERE   ruref in(
+            SELECT  contributor_reference from welsh_contributor
+            WHERE   period = :h_period);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error marking Welsh post code RUs on reprint_first_table_spc ',
+	   	    :h_frpr_name,
+		    :ret_val,
+		    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+
+    ENDIF;
+    
+    UPDATE  reprint_first_table_spc
+    SET     welsh_mkr = 'W'
+    WHERE   ruref in(
+            SELECT  contributor_reference from welsh_forms
+            WHERE   period = :h_period);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error marking Welsh translation forms on reprint_first_table_spc ',
+	   	    :h_frpr_name,
+		    :ret_val,
+		    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+
+    ENDIF;
+    
+    
+    UPDATE  reprint_first_table_spc
+    SET     osmo_mkr = 'Y'
+    WHERE   ruref in(
+            SELECT  contributor_reference from reprint_first_table
+            WHERE   output_category in('O','W')); 
+    COMMIT;
+    
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error marking osmotherly contributors on reprint_first_table_spc ',
+	   	    :h_frpr_name,
+		    :ret_val,
+		    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+
+    ENDIF;
+/*--------------------------------------------------------------------
+create first table file for SPC 
+--------------------------------------------------------------------*/
+    
+    COPY TABLE  reprint_first_table_spc(
+        ruref        =  c(0)':',
+        checkletter  =  c(0)':',
+        frosic92     =  c(0)':',
+        rusic92      =  c(0)':',
+        frosic2007   =  c(0)':',
+        rusic2007    =  c(0)':',
+        froempees    =  c(0)':',
+        employees    =  c(0)':',
+        froempment   =  c(0)':',
+        employment   =  c(0)':',
+        frofteempt   =  c(0)':',
+        fteempt      =  c(0)':',
+        frotover     =  c(0)':',
+        turnover     =  c(0)':',
+        entref       =  c(0)':',
+        wowentref    =  c(0)':',
+        vatref       =  c(0)':',
+        payeref      =  c(0)':',
+        crn          =  c(0)':',
+        live_lu      =  c(0)':',
+        live_vat     =  c(0)':',
+        live_paye    =  c(0)':',
+        legalstatus  =  c(0)':',
+        entrepmkr    =  c(0)':',
+        region       =  c(0)':',
+        birthdate    =  c(0)':',
+        entname1     =  c(0)':',
+        entname2     =  c(0)':',
+        entname3     =  c(0)':',
+        runame1      =  c(0)':',
+        runame2      =  c(0)':',
+        runame3      =  c(0)':',
+        ruaddr1      =  c(0)':',
+        ruaddr2      =  c(0)':',
+        ruaddr3      =  c(0)':',
+        ruaddr4      =  c(0)':',
+        ruaddr5      =  c(0)':',
+        rupostcode   =  c(0)':',
+        tradstyle1   =  c(0)':',
+        tradstyle2   =  c(0)':',
+        tradstyle3   =  c(0)':',
+        contact      =  c(0)':',
+        telephone    =  c(0)':',
+        fax          =  c(0)':',
+        seltype      =  c(0)':',
+        inclexcl     =  c(0)':',
+        cell_no      =  c(0)':',
+        formtype     =  c(0)':',
+        cso_tel      =  c(0)':',
+        currency     =  c(0)':',
+        welsh_mkr    =  c(0)':',
+        new_ru       =  c(0)':',
+        nontde_mkr   =  c(0)':',
+        osmo_mkr     =  c(0)':',
+        reprint_type =  c(0)':',
+        no_sheets    =  c(0)':',
+        luref        =  c(0)':',
+        source       =  c(0)':',
+        inq_code     =  c(0)':',
+        period       =  c0nl)
+    
+   INTO '/prodcom/live5/files/forms/prodcom_dupforms_' + :order_date;
+    
+   COMMIT;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating first table file for reprints',
+	   	    :h_frpr_name,
+		    :ret_val,
+		    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+
+    ENDIF;
+
+/*--------------------------------------------------------------------
+Create the form table data file for SPC.
+---------------------------------------------------------------------*/
+
+    ret_val = CALLPROC batch_fp_drop_table (
+              h_table = 'reprint_finalsel_questions');
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+
+    CREATE TABLE  reprint_finalsel_questions as
+    SELECT  char(a.period + 12) as period,
+	    char(a.col_type) as col_type,
+            a.contributor_reference,
+            char(a.contributor_industry) as contributor_industry,
+            a.q_n_l_code,
+            char(a.q_n_order) as q_n_order,
+            a.q_desc_code,
+            a.q_count,
+            a.q_line,
+            a.need_count,
+            a.text1,
+            a.text2,
+            a.text3,
+            a.text4,
+            a.text5,
+            a.text6,
+            a.text7,
+            a.text8,
+            a.text9,
+            a.text10,
+            a.unit1,
+            a.cn_code1,
+            a.cn_code2,
+            a.cn_code3,
+            a.cn_code4,
+            a.cn_code5,
+            a.cn_code6,
+            a.cn_code7,
+            a.cn_code8,
+            a.cn_code9,
+            b.phone_contact,
+            b.phone_area_code,
+            b.phone,
+            b.phone_extension,
+            b.fax_area_code,
+            b.fax,
+            b.email
+
+            from reprint_form_table a,
+            contributor b
+    
+    WHERE  a.contributor_reference = b.contributor_reference;
+    
+    COMMIT;
+    
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+	            'Error creating reprint_finalsel_questions',
+         		:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+	COMMIT;
+        RETURN ret_val;
+     ENDIF; 
+    
+     UPDATE  reprint_finalsel_questions
+     SET     contributor_industry = '0' + contributor_industry
+     WHERE   length(contributor_industry) = 4;
+
+     COMMIT;
+     
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error changing 4 digit sic to 5 digits on reprint_finalsel_questions',
+	   	    :h_frpr_name,
+		    :ret_val,
+		    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+
+    ENDIF;
+
+     UPDATE  reprint_finalsel_questions
+     SET     q_n_order = '0' + q_n_order
+     WHERE   length(q_n_order) = 8;
+
+     COMMIT;
+     
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error changing 8 digit PCC to 9 digits on reprint_finalsel_questions',
+	   	    :h_frpr_name,
+		    :ret_val,
+		    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+
+    ENDIF;
+/*--------------------------------------------------------------------
+create form questions file for SPC
+--------------------------------------------------------------------*/
+
+    COPY TABLE reprint_finalsel_questions (
+	period   = c0$,
+        col_type = c0$,
+        contributor_reference = c0$,
+        contributor_industry = c0$,
+        q_n_l_code = c0$,
+        q_n_order = c0$,
+        q_desc_code = c0$,
+        q_count = c0$,
+        q_line = c0$,
+        need_count = c0$,
+        text1 = c0$,
+        text2 = c0$,
+        text3 = c0$,
+        text4 = c0$,
+        text5 = c0$,
+        text6 = c0$,
+        text7 = c0$,
+        text8 = c0$,
+        text9 = c0$,
+        text10 = c0$,
+        unit1 = c0$,
+        cn_code1 = c0$,
+        cn_code2 = c0$,
+        cn_code3 = c0$,
+        cn_code4 = c0$,
+        cn_code5 = c0$,
+        cn_code6 = c0$,
+        cn_code7 = c0$,
+        cn_code8 = c0$,
+        cn_code9 = c0$,
+        phone_contact = c0$,
+        phone_area_code = c0$,
+        phone = c0$,
+        phone_extension = c0$,
+        fax_area_code = c0$,
+        fax = c0$,
+        email = c0nl)
+     
+    INTO '/prodcom/live5/files/forms/prodcomquestions_' + :order_date ;
+ 
+    COMMIT;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating form table file for reprints',
+	   	    :h_frpr_name,
+		    :ret_val,
+		    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+
+    ENDIF;
+
+/*--------------------------------------------------------------------
+send reprint information prints to contro
+--------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msa_cp_callsys (
+              'report ' +
+              :h_database + ' ' +
+              '''(print_date = "' + VARCHAR(:print_date) +
+              '", user_name = "' + :s_user_name  +
+	      '")''' +
+              ' -i$REPORTS/msadb_rw_reprint_batch.rw' +
+	      '>> report.output');
+
+    IF ret_val <> 0
+    THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+	                'Error producing report',
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+	    COMMIT;
+	    RETURN ret_val;
+    ELSE
+        /*--------------------------------------------------------------
+         Remove last line - so a blank end page is not printed
+         Send print to Inquiry Support's printer
+        --------------------------------------------------------------*/
+
+        ret_val = CALLPROC msa_cp_callsys (
+              'lines=`wc -l < msadb_rw_reprint_batch.rpt`;' +
+              'lines=`expr ${lines} - 1`;' +
+              'head -${lines} msadb_rw_reprint_batch.rpt | ' +
+              'lp -o16p -dnd082_43mf' +
+              ' >> report.output 2>> report.output');
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+	                'Error sending report to printer nc001_9mf', 
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+	    COMMIT;
+            INSERT INTO control_results_log
+            VALUES(     'now',
+	                'Error sending report to printer h4nk6', 
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+	    COMMIT;
+	    RETURN ret_val;
+        ELSE
+            INSERT INTO error_log
+            VALUES(     'now',
+	                'Report sent to printer h4nk6 OK', 
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+	    COMMIT;
+            INSERT INTO control_results_log
+            VALUES(     'now',
+	                'Report sent to printer h4nk6 OK', 
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+	    COMMIT;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+         print again for Output Handling
+        --------------------------------------------------------------*/
+
+        ret_val = CALLPROC msa_cp_callsys (
+              'lines=`wc -l < msadb_rw_reprint_batch.rpt`;' +
+              'lines=`expr ${lines} - 1`;' +
+              'head -${lines} msadb_rw_reprint_batch.rpt | ' +
+              'lp -o16p -dh4nb6' +
+              ' >> report.output 2>> report.output');
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+	                'Error sending report to printer h4nb6', 
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+	    COMMIT;
+	    RETURN ret_val;
+        ELSE
+            INSERT INTO error_log
+            VALUES(     'now',
+	                'Report sent to printer h4nb6 OK', 
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+	    COMMIT;
+            INSERT INTO control_results_log
+            VALUES(     'now',
+	                'Report sent to printer h4nb6 OK', 
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+	    COMMIT;
+        ENDIF;
+
+    ENDIF;
+
+    RETURN 0;
+}

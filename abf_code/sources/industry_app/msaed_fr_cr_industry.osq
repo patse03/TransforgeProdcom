@@ -1,0 +1,341 @@
+/*----------------------------------------------------------------------
+ This frame is used to insert a new industry into the industry table.
+----------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries            = INTEGER1    NOT NULL,
+        h_retries_allowed    = INTEGER1    NOT NULL,
+        h_retry_or_not       = CHAR(5)     NOT NULL,
+        h_prompt             = CHAR(1)     NOT NULL,
+        h_frpr_name          = VARCHAR(24) NOT NULL,
+        h_return             = INTEGER1    NOT NULL,
+        h_dummy              = INTEGER4    NOT NULL,
+
+        lp_full_error_check  = PROCEDURE RETURNING INTEGER
+
+{
+  h_frpr_name = 'msaed_fr_cr_industry';
+  h_retries_allowed = 3;
+  msa_date = 'now';
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+}
+
+FIELD s_industry =
+{
+  /*------------------------------------------------------------------
+     Check industry does not exist 
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+  DO
+    h_retries = :h_retries + 1;
+
+    SELECT a.industry AS h_dummy
+    FROM   industry a
+    WHERE  a.industry = :s_industry;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 0);
+
+    IF h_return <> 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return = 9
+  THEN
+    MESSAGE 'ERROR: Failed to select from Industry table. Error code 9. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This industry/subclass already exists and therefore '
+          + 'cannot be created. To update it, please use "Update Industry".'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_industry;
+  ENDIF;
+
+  RESUME FIELD s_industry_text;
+}
+
+
+'Insert', KEY FRSKEY4 =
+{
+  IF s_industry = 0
+  THEN
+    MESSAGE 'WARNING: No industry/subclass number entered. '
+    WITH STYLE = POPUP;
+    RESUME FIELD s_industry;
+  ENDIF;
+
+  IF s_industry < 10000 
+  THEN
+
+    IF s_industry < 1000
+    THEN
+      MESSAGE 'WARNING: Subclass should be a 5 digit code.'
+      WITH STYLE = POPUP;
+      RESUME FIELD s_industry;
+
+    ELSE 
+      h_prompt = PROMPT 'WARNING: Subclass should be a 5 digit code. '
+                      + 'Please confirm that you are creating subclass '
+                      + '0'+VARCHAR(:s_industry) +'. [Y/N] : '
+                 WITH STYLE = POPUP;
+
+      IF UPPER(:h_prompt) != 'Y'
+      THEN
+        RESUME FIELD s_industry;
+      ENDIF;
+     
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      DOUBLE Check industry
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+  DO
+    h_retries = :h_retries + 1;
+
+    SELECT a.industry AS h_dummy
+    FROM   industry a
+    WHERE  a.industry = :s_industry;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 0);
+
+    IF h_return <> 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return = 9
+  THEN
+    MESSAGE 'ERROR: Failed to select from Industry table. Error code 9. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This industry/subclass already exists and therefore '
+          + 'cannot be created. To update it, please use "Update Industry".'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_industry;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Check other fields
+  ------------------------------------------------------------------*/
+
+  IF :s_industry_text = ''
+  THEN
+    MESSAGE 'WARNING: You must complete the industry description.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_industry_text;
+  ENDIF;
+
+  IF s_merch_goods != 'N' AND s_merch_goods != 'Y'
+  THEN
+    MESSAGE 'WARNING: Merchanted Goods Required must be either Y or N'
+    WITH STYLE = POPUP;
+    CLEAR FIELD s_merch_goods;
+    RESUME FIELD s_merch_goods;
+  ENDIF;
+
+  IF s_emp_cutoff < 20
+  THEN
+    MESSAGE 'WARNING: Employment Cutoff must be 20 or greater'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_emp_cutoff;
+  ENDIF;
+
+  IF s_msi_congruence != 'Y' AND s_msi_congruence != 'N'
+  THEN
+    MESSAGE 'WARNING: MSI Congruence must be set to either Y or N.'
+    WITH STYLE = POPUP;
+    CLEAR FIELD s_msi_congruence;
+    RESUME FIELD s_msi_congruence;
+  ENDIF;
+
+  IF s_msi_congruence = 'Y'
+  THEN
+    IF s_msi_p_diff < 1
+    OR s_msi_a_diff < 1
+    THEN
+      MESSAGE 'WARNING: MSI Congruence is set to Y. ' +X'0D'
+            + '         Either complete the percentage and actual tolerance '
+            + 'fields' +X'0D'
+            + '         or turn off congruence.'
+      WITH STYLE = POPUP;
+      CLEAR FIELD s_msi_p_diff;
+      CLEAR FIELD s_msi_a_diff;
+      RESUME FIELD s_msi_congruence;
+    ENDIF;
+  ENDIF;
+
+  IF s_msi_congruence = 'N'
+  THEN
+    IF s_msi_p_diff != ''
+    OR s_msi_a_diff != ''
+    THEN
+      MESSAGE 'WARNING: MSI tolerances have been set. ' +X'0D'
+            + '         Either remove the percentage and actual tolerances'
+            + X'0D'
+            + '         or turn congruence on.'
+      WITH STYLE = POPUP;
+      RESUME FIELD s_msi_congruence;
+    ENDIF;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Insert data
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+  DO
+    h_retries = :h_retries + 1;
+
+    INSERT INTO industry ( industry,
+                           inquiry,
+                           industry_text,
+                           industry_cycle_point,
+                           inquiry_industry_status,
+                           msi_congruence,
+                           allowed_msi_pc_diff,
+                           allowed_msi_actual_diff,
+                           sph_exclusion_pc,
+                           sph_no_contribs,
+                           ratio_exclusion_pc,
+                           ratio_no_contribs,
+                           ask_merch_goods,
+                           present_emp_cutoff)
+    VALUES               ( :s_industry,
+                           14,
+                           :s_industry_text,
+                           '',
+                           'L',
+                           :s_msi_congruence,
+                           :s_msi_p_diff,
+                           :s_msi_a_diff,
+                           :s_sph_excl_pc,
+                           0,
+                           :s_rat_excl_pc,
+                           4,
+                           :s_merch_goods,
+                           :s_emp_cutoff);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return <> 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return = 9
+  THEN
+    MESSAGE 'ERROR: Failed to insert into the Industry table. Error code 9. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'ERROR: No rows were inserted into the Industry table. '
+          + 'Error code 1. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  MESSAGE 'NOTE: Industry '+ VARCHAR(:s_industry) +' successfully created.'
+  WITH STYLE = POPUP;
+
+  CLEAR FIELD ALL;
+  msa_date = 'now';
+
+  RESUME FIELD s_industry;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'help',
+   	       FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'End', KEY FRSKEY12 = 
+{
+    RETURN 0;
+}
+
+/************************** LOCAL PROCEDURES *******************************/
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+                       h_num_row_ck      = :p_num_row_ck,
+                       h_commit          = 'Y',
+                       h_rollback        = 'N',
+                       h_retries         = :h_retries,
+                       h_retries_allowed = :h_retries_allowed,
+                       h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

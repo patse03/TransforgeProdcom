@@ -1,0 +1,417 @@
+PROCEDURE form_reprint_02_pr () = 
+
+DECLARE 
+        h_frpr_name            = VARCHAR(24)  NOT NULL,
+        h_return               = INTEGER1     NOT NULL,        
+        h_count                = INTEGER4     NOT NULL,        
+	h_text                 = VARCHAR(80) NOT NULL,
+	h_now                  = VARCHAR(24)  NOT NULL,
+	h_dow		       = VARCHAR(3)   NOT NULL,	
+        h_contributor          = CHAR(11)     NOT NULL,
+        h_route                = CHAR(4)      NOT NULL,
+        h_frp_date             = CHAR(8)      NOT NULL,
+        h_c_filename           = VARCHAR(100) NOT NULL,
+        h_q_filename           = VARCHAR(100) NOT NULL,
+
+        lp_error_check         = PROCEDURE RETURNING INTEGER NOT NULL,
+
+{
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  h_frpr_name = 'form_reprint_02_pr';
+
+  h_dow = dow('today');	
+
+  IF h_dow = 'Sat' 
+  THEN
+    h_now = VARCHAR(DATE('now') - '1 days');
+  ELSEIF h_dow = 'Sun' 
+  THEN
+    h_now = VARCHAR(DATE('now') - '2 days');
+  ELSE
+    h_now = VARCHAR(DATE('now'));
+  ENDIF;
+
+  h_frp_date = VARCHAR(DATE_PART('year','now')) 
+               + RIGHT(LEFT(h_now,5),2) 
+               + LEFT(h_now,2);
+
+  IF g_database = 'prodlivedb'
+  THEN 
+    h_c_filename = '/prodcom/live5/files/forms/prodcom_dupforms_' +:h_frp_date;
+    h_q_filename = '/prodcom/live5/files/forms/prodcomquestions_' +:h_frp_date;
+  ELSE
+    h_c_filename = '/admin/scratch/TEST_form_c_data_' +:h_frp_date;
+    h_q_filename = '/admin/scratch/TEST_form_q_data_' +:h_frp_date;
+  ENDIF;
+
+   /*------------------------------------------------------------------
+      Log start of process.
+  ------------------------------------------------------------------*/
+
+  /* SIGNON handled by form_reprint_03_pr which runs first */
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'STARTING: OVERNIGHT FORM REPRINTS.');
+
+  /*------------------------------------------------------------------
+      Check to see if there are any reprints pending. If not, stop.
+  ------------------------------------------------------------------*/
+
+  SELECT COUNT(contributor_reference) AS h_count
+  FROM   frp_reprinted_forms
+  WHERE  printed_on = '';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to select pending from frp_reprinted_forms.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ENDIF;
+
+  IF h_count = 0
+  THEN
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = 'NOTE: There were no orders to process.');
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = 'COMPLETE: OVERNIGHT FORM REPRINTS.'); 
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = '*SIGNOFF*'); 
+
+    EXIT;
+  ENDIF;
+
+  /*---------------------------------------------------------------------
+     Modify frp_form_c_data to sort into order.
+  ---------------------------------------------------------------------*/
+
+  MODIFY frp_form_c_data to BTREE
+  ON     contributor_reference;
+  
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify frp_form_c_data.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ENDIF;
+
+  /*---------------------------------------------------------------------
+     Make sure all forms are marked as not new to avoid the new 
+     contributor flyer being attached.
+  ---------------------------------------------------------------------*/
+
+  UPDATE frp_form_c_data 
+  SET    new = 'N';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return  > 1
+  THEN
+    h_text = 'ERROR: Failed to update new marker on frp_form_c_data.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ENDIF;
+
+  /*---------------------------------------------------------------------
+     Output contributor data from semi-permanent table to file for SPC.
+  ---------------------------------------------------------------------*/
+
+  COPY TABLE frp_form_c_data
+           ( contributor_reference =  c(11)':',
+             check_letter          =  c(1)':',
+             str_dummy             =  c(5)':',
+             str_dummy             =  c(5)':',
+             str_dummy             =  c(5)':',
+             contributor_industry  =  c(5)':',
+             int_dummy             =  c(13)':',
+             int_dummy             =  c(13)':',
+             int_dummy             =  c(13)':',
+             int_dummy             =  c(13)':',
+             flt_dummy             =  c(11)':',
+             flt_dummy             =  c(11)':',
+             int_dummy             =  c(13)':',
+             int_dummy             =  c(13)':',
+             str_dummy             =  c(10)':',
+             str_dummy             =  c(10)':',
+             str_dummy             =  c(12)':',
+             str_dummy             =  c(13)':',
+             str_dummy             =  c(8)':',
+             int_dummy             =  c(6)':',
+             int_dummy             =  c(6)':',
+             int_dummy             =  c(6)':',
+             legal_status          =  c(1)':',
+             str_dummy             =  c(1)':',
+             region                =  c(2)':',
+             str_dummy             =  c(25)':',
+             str_dummy             =  c(35)':',
+             str_dummy             =  c(35)':',
+             str_dummy             =  c(35)':',
+             add_name1             =  c(35)':',
+             add_name2             =  c(35)':',
+             add_name3             =  c(35)':',
+             add_line1             =  c(30)':',
+             add_line2             =  c(30)':',
+             add_line3             =  c(30)':',
+             add_line4             =  c(30)':',
+             add_line5             =  c(30)':',
+             add_postcode          =  c(8)':',
+             add_tradstyle1        =  c(35)':',
+             add_tradstyle2        =  c(35)':',
+             add_tradstyle3        =  c(35)':',
+             addressee             =  c(30)':',
+             str_dummy             =  c(20)':',
+             str_dummy             =  c(20)':',
+             str_dummy             =  c(1)':',
+             inclexcl              =  c(1)':',
+             int_dummy             =  c(6)':',
+             formtype              =  c(4)':',
+             ons_tel               =  c(7)':',
+             currency              =  c(1)':',
+             welsh                 =  c(1)':',
+             new                   =  c(1)':',
+             int_dummy             =  c(1)':',
+             osm                   =  c(1)':',
+             str_dummy             =  c(1)':',
+             int_dummy             =  c(6)':',
+             str_dummy             =  c(8)':',
+             str_dummy             =  c(1)':',
+             inquiry               =  c(3)':',
+             period                =  c(6)nl)
+  INTO :h_c_filename;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_c_filename +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ENDIF;
+
+  /*---------------------------------------------------------------------
+     Modify frp_form_q_data to sort into order.
+  ---------------------------------------------------------------------*/
+
+  MODIFY frp_form_q_data to BTREE
+  ON     contributor_reference, col_type, q_n_l_code, q_n_order;
+  
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify frp_form_q_data.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ENDIF;
+
+  /*---------------------------------------------------------------------
+     Copy contributor data from semi-permanent table to file for SPC.
+  ---------------------------------------------------------------------*/
+
+  COPY TABLE frp_form_q_data
+           ( period                = c(22)'$',
+             col_type              = c(1) '$',
+             contributor_reference = c(11)'$',
+             contributor_industry  = c(13)'$',
+             q_n_l_code            = c(13)'$',
+             quest_string          = c(9) '$',
+             q_desc_code           = c(6) '$',
+             q_count               = c(6) '$',
+             q_line                = c(6) '$',
+             need_count            = c(6) '$',
+             text1                 = c(62)'$',
+             text2                 = c(62)'$',
+             text3                 = c(62)'$',
+             text4                 = c(62)'$',
+             text5                 = c(62)'$',
+             text6                 = c(62)'$',
+             text7                 = c(62)'$',
+             text8                 = c(62)'$',
+             text9                 = c(62)'$',
+             text10                = c(62)'$',
+             unit1                 = c(20)'$',
+             cn_code1              = c(54)'$',
+             cn_code2              = c(54)'$',
+             cn_code3              = c(54)'$',
+             cn_code4              = c(54)'$',
+             cn_code5              = c(54)'$',
+             cn_code6              = c(54)'$',
+             cn_code7              = c(54)'$',
+             cn_code8              = c(54)'$',
+             cn_code9              = c(54)'$',
+             phone_contact         = c(30)'$',
+             phone_area_code       = c(5) '$',
+             phone                 = c(10)'$',
+             phone_extension       = c(5) '$',
+             fax_area_code         = c(5) '$',
+             fax                   = c(10)'$',
+             email                 = c(50)nl)
+  INTO :h_q_filename;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create ' +:h_q_filename +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+     Loop through pending reprints on frp_reprinted_forms to note in log.
+  ------------------------------------------------------------------------*/
+
+  SELECT contributor_reference AS h_contributor,
+         route AS h_route
+  FROM   frp_reprinted_forms
+  WHERE  printed_on = ''
+  BEGIN
+
+    h_text = 'REPRINTED: Form for contributor ' +VARCHAR(:h_contributor) +' '
+           + 'routed to ' +:h_route + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+  END; 
+     
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select from frp_reprinted_forms for log loop.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+     Update frp_reprinted_forms table with printed_on date.
+  ------------------------------------------------------------------------*/
+
+  UPDATE frp_reprinted_forms
+  SET    printed_on = DATE('now')
+  WHERE  printed_on = '';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update frp_reprinted_forms with print date.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+     Delete data from semi perm tables. (Not truncate or drop!)
+  ------------------------------------------------------------------------*/
+
+  DELETE FROM frp_form_c_data;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to delete from frp_form_c_data.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ENDIF;
+
+  DELETE FROM frp_form_q_data;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to delete from frp_form_q_data.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+     Sign off log file.
+  ------------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'COMPLETE: OVERNIGHT FORM REPRINTS. ' 
+                       + VARCHAR(:h_count) + ' FORMS PROCESSED.');
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = '*SIGNOFF*'); 
+
+  EXIT;
+
+}
+/*************************** LOCAL PROCEDURES *****************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

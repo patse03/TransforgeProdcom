@@ -1,0 +1,1702 @@
+/*****************************************************************************
+ Ingres 4GL code for frame  from_reptint_03_fr
+
+ Description:  Produces Freephone print of form
+
+ Change History: 
+
+ MYC - FEB 2015
+       Added in lp_prefix as all ons contact phone numbers were going
+       out with the prefix of 45**** when ext no's begining 1*** should
+       have a prefix of 651***.
+ DJF - Feb 2015
+       Put code to pad leading zeros on industry at final point just to make
+       sure none are missed after issues reported. Cant use "Length" function
+       as char format rather than varchar.
+
+******************************************************************************/
+PROCEDURE form_reprint_03_pr () =
+
+DECLARE
+        h_frpr_name             = VARCHAR(24)  NOT NULL,
+        h_return                = INTEGER1     NOT NULL,
+        h_return2               = INTEGER1     NOT NULL,
+        h_count                 = INTEGER4     NOT NULL,
+        h_command               = VARCHAR(999) NOT NULL,
+        h_text                  = VARCHAR(80)  NOT NULL,
+        h_contributor_reference = CHAR(11)     NOT NULL,
+        h_period                = INTEGER4     NOT NULL,
+        h_frp_date              = CHAR(8)      NOT NULL,
+        h_now                   = VARCHAR(24)  NOT NULL,
+        h_dow                   = CHAR(3)      NOT NULL,
+        h_output_file           = VARCHAR(80)  NOT NULL,
+        h_input_file            = VARCHAR(80)  NOT NULL,
+        h_input_table           = VARCHAR(32)  NOT NULL,
+        h_c_table               = VARCHAR(32)  NOT NULL,
+        h_q_table               = VARCHAR(32)  NOT NULL,
+        h_table_1               = VARCHAR(32)  NOT NULL,
+        h_table_2               = VARCHAR(32)  NOT NULL,
+        h_force_recalc          = INTEGER1     NOT NULL, 
+
+        lp_error_check          = PROCEDURE RETURNING INTEGER NOT NULL,
+        lp_drop_table           = PROCEDURE RETURNING INTEGER NOT NULL,
+        lp_order_reprint        = PROCEDURE RETURNING INTEGER NOT NULL,
+        lp_recalc_questions     = PROCEDURE RETURNING INTEGER NOT NULL,
+
+
+{
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  h_frpr_name = 'form_reprint_03_pr';
+  h_force_recalc = 0;
+
+  h_input_table = 'tt_frp_03';
+  h_c_table = 'tt_frp_c_data'; 
+  h_q_table = 'tt_frp_q_data'; 
+  h_table_1 = 'tt_frp_03a';
+  h_table_2 = 'tt_frp_03b';
+
+  h_dow = dow('today');
+
+  IF h_dow = 'Sat' 
+  THEN
+    h_now = VARCHAR(DATE('now') - '1 days');
+  ELSEIF h_dow = 'Sun' 
+  THEN
+    h_now = VARCHAR(DATE('now') - '2 days');
+  ELSE
+    h_now = VARCHAR(DATE('now'));
+  ENDIF;
+
+  h_frp_date = VARCHAR(DATE_PART('year','now')) 
+             + RIGHT(LEFT(h_now,5),2) 
+             + LEFT(h_now,2);
+  
+  IF :g_database = 'prodlivedb'
+  THEN
+
+    h_input_file   = '/admin/scratch/ttone/prodcom/PRODDUPS.CSV';
+    h_output_file  = '/prodcom/live5/files/text/touchtone/prodcom_tt_dups_' 
+                   + :h_frp_date;
+  ELSE
+
+    h_input_file   = '/admin/scratch/PRODDUPS.CSV';
+    h_output_file  = '/admin/scratch/prodcom_tt_dups_' +:h_frp_date;
+
+    DELETE 
+    FROM   frp_reprinted_forms
+    WHERE  printed_on = '';   
+    COMMIT;
+
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+     Log start of process.
+  -----------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = '*SIGNON*');
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'STARTING: FREEPHONE REPRINT ORDERS PROCESSING.');
+
+  /*-----------------------------------------------------------------------
+     Check input file exists. If not, stop.
+  -----------------------------------------------------------------------*/
+
+  h_command = '$SCRIPTS/check_file_exists.script '
+              + :h_input_file
+              + ' 1>/dev/null '
+              + ' 2>/dev/null';
+
+  h_return = CALLPROC callsys_cp(:h_command);
+
+  IF h_return != 0
+  THEN
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = 'NOTE: There were no phone orders to process.');
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = 'COMPLETE: FREEPHONE REPRINT ORDERS PROCESSING.');
+      
+    EXIT;
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+     Get data from input file into a temp table.
+  -----------------------------------------------------------------------*/
+
+  h_return = lp_drop_table (p_table_name = :h_input_table);
+
+  IF h_return != 0
+  THEN
+    EXIT; 
+  ENDIF;
+
+  CREATE TABLE :h_input_table
+             ( contributor_reference   CHAR(11)        NOT NULL,
+               inquiry                 INTEGER1        NOT NULL,
+               period                  INTEGER4        NOT NULL);
+
+  h_return = lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create input table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ENDIF;
+
+
+  COPY TABLE :h_input_table
+           ( contributor_reference = char(0)comma,
+             inquiry = char(0)comma,
+             period = char(0)nl)
+  FROM :h_input_file;
+
+  h_return = lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to populate input table from file.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+     Count rows on table. If 0 then note and exit.
+  -----------------------------------------------------------------------*/
+
+  SELECT COUNT(*) AS h_count
+  FROM   :h_input_table;
+
+  h_return = lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to count rows on input table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ENDIF;
+
+  IF h_count = 0
+  THEN
+
+    CALLPROC write_to_process_log
+     ( p_frpr_name = :h_frpr_name,
+       p_code      = 1,
+       p_text      = 'WARNING: There telephone orders file seems to be empty.');
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = 'COMPLETE: FREEPHONE REPRINT ORDERS PROCESSING.');
+      
+    EXIT;
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+     Loop through contributors to order forms using same process as 
+     form_reprint_01_fr but without the user interface. All despatch 
+     routed to post.
+  -----------------------------------------------------------------------*/
+
+  SELECT   contributor_reference AS h_contributor_reference,
+           period                AS h_period
+  FROM     :h_input_table
+  ORDER BY contributor_reference
+  BEGIN
+ 
+    h_return2 = CALLPROC lp_order_reprint 
+                      ( p_contributor_reference = :h_contributor_reference,
+                        p_period                = :h_period);
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'WARNING: Failed to order reprint for contributor ' 
+             + :h_contributor_reference +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return2,
+               p_text      = :h_text);
+    ENDIF;
+    
+    IF h_return > 6
+    THEN
+      EXIT;
+    ENDIF;      
+  
+  END;
+
+  h_return = lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select from input table for loop.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ENDIF;
+
+  h_text = 'NOTE: Completed reordering loop. Archiving file...';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  /*-----------------------------------------------------------------------
+     Move file to storage.
+  -----------------------------------------------------------------------*/
+
+  h_return = CALLPROC callsys_cp 
+           ( 'mv '
+           + :h_input_file + ' '
+           + :h_output_file 
+           + ' 1>/dev/null '
+           + ' 2>/dev/null' );
+
+  /* This call not returning 0,1,9 properly */
+
+  h_text = 'NOTE: Completed archiving call. Checking if successful...';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  h_command = '$SCRIPTS/check_file_exists.script '
+              + :h_output_file
+              + ' 1>/dev/null '
+              + ' 2>/dev/null';
+
+  h_return = CALLPROC callsys_cp(:h_command);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to move data file to storage.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    EXIT;
+  ELSE 
+    h_text = 'NOTE: Successfully renamed and moved data file to storage.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+     Log end of process.
+  -----------------------------------------------------------------------*/
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = 'COMPLETE: FREEPHONE REPRINT ORDERS PROCESSING.');
+      
+  EXIT;
+}
+
+
+/******************************* LOCAL PROCEDURES *************************/
+
+/*==========================================================================
+  Local procedure to order the reprint for the contributor period passed.
+==========================================================================*/
+
+PROCEDURE lp_order_reprint  
+        ( p_contributor_reference = CHAR(11) NOT NULL WITH DEFAULT,
+          p_period                = INTEGER4 NOT NULL WITH DEFAULT ) =
+
+DECLARE 
+        lp_return             = INTEGER1     NOT NULL,
+        lp_return2            = INTEGER1     NOT NULL,
+        lp_industry           = INTEGER4     NOT NULL,
+        lp_dummy              = INTEGER4     NOT NULL,
+        lp_count              = INTEGER4     NOT NULL,
+        lp_prompt             = CHAR(5)      NOT NULL,
+        lp_route              = CHAR(4)      NOT NULL,
+        lp_frp_date           = CHAR(8)      NOT NULL,
+        lp_frp_time           = CHAR(5)      NOT NULL,
+        lp_text               = VARCHAR(80)  NOT NULL,
+        lp_action             = VARCHAR(80)  NOT NULL,
+        lp_add_name           = CHAR(54)     NOT NULL,
+        lp_reference          = CHAR(11)     NOT NULL,
+        lp_category           = VARCHAR(2)   NOT NULL,
+        lp_process            = INTEGER1     NOT NULL,
+        lp_idbr_year          = CHAR(6)      NOT NULL,
+        lp_frpr_name          = VARCHAR(24)  NOT NULL,
+        lp_ordered_on         = DATE         NOT NULL,
+        lp_ordered_by         = VARCHAR(24)  NOT NULL,
+        lp_param_list         = VARCHAR(100) NOT NULL,
+        lp_param1             = CHAR(11)     NOT NULL,
+        lp_varchar_variable   = VARCHAR(100) NOT NULL,
+        lp_integer_variable   = INTEGER2     NOT NULL,
+        lp_count_cqpv         = INTEGER4     NOT NULL,
+        lp_count_form         = INTEGER4     NOT NULL,
+        lp_method             = VARCHAR(11)  NOT NULL,
+        lp_phone              = CHAR(6)      NOT NULL WITH DEFAULT,
+        lp_prefix             = CHAR(2)      NOT NULL WITH DEFAULT,
+
+{
+
+  /*------------------------------------------------------------------------
+       Validate contributor reference.
+  ------------------------------------------------------------------------*/
+
+  SELECT contributor_reference AS lp_reference 
+  FROM   contributor
+  WHERE  contributor_reference = :p_contributor_reference;
+ 
+  lp_return = lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to validate contributor reference.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+
+  ELSEIF lp_return =1 
+  THEN
+    h_text = 'WARNING: Contributor ' +:p_contributor_reference + ' ' 
+           + 'does not exist.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_text);
+    RETURN :lp_return;
+  ENDIF; 
+            
+  /*------------------------------------------------------------------------
+       Validate Contributor Period. (lp_industry used later)
+  ------------------------------------------------------------------------*/
+
+  SELECT contributor_industry AS lp_industry,
+         output_category      AS lp_category
+  FROM   contributor_period 
+  WHERE  contributor_reference = :p_contributor_reference
+    AND  period                = :p_period;
+    
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to validate contributor period.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+
+  ELSEIF lp_return =1 
+  THEN
+    h_text = 'WARNING: This contributor is not selected for the given period.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_text);
+    RETURN :lp_return;
+
+  ENDIF; 
+
+  lp_idbr_year = SQUEEZE(VARCHAR(:p_period +12 ));
+
+  /*------------------------------------------------------------------------
+       Stop re-ordering of enforcement cases.
+  ------------------------------------------------------------------------*/
+  
+  IF lp_category = 'Y'
+  THEN
+  
+    h_text   = 'WARNING: Enforcement contributor ' +:lp_reference +' '
+             + 'attempted to order form.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 6,
+             p_text      = :h_text);
+    RETURN 1;
+
+  ENDIF; 
+            
+  /*------------------------------------------------------------------------
+       Check if form has already been ordered today, and if so stop.
+  ------------------------------------------------------------------------*/
+
+  SELECT ordered_on AS lp_ordered_on
+  FROM   frp_reprinted_forms
+  WHERE  contributor_reference = :p_contributor_reference
+    AND  period = :p_period
+    AND  printed_on = '';
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 0);
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to select from frp_reprinted_forms.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+
+  ELSEIF lp_return = 1
+  THEN
+    h_text   = 'WARNING: A reprint for contributor ' +:lp_reference +' '
+             + 'is already pending.'; 
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+
+  ENDIF;
+  
+  /*------------------------------------------------------------------------
+       Drop existing temp tables.
+  ------------------------------------------------------------------------*/
+
+  lp_return = lp_drop_table (p_table_name = :h_c_table);
+
+  IF lp_return != 0
+  THEN
+    RETURN 9;
+  ENDIF; 
+
+  lp_return = lp_drop_table (p_table_name = :h_q_table);
+
+  IF lp_return != 0
+  THEN
+    RETURN 9;
+  ENDIF; 
+
+  /*------------------------------------------------------------------------
+       Load form data into temp tables. 
+  ------------------------------------------------------------------------*/
+
+  CREATE TABLE :h_c_table 
+  AS
+  SELECT DISTINCT 
+         contributor_reference,
+         check_letter,
+         CHAR(contributor_industry) AS contributor_industry,
+         CHAR(legal_status) AS legal_status,
+         region,
+         add_name1,
+         add_name2,
+         add_name3,
+         add_line1,
+         add_line2,
+         add_line3,
+         add_line4,
+         add_line5,
+         add_postcode,
+         add_tradstyle1,
+         add_tradstyle2,
+         add_tradstyle3,
+         addressee,
+         inclexcl,
+         formtype,
+         ons_tel,
+         currency,
+         welsh,
+         new,
+         osm, 
+         output_category,
+         '' AS str_dummy,
+         0  AS int_dummy,
+         FLOAT8(0) AS flt_dummy           
+  FROM   fpr_form_c_data  
+  WHERE  period = :p_period
+    AND  contributor_reference = :p_contributor_reference; 
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select form contributor data.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+  ENDIF;
+
+  CREATE TABLE :h_q_table 
+  AS
+  SELECT period,
+         col_type,
+         contributor_reference,
+         contributor_industry,
+         q_n_l_code,
+         INTEGER(q_n_order) AS q_n_order,
+         q_desc_code,
+         q_count,
+         q_line,
+         need_count,
+         text1,
+         text2,
+         text3,
+         text4,
+         text5,
+         text6,
+         text7,
+         text8,
+         text9,
+         text10,
+         unit1,
+         cn_code1,
+         cn_code2,
+         cn_code3,
+         cn_code4,
+         cn_code5,
+         cn_code6,
+         cn_code7,
+         cn_code8,
+         cn_code9,
+         CHAR(q_n_order) AS quest_string,
+         phone_contact,
+         phone_area_code,
+         phone,
+         phone_extension,
+         fax_area_code,
+         fax,
+         email
+  FROM   fpr_form_q_data  
+  WHERE  period = :p_period
+    AND  contributor_reference = :p_contributor_reference; 
+ 
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select form question data.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+     Compare number of questions to cqpv. If different then reconstruct.
+  ------------------------------------------------------------------------*/
+
+  /*......................................................................
+      Get count of questions from cqpv for this contributor.
+  ......................................................................*/
+
+  SELECT COUNT (question) AS lp_count_cqpv
+  FROM   cqpv
+  WHERE  contributor_reference = :p_contributor_reference
+    AND  period = :p_period
+    AND  quest_order NOT IN (8,9);
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0
+  THEN
+    h_text = 'ERROR: Failed to count questions on CQPV.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+  ENDIF;
+ 
+  /*......................................................................
+      Get count of questions from temp table.
+  ......................................................................*/
+
+  SELECT COUNT (q_n_l_code) AS lp_count_form
+  FROM   :h_q_table; 
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0
+  THEN
+    h_text = 'ERROR: Failed to count questions on ' + :h_q_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+  ENDIF;
+ 
+  /*......................................................................
+      If counts differ, or force recalc set, recalculate questions.
+      (Questions are not deleted from cqpv during the year, only added.)
+  ......................................................................*/
+
+  IF lp_count_cqpv != lp_count_form
+  OR h_force_recalc = 1
+  THEN
+
+    lp_return = CALLPROC lp_recalc_questions 
+                       ( p_period = :p_period,
+                         p_contributor_reference = :p_contributor_reference);
+  
+    IF lp_return != 0
+    THEN
+      RETURN 9; 
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+     Route to post.
+  ------------------------------------------------------------------------*/
+
+  lp_route = 'post';
+
+  /*-----------------------------------------------------------------------
+       Get phone number for current contributor's data analyst.
+  -----------------------------------------------------------------------*/
+
+  SELECT ext AS lp_phone
+  FROM   industry_analysts
+  WHERE  industry = :lp_industry
+    AND  :p_contributor_reference >= low_ref
+    AND  :p_contributor_reference <= high_ref;
+     
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select analysts phone number.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+  ENDIF;
+
+  IF LEFT(:lp_phone, 1) = '1'
+  THEN
+    lp_prefix = '65'
+  ELSE
+    lp_prefix = '45'
+  ENDIF;
+
+  lp_phone = SQUEEZE(:lp_prefix) + SQUEEZE(:lp_phone);
+
+  /*-----------------------------------------------------------------------
+       Update address, and analyst data on temp table.
+  -----------------------------------------------------------------------*/
+
+  UPDATE :h_c_table a
+  FROM   contributor b
+  SET    ons_tel   = :lp_phone,
+         add_name1 = b.add_name1, 
+         add_name2 = b.add_name2, 
+         add_name3 = b.add_name3, 
+         add_line1 = b.add_line1, 
+         add_line2 = b.add_line2, 
+         add_line3 = b.add_line3, 
+         add_line4 = b.add_line4, 
+         add_line5 = b.add_line5, 
+         add_postcode = b.add_postcode, 
+         add_tradstyle1 = b.add_tradstyle1, 
+         add_tradstyle2 = b.add_tradstyle2, 
+         add_tradstyle3 = b.add_tradstyle3, 
+         addressee = b.addressee
+  WHERE  a.contributor_reference = b.contributor_reference;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update with current postal address.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+     Inserts data into batch reprint tables.
+  -----------------------------------------------------------------------*/
+
+ /*.......................................................................
+    Insert summary into frp_reprinted_forms. 
+ .......................................................................*/
+
+  INSERT INTO frp_reprinted_forms
+            ( contributor_reference,
+              period,
+              route,
+              ordered_by,
+              ordered_on,
+              printed_on,
+              analyst,
+              ons_tel,
+              addressee,
+              add_name1,
+              add_name2,
+              add_name3,
+              add_line1,
+              add_line2,
+              add_line3,
+              add_line4,
+              add_line5,
+              add_postcode)
+  SELECT contributor_reference,
+         :p_period,
+         :lp_route,
+         '',
+         DATE('now'),
+         '',
+         '',
+         ons_tel,
+         addressee,  
+         add_name1,
+         add_name2,
+         add_name3,
+         add_line1,
+         add_line2,
+         add_line3,
+         add_line4,
+         add_line5,
+         add_postcode
+  FROM   :h_c_table; 
+  
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0
+  THEN
+    h_text = 'ERROR: Failed to insert into frp_reprinted_forms.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+ /*.......................................................................
+    Update frp_reprinted_forms with form analyst.
+ .......................................................................*/
+
+  UPDATE frp_reprinted_forms a
+  FROM   industry_analysts b
+  SET    analyst = b.name
+  WHERE  contributor_reference = :p_contributor_reference
+    AND  period                = :p_period
+    AND  b.industry = INT(:lp_industry)
+    AND  RIGHT(a.ons_tel,4)  = b.ext;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update frp_reprinted_forms with analyst name.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+ /*.......................................................................
+    Update frp_reprinted_forms with ordered_by. 
+ .......................................................................*/
+
+  UPDATE frp_reprinted_forms 
+  SET    ordered_by = 'Contributor'
+  WHERE  contributor_reference = :p_contributor_reference
+    AND  period                = :p_period
+    AND  ordered_on            > 'today';
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update frp_reprinted_forms with orderers name.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+ /*.......................................................................
+    Insert contributor data into semi-perm table
+ .......................................................................*/
+
+  INSERT INTO frp_form_c_data
+  SELECT DISTINCT 
+         contributor_reference,
+         check_letter,
+         CHAR(contributor_industry) AS contributor_industry,
+         CHAR(legal_status) AS legal_status,
+         region,
+         add_name1,
+         add_name2,
+         add_name3,
+         add_line1,
+         add_line2,
+         add_line3,
+         add_line4,
+         add_line5,
+         add_postcode,
+         add_tradstyle1,
+         add_tradstyle2,
+         add_tradstyle3,
+         addressee,
+         inclexcl,
+         formtype,
+         ons_tel,
+         currency,
+         welsh,
+         new,
+         osm, 
+         '014' AS inquiry,
+         :lp_idbr_year AS period,
+         '' AS str_dummy,
+         0  AS int_dummy,
+         FLOAT8(0) AS flt_dummy           
+  FROM   :h_c_table;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0
+  THEN
+    h_text = 'ERROR: Failed to insert into frp_form_c_data.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+ /*.......................................................................
+    Insert question data into semi-perm table
+ .......................................................................*/
+
+  INSERT INTO frp_form_q_data
+  SELECT :lp_idbr_year AS period,
+         col_type,
+         contributor_reference,
+         contributor_industry,
+         q_n_l_code,
+         q_n_order,
+         q_desc_code,
+         q_count,
+         q_line,
+         need_count,
+         text1,
+         text2,
+         text3,
+         text4,
+         text5,
+         text6,
+         text7,
+         text8,
+         text9,
+         text10,
+         unit1,
+         cn_code1,
+         cn_code2,
+         cn_code3,
+         cn_code4,
+         cn_code5,
+         cn_code6,
+         cn_code7,
+         cn_code8,
+         cn_code9,
+         quest_string,
+         phone_contact,
+         phone_area_code,
+         phone,
+         phone_extension,
+         fax_area_code,
+         fax,
+         email
+  FROM  :h_q_table;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0
+  THEN
+    h_text = 'ERROR: Failed to insert into frp_form_q_data.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+     Pad leading zeros on industry. (Making sure after issues reported!)
+  ------------------------------------------------------------------------*/
+
+  UPDATE frp_form_c_data
+  SET    contributor_industry =
+         RIGHT(('0'+ SQUEEZE(VARCHAR(contributor_industry))),5)
+  WHERE  contributor_reference = :h_contributor_reference;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to pad industry on frp_form_c_data.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  UPDATE frp_form_q_data
+  SET    contributor_industry =
+         RIGHT(('0'+ SQUEEZE(VARCHAR(contributor_industry))),5)
+  WHERE  contributor_reference = :h_contributor_reference;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to pad industry on frp_form_q_data.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+       Display success message.
+  -----------------------------------------------------------------------*/
+
+  h_text = 'NOTE: Reprint order accepted for contributor ' +lp_reference +'.'; 
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = :h_text);
+
+  RETURN 0;
+}
+  
+
+/*=======================================================================
+    Local procedure to recalc quesions on a given form for reprinting.
+=======================================================================*/
+
+PROCEDURE lp_recalc_questions 
+        ( p_contributor_reference = CHAR(11) NOT NULL WITH DEFAULT,
+          p_period                = INTEGER4 NOT NULL WITH DEFAULT ) =
+
+DECLARE   lp_return                = INTEGER4     NOT NULL WITH DEFAULT,
+          lp_return2               = INTEGER4     NOT NULL WITH DEFAULT,
+          lp_text2                 = VARCHAR(60)  NOT NULL,
+          lp_text3                 = VARCHAR(60)  NOT NULL,
+          lp_text4                 = VARCHAR(60)  NOT NULL,
+          lp_text5                 = VARCHAR(60)  NOT NULL,
+          lp_text6                 = VARCHAR(60)  NOT NULL,
+          lp_text7                 = VARCHAR(60)  NOT NULL,
+          lp_text8                 = VARCHAR(60)  NOT NULL,
+          lp_text9                 = VARCHAR(60)  NOT NULL,
+          lp_text10                = VARCHAR(60)  NOT NULL,
+          lp_cncode1               = VARCHAR(60)  NOT NULL,
+          lp_cncode2               = VARCHAR(60)  NOT NULL,
+          lp_cncode3               = VARCHAR(60)  NOT NULL,
+          lp_cncode4               = VARCHAR(60)  NOT NULL,
+          lp_cncode5               = VARCHAR(60)  NOT NULL,
+          lp_cncode6               = VARCHAR(60)  NOT NULL,
+          lp_cncode7               = VARCHAR(60)  NOT NULL,
+          lp_cncode8               = VARCHAR(60)  NOT NULL,
+          lp_cncode9               = VARCHAR(60)  NOT NULL,
+          lp_tid                   = INTEGER4     NOT NULL,
+          lp_lines                 = INTEGER4     NOT NULL,
+          lp_contributor_reference = CHAR(11)     NOT NULL WITH DEFAULT,
+          lp_question              = INTEGER4     NOT NULL WITH DEFAULT,
+          lp_val_qst               = INTEGER4     NOT NULL WITH DEFAULT,
+
+{
+  /*----------------------------------------------------------------------
+      Recreate temp question table.
+  ----------------------------------------------------------------------*/
+
+  lp_return = lp_drop_table (p_table_name = :h_q_table);
+
+  IF lp_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_q_table
+  AS 
+  SELECT 
+    'Q' AS  col_type,
+    a.contributor_reference,
+    CHAR(a.contributor_industry) AS contributor_industry,
+    b.quest_order AS q_n_l_code,
+    b.question AS q_n_order,
+    0 AS q_desc_code,
+    0 AS q_count,
+    0 AS q_line,
+    0 AS need_count,
+    '                                                             ' AS text1,
+    '                                                             ' AS text2,
+    '                                                             ' AS text3,
+    '                                                             ' AS text4,
+    '                                                             ' AS text5,
+    '                                                             ' AS text6,
+    '                                                             ' AS text7,
+    '                                                             ' AS text8,
+    '                                                             ' AS text9,
+    '                                                             ' AS text10,
+    c.unit_1 AS unit1,
+    '                                                      ' AS cn_code1,
+    '                                                      ' AS cn_code2,
+    '                                                      ' AS cn_code3,
+    '                                                      ' AS cn_code4,
+    '                                                      ' AS cn_code5,
+    '                                                      ' AS cn_code6,
+    '                                                      ' AS cn_code7,
+    '                                                      ' AS cn_code8,
+    '                                                      ' AS cn_code9,
+    '123456789' AS quest_string,
+    d.phone_contact,
+    d.phone_area_code,
+    d.phone,
+    d.phone_extension,
+    d.fax_area_code,
+    d.fax,
+    d.email
+  FROM   contributor_period a,
+         cqpv b,
+         question_library c,
+         contributor d
+  WHERE  a.period = :p_period
+    AND  b.period = a.period
+    AND  c.period = a.period
+    AND  a.contributor_reference = :p_contributor_reference
+    AND  b.contributor_reference = a.contributor_reference
+    AND  d.contributor_reference = a.contributor_reference
+    AND  b.question = c.question
+    AND  b.quest_order NOT IN (8,9);
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create working table ' +:h_q_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+      Update with the question text in 60-character chunks
+  ----------------------------------------------------------------------*/
+
+  UPDATE :h_q_table a
+  FROM   fpr_question_texts b
+  SET    q_count = b.line_count,
+         text1 = b.text1,
+         text2 = b.text2,
+         text3 = b.text3,
+         text4 = b.text4,
+         text5 = b.text5,
+         text6 = b.text6,
+         text7 = b.text7,
+         text8 = b.text8,
+         text9 = b.text9,
+         text10 = b.text10
+  WHERE  a.q_n_order = b.question
+    AND  b.period    = :p_period;
+   
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update ' +:h_q_table +' with question texts.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+    Insert note details.
+  ----------------------------------------------------------------------*/
+
+  INSERT INTO :h_q_table 
+            ( q_n_l_code,
+              col_type,
+              contributor_reference,
+              contributor_industry,
+              q_n_order,
+              q_desc_code,
+              q_count,
+              q_line,
+              need_count,
+              text1,
+              text2,
+              text3,
+              text4,
+              text5,
+              text6,
+              text7,
+              text8,
+              text9,
+              text10,
+              unit1,
+              cn_code1,
+              cn_code2,
+              cn_code3,
+              cn_code4,
+              cn_code5,
+              cn_code6,
+              cn_code7,
+              cn_code8,
+              cn_code9,
+              quest_string)
+  SELECT DISTINCT b.note_code,
+                  'N',
+                  a.contributor_reference,
+                  CHAR(a.contributor_industry),
+                  c.line_no,
+                  0,
+                  c.line_count,
+                  0,
+                  0,
+                  c.text1,
+                  c.text2,
+                  c.text3,
+                  c.text4,
+                  c.text5,
+                  c.text6,
+                  c.text7,
+                  c.text8,
+                  c.text9,
+                  c.text10,
+                  '',
+                  '',
+                  '',
+                  '',
+                  '',
+                  '',
+                  '',
+                  '',
+                  '',
+                  '',
+                  '123456789'
+  FROM  contributor_period a,
+        question_note_link b,
+        fpr_form_notes c,
+        cqpv d
+  WHERE a.period = :p_period
+    AND b.period = a.period
+    AND c.period = a.period
+    AND d.period = a.period
+    AND a.contributor_reference = :p_contributor_reference
+    AND a.contributor_reference = d.contributor_reference
+    AND d.question = b.question
+    AND b.note_code = c.note_code;
+ 
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to insert notes into ' + :h_q_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+     Create Val and Vol reference tables as using MOD's in selects
+     hammers performance.
+  ----------------------------------------------------------------------*/
+
+  lp_return = lp_drop_table (p_table_name = :h_table_1);
+
+  IF lp_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table_1
+  AS
+  SELECT DISTINCT q_n_order
+  FROM   :h_q_table
+  WHERE  MOD(q_n_order,10) = 1;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create table ' +:h_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+  ENDIF;
+
+  lp_return = lp_drop_table (p_table_name = :h_table_2);
+
+  IF lp_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table_2
+  AS
+  SELECT DISTINCT q_n_order,
+                  q_n_l_code
+  FROM   :h_q_table
+  WHERE  MOD(q_n_order,10) IN (2,4,5,6);
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create table ' +:h_table_2 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+      Updating CN codes.
+  ----------------------------------------------------------------------*/
+
+  UPDATE :h_q_table a
+  FROM   prodcom_cncodes b
+  SET    cn_code1 = IFNULL(b.cn_code1,''),
+         cn_code2 = IFNULL(b.cn_code2,''),
+         cn_code3 = IFNULL(b.cn_code3,''),
+         cn_code4 = IFNULL(b.cn_code4,''),
+         cn_code5 = IFNULL(b.cn_code6,''),
+         cn_code7 = IFNULL(b.cn_code7,''),
+         cn_code8 = IFNULL(b.cn_code8,''),
+         cn_code9 = IFNULL(b.cn_code9,'')
+  WHERE  a.q_n_order = b.prodcom_code
+    AND  b.period    = :p_period;
+  
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update CN codes on ' +:h_q_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+      Finalising the rows needed to print each question.
+  ----------------------------------------------------------------------*/
+
+  SELECT a.text2 AS lp_text2,
+         a.text3 AS lp_text3,
+         a.text4 AS lp_text4,
+         a.text5 AS lp_text5,
+         a.text6 AS lp_text6,
+         a.text7 AS lp_text7,
+         a.text8 AS lp_text8,
+         a.text9 AS lp_text9,
+         a.text10 AS lp_text10,
+         a.cn_code1 AS lp_cncode1,
+         a.cn_code2 AS lp_cncode2,
+         a.cn_code3 AS lp_cncode3,
+         a.cn_code4 AS lp_cncode4,
+         a.cn_code5 AS lp_cncode5,
+         a.cn_code6 AS lp_cncode6,
+         a.cn_code7 AS lp_cncode7,
+         a.cn_code8 AS lp_cncode8,
+         a.cn_code9 AS lp_cncode9,
+         a.tid AS lp_tid
+  FROM   :h_q_table a,
+         :h_table_1 b
+  WHERE  a.q_n_order = b.q_n_order
+  AND    a.q_n_l_code = 1
+  BEGIN  
+
+    /*......................................................................
+       Initial Count of 6 =
+       1 for the blank line before the first line of text, plus
+       1 for the first line of text (there's always at least one line
+       of text), plus
+       1 for the blank line after the question text, plus
+       3 for the 'Value of Sales' and the 2 blank lines following it.
+    ......................................................................*/
+
+    lp_lines = 6;
+
+    IF lp_text2  != '' THEN lp_lines = lp_lines + 1; ENDIF;
+    IF lp_text3  != '' THEN lp_lines = lp_lines + 1; ENDIF;
+    IF lp_text4  != '' THEN lp_lines = lp_lines + 1; ENDIF;
+    IF lp_text5  != '' THEN lp_lines = lp_lines + 1; ENDIF;
+    IF lp_text6  != '' THEN lp_lines = lp_lines + 1; ENDIF;
+    IF lp_text7  != '' THEN lp_lines = lp_lines + 1; ENDIF;
+    IF lp_text8  != '' THEN lp_lines = lp_lines + 1; ENDIF;
+    IF lp_text9  != '' THEN lp_lines = lp_lines + 1; ENDIF;
+    IF lp_text10 != '' THEN lp_lines = lp_lines + 1; ENDIF;
+
+    /*........................................................................
+      If there's CN Text, include an extra one for the blank line after it.
+    ........................................................................*/
+
+    IF lp_cncode1 != '' THEN lp_lines = lp_lines + 2; ENDIF;
+    IF lp_cncode2 != '' THEN lp_lines = lp_lines + 1; ENDIF;
+    IF lp_cncode3 != '' THEN lp_lines = lp_lines + 1; ENDIF;
+    IF lp_cncode4 != '' THEN lp_lines = lp_lines + 1; ENDIF;
+    IF lp_cncode5 != '' THEN lp_lines = lp_lines + 1; ENDIF;
+    IF lp_cncode6 != '' THEN lp_lines = lp_lines + 1; ENDIF;
+    IF lp_cncode7 != '' THEN lp_lines = lp_lines + 1; ENDIF;
+    IF lp_cncode8 != '' THEN lp_lines = lp_lines + 1; ENDIF;
+    IF lp_cncode9 != '' THEN lp_lines = lp_lines + 1; ENDIF;
+
+
+    UPDATE :h_q_table
+    SET    need_count = :lp_lines
+    WHERE  tid = :lp_tid;
+
+    lp_return2 = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+    IF lp_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed to update rows needed on ' +:h_q_table +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :lp_return2,
+               p_text      = :h_text);
+      RETURN :lp_return2;
+    ENDIF;
+
+  END;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to select for row need loop from '+:h_q_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+  ENDIF;
+
+  /*........................................................................
+     Update the 01 question with +3 to the need_count for all
+     subsequent volumes
+  ........................................................................*/
+
+  SELECT a.q_n_order AS lp_question,
+         a.contributor_reference AS lp_contributor_reference
+  FROM   :h_q_table a,
+         :h_table_2 b
+  WHERE  a.q_n_order = b.q_n_order
+  BEGIN
+
+    lp_val_qst = :lp_question / 10 * 10 + 1;
+
+    UPDATE :h_q_table
+    SET    need_count = need_count + 3
+    WHERE  q_n_order = :lp_val_qst
+      AND  contributor_reference = :lp_contributor_reference;
+
+    lp_return2 = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+    IF lp_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed to update volume rows needed on ' 
+             + :h_q_table +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :lp_return2,
+               p_text      = :h_text);
+      RETURN :lp_return2;
+    ENDIF;
+
+  END;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to select for second row need loop from ' 
+           + :h_q_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+  ENDIF;
+
+  /*..................................................................
+   Update q_line for 'Q' col_type rows - this field is used by the SPC
+   program to determine when and how to draw the lines on the form:
+
+   0 = Don't draw a line,
+   2 = Draw a line across the page
+
+   (A line is drawn after the highest eleven digit question within 
+    each 10 digit question base.a)
+  ..................................................................*/
+
+  lp_return = lp_drop_table (p_table_name = :h_table_1);
+
+  IF lp_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table_1
+  AS SELECT    contributor_reference,
+               q_n_order/10 AS base,
+               q_n_order AS question
+  FROM         :h_q_table
+  WHERE        col_type = 'Q'
+  AND          q_n_l_code = 1;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create ' + :h_table_1 +' for q_line markers.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+  ENDIF;
+
+  lp_return = lp_drop_table (p_table_name = :h_table_2);
+
+  IF lp_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table_2
+  AS SELECT    contributor_reference,
+               base,
+               MAX(question) AS question
+  FROM         :h_table_1
+  GROUP BY     contributor_reference,
+               base;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to create ' + :h_table_2 +' for q_line markers.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+  ENDIF;
+
+  UPDATE :h_q_table a
+  FROM   :h_table_2 b
+  SET    q_line = 2
+  WHERE  a.col_type = 'Q'
+  AND    a.contributor_reference = b.contributor_reference
+  AND    a.q_n_order = b.question
+  AND    a.q_n_l_code = 1;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update ' +:h_q_table +' with q_line markers.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+  ENDIF;
+
+  /*..................................................................
+   Padding industry numbers
+  ..................................................................*/
+
+  UPDATE :h_c_table
+  SET    contributor_industry = '0' + VARCHAR(contributor_industry)
+  WHERE  length(contributor_industry) = 4;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to pad industry numbers on ' + :h_c_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+  ENDIF;
+
+  UPDATE :h_q_table
+  SET    contributor_industry = '0' + VARCHAR(contributor_industry)
+  WHERE  length(contributor_industry) = 4;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to pad industry numbers on ' + :h_q_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+  ENDIF;
+
+  /*..................................................................
+   Padding question order.
+  ..................................................................*/
+
+  UPDATE :h_q_table
+  SET    quest_string = VARCHAR(q_n_order);
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update question strings on ' + :h_q_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+  ENDIF;
+
+  UPDATE :h_q_table
+  SET    quest_string = '0' + quest_string
+  WHERE  LENGTH(quest_string) = 8;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF lp_return > 1
+  THEN
+    h_text = 'ERROR: Failed to pad question strings on ' + :h_q_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN :lp_return;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(36) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name  = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    h_text = 'SYSTEM ERROR: Failed whilst selecting ' 
+           +  VARCHAR(:p_table_name) + ' from iitables prior to droping.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  DROP TABLE :p_table_name;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return != 0 
+  THEN 
+    h_text = 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+}
+
+

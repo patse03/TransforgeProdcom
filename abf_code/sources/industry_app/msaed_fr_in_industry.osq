@@ -1,0 +1,447 @@
+/*------------------------------------------------------------------
+   This frame is used to view INDUSTRY data.
+------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries              = INTEGER1    NOT NULL,
+        h_retries_allowed      = INTEGER1    NOT NULL,
+        h_retry_or_not         = CHAR(5)     NOT NULL,
+        h_frpr_name            = VARCHAR(24) NOT NULL,
+        h_table                = VARCHAR(36) NOT NULL,
+        h_industry_text        = VARCHAR(60) NOT NULL,
+        h_alloc_count          = INTEGER1    NOT NULL,
+        h_return               = INTEGER2    NOT NULL,
+
+        lp_load_table          = PROCEDURE RETURNING INTEGER,
+        lp_drop_table          = PROCEDURE RETURNING INTEGER,
+        lp_error_check         = PROCEDURE RETURNING INTEGER,
+        lp_full_error_check    = PROCEDURE RETURNING INTEGER
+
+{
+  h_frpr_name = 'msaed_fr_in_industry';
+  h_table     = 'tt_msaed_industry_details';
+  msa_date = 'now';
+
+  h_retries_allowed   = 3;
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+  SET_FORMS FIELD '' (MODE(tf) = 'UPDATE',
+                      DISPLAYONLY(s_industry) = 0,
+                      REVERSE(s_industry) = 0,
+                      UNDERLINE(s_industry) = 1);
+
+  /*----------------------------------------------------------------------
+         Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+
+}
+
+FIELD s_industry =
+{
+  MESSAGE 'Selecting Data . . . ';
+
+  /*------------------------------------------------------------------
+          Drop working table
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC lp_drop_table ( p_table_name = :h_table);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to drop table ' +:h_table + '. '
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.' 
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+          Set h_alloc_count
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+  DO
+    h_retries = :h_retries + 1;
+
+    SELECT COUNT(low_ref) AS h_alloc_count
+    FROM   industry_analysts  
+    WHERE  industry = :s_industry
+      AND  name != '';
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return <> 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to count allocations for industry '
+          +  VARCHAR(:s_industry) + '. Error code 9. '
+          + 'Please contact IM immediately.' 
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      ROUTE A: ALLOCATION EXISTS. 
+  ------------------------------------------------------------------*/
+
+  IF h_alloc_count > 0
+  THEN
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+    DO
+      h_retries = :h_retries + 1;
+
+      CREATE TABLE :h_table 
+      AS
+      SELECT a.industry,
+             a.industry_text,
+             a.present_emp_cutoff,
+             c.analyst_name,
+             b.low_ref,
+             c.coordinator_name
+      FROM   industry a,
+             industry_analysts b,
+             analyst_coordinator_manager c
+      WHERE  a.industry = :s_industry
+        AND  a.industry = b.industry
+        AND  b.user_id = c.analyst_id;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return <> 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+  
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+      RETURN 7;
+
+    ELSEIF h_return > 0
+    THEN
+      MESSAGE 'ERROR: Failed to create table ' + :h_table + ' for industry '
+            +  VARCHAR(:s_industry) + '. Error code 9. '
+            + 'Please contact IM immediately.' 
+      WITH STYLE = POPUP;
+      RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+       Populate standard fields from temp table. 
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+    DO
+      h_retries = :h_retries + 1;
+
+      SELECT DISTINCT industry_text      AS h_industry_text,
+                      present_emp_cutoff AS s_emp_cutoff,
+                      coordinator_name   AS s_coordinator
+      FROM   :h_table;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return <> 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+      RETURN 7;
+
+    ELSEIF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to select screen data for display '
+            + 'from table ' +VARCHAR(:h_table) + '. '
+            + 'Error code ' +VARCHAR(:h_return) + '. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+
+    ENDIF;
+
+    s_industry_text =
+    SHIFT(:h_industry_text, (((60-LENGTH(h_industry_text))/2)*1));
+
+    REDISPLAY;
+
+    /*------------------------------------------------------------------
+       Populate table field from temp table. 
+    ------------------------------------------------------------------*/
+
+    h_return = CALLPROC lp_load_table ();
+
+    IF h_return != 0
+    THEN
+      /* Error message handled in local procedure */
+      RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+       Lock s_industry field.
+    ------------------------------------------------------------------*/
+
+    SET_FORMS FIELD '' (DISPLAYONLY(s_industry) = 1,
+                        REVERSE(s_industry) = 1,
+                        UNDERLINE(s_industry) = 0);
+
+  /*------------------------------------------------------------------
+      ROUTE B: ALLOCATION MISSING. 
+  ------------------------------------------------------------------*/
+
+  ELSEIF h_alloc_count = 0
+  THEN
+  
+    /*------------------------------------------------------------------
+       Populate standard fields from industry table. 
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+    DO
+      h_retries = :h_retries + 1;
+
+      SELECT DISTINCT industry_text      AS h_industry_text,
+                      present_emp_cutoff AS s_emp_cutoff
+      FROM   industry
+      WHERE  industry = :s_industry;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return <> 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+      RETURN 7;
+
+    ELSEIF h_return = 1
+    THEN
+      MESSAGE 'WARNING: Industry number ' +VARCHAR(:s_industry) +' '
+            + ' does not exist. Please enter a valid industry number '
+            + 'or use the "Back" option. If you are certain that this '
+            + 'industry number should exist, please contact the '
+            + 'business area control team as soon as possible.'
+      WITH STYLE = POPUP;
+      CLEAR FIELD  s_industry;
+      RESUME FIELD s_industry;
+
+    ELSEIF h_return > 1
+    THEN
+      MESSAGE 'ERROR: Failed to select screen data for display '
+            + 'from industry table. '
+            + 'Error code ' +VARCHAR(:h_return) + '. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+
+    ENDIF;
+
+    s_industry_text =
+    SHIFT(:h_industry_text, (((60-LENGTH(h_industry_text))/2)*1));
+
+    REDISPLAY;
+
+    MESSAGE 'WARNING: This industry is not included in the allocation '
+          + 'of any Data Analyst. Please contact the inquiry control '
+          + 'team to report this.'
+    WITH STYLE = POPUP; 
+
+  ENDIF;
+}
+
+/************************* KEY ACTIVATIONS **************************/
+
+
+'BACK', KEY FRSKEY14 =
+{
+    RETURN 0;
+}
+
+/************************** LOCAL PROCEDURES *******************************/
+
+/*===========================================================================
+	      Local procedure for populating the table field.
+============================================================================*/
+
+PROCEDURE lp_load_table () =
+
+DECLARE   lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+{
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    tf = SELECT   analyst_name AS data_analyst
+         FROM     :h_table
+         ORDER BY low_ref;
+
+    lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF lp_return <> 7
+    THEN
+        h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF lp_return = 7
+  THEN
+    RETURN 7;
+  ELSEIF lp_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to create table field from ' + :h_table + '. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = VARCHAR(36) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  h_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF h_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+                  h_num_row_ck      = :p_num_row_ck,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

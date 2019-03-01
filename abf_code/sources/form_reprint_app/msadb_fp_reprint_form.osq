@@ -1,0 +1,1052 @@
+/*************************************************************************/
+/*  THIS PROCEDURE IS NO LONGER USED, FORMS REPRINTED BY OVERNIGHT BATCH */
+/*************************************************************************/
+
+PROCEDURE msadb_fp_reprint_form (
+
+        period                = INTEGER4 NOT NULL,
+        region                = CHAR(2) NOT NULL,
+        contributor_reference = CHAR(11) NOT NULL,
+        contributor_industry  = INTEGER4 NOT NULL,
+        output_category       = CHAR(1) NOT NULL,
+        blank                 = CHAR(1) NOT NULL,
+        form_type             = CHAR(1) NOT NULL,
+        print_yesno           = CHAR(1) NOT NULL,
+        inquiry               = INTEGER1 NOT NULL) =
+
+DECLARE h_retries_allowed       = INTEGER1 NOT NULL,
+        h_retries               = INTEGER1 NOT NULL,
+        h_retry_or_not          = CHAR(5) NOT NULL,
+        h_contributor_reference = CHAR(11) NOT NULL,
+        h_industry              = INTEGER4 NOT NULL,
+        h_letter                = CHAR(1) NOT NULL,
+        country                 = CHAR(2) NOT NULL,
+        h_temp_username         = VARCHAR(24) NOT NULL,
+        h_int_username          = INTEGER1 NOT NULL,
+        h_name1                 = VARCHAR(24) NOT NULL,
+        h_name2                 = VARCHAR(24) NOT NULL,
+        h_user_name             = VARCHAR(24) NOT NULL,
+        h_frpr_name             = VARCHAR(24) NOT NULL,
+        h_colour                = VARCHAR(24) NOT NULL,
+        ret_val                 = INTEGER1 NOT NULL,
+        f_barcode               = INTEGER4 NOT NULL,
+        faxbar1                 = CHAR(100) NOT NULL,
+        faxbar2                 = CHAR(100) NOT NULL,
+        faxbar3                 = CHAR(100) NOT NULL,
+        faxbar4                 = CHAR(100) NOT NULL,
+        faxbar5                 = CHAR(100) NOT NULL,
+        first_table             = CHAR(25) NOT NULL,
+        form_table              = CHAR(25) NOT NULL,
+        in_string               = CHAR(30) NOT NULL,
+        out_string              = CHAR(100) NOT NULL,
+
+        report_name             = VARCHAR(30) NOT NULL,
+        print_name              = VARCHAR(30) NOT NULL
+
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msadb_fp_reprint_form';
+
+    /*-s----------------------------------------------------------------
+    Create the temporary table by selecting the required information.
+    ----------------------------------------------------------------e-*/
+
+    first_table = 're_first_' + VARCHAR(:period) + '_' + :g_user_id;
+    form_table = 're_form_' + VARCHAR(:period) + '_' + :g_user_id;
+
+    MESSAGE 'Creating First Table . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = :first_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = :form_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :first_table
+        AS SELECT    a.contributor_reference AS contributor_reference,
+                     ' ' AS check_letter,
+                     'N' AS scanned,
+                     a.output_category,
+                     a.contributor_industry AS industry,
+                     b.ext1 AS ao_ext1,
+                     b.ext2 AS ao_ext2,
+                     b.ext3 AS ao_ext3,
+                     b.ext4 AS ao_ext4,
+                     b.ext5 AS ao_ext5,
+                     b.ext6 AS ao_ext6,
+                     b.ext7 AS ao_ext7,
+                     b.name1 AS ao_name1,
+                     b.name2 AS ao_name2,
+                     b.name3 AS ao_name3,
+                     b.name4 AS ao_name4,
+                     b.name5 AS ao_name5,
+                     b.name6 AS ao_name6,
+                     b.name7 AS ao_name7, 
+		     d.email as ao_email,
+                     a.structure AS structure,
+                     c.addressee AS designator,
+                     c.add_name1 AS addrline1,
+                     c.add_name2 AS addrline2,
+                     c.add_name3 AS addrline3,
+                     c.add_tradstyle1 AS addrline4,
+                     c.add_tradstyle2 AS addrline5,
+                     c.add_tradstyle3 AS addrline6,
+                     c.add_line1 AS addrline7,
+                     c.add_line2 AS addrline8,
+                     c.add_line3 AS addrline9,
+                     c.add_line4 AS addrline10,
+                     c.add_line5 AS addrline11,
+                     c.add_postcode AS addrline12,
+                     CONCAT(c.add_line3,CONCAT(c.add_line4,c.add_line5)) AS barcodeline,
+                     a.lu_count AS lu_count,
+		     a.legal_status,
+		     INT1(0) as wales,
+		     a.currency,
+                     CONCAT(c.add_line3,CONCAT(c.add_line4,c.add_line5)) AS fax_barcode1,
+                     CONCAT(c.add_line3,CONCAT(c.add_line4,c.add_line5)) AS fax_barcode2,
+                     CONCAT(c.add_line3,CONCAT(c.add_line4,c.add_line5)) AS fax_barcode3,
+                     CONCAT(c.add_line3,CONCAT(c.add_line4,c.add_line5)) AS fax_barcode4,
+                     CONCAT(c.add_line3,CONCAT(c.add_line4,c.add_line5)) AS fax_barcode5
+        FROM         contributor_period a,
+                     reprint_data_analysts b, 
+                     contributor c,
+		     passwords d
+        WHERE        a.period = :period
+        AND          a.contributor_industry = b.industry 
+        AND          a.contributor_reference = :contributor_reference
+        AND          a.contributor_reference = c.contributor_reference
+    	AND          UPPERCASE(b.name1) = d.user_name; 
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating ' + :first_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows found to create ' + :first_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Mark the scanned contributors
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Updating Scanned Contributors . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :first_table a
+        FROM   bto_despatch b
+        SET    scanned = 'Y'
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    b.period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating scanned on ' + :first_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update contributors with Welsh postcodes
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Updating Welsh Contributors . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :first_table a
+        FROM   welsh_contributor b
+        SET    wales = 1
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    b.period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error updating with welsh postcode on ' + :first_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+
+    /*-s----------------------------------------------------------------
+    Update First Table with ao details for 22220 depending on ref range.
+    ----------------------------------------------------------------e-*/
+    MESSAGE 'Updating ao names for 22220 . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT contributor_reference AS h_contributor_reference,
+    	       industry AS h_industry
+        FROM   :first_table
+        WHERE  industry = 22220
+        {
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+	    UPDATE   :first_table a
+	    FROM     reprint_data_analysts b
+	    SET      ao_name1 = b.name2,
+		     ao_ext1  = b.ext2
+	    WHERE    a.industry = :h_industry
+	    AND      a.industry = b.industry
+	    AND      b.name2 <> ''
+	    AND      a.contributor_reference 
+	        BETWEEN '49900281559' AND '49902136095';
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error updating ao2 for 22220 on ' + :first_table
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+	    UPDATE   :first_table a
+	    FROM     reprint_data_analysts b
+	    SET      ao_name1 = b.name3,
+	    	     ao_ext1  = b.ext3
+	    WHERE    a.industry = :h_industry
+	    AND      a.industry = b.industry
+	    AND      b.name3 <> ''
+	    AND      a.contributor_reference 
+		BETWEEN '49902136143' AND '49905726212';
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error updating ao3 for 22220 on ' + :first_table
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+	    UPDATE   :first_table a
+	    FROM     reprint_data_analysts b
+    	    SET      ao_name1 = b.name4,
+		     ao_ext1  = b.ext4
+	    WHERE    a.industry = :h_industry
+	    AND      a.industry = b.industry
+	    AND      b.name4 <> ''
+	    AND      a.contributor_reference 
+		BETWEEN '49905732597' AND '99999999999';
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error updating ao4 for 22220 on ' + :first_table
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+/*******************
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+	    UPDATE   :first_table a
+	    FROM     reprint_data_analysts b
+	    SET      ao_name1 = b.name5,
+		     ao_ext1  = b.ext5
+	    WHERE    a.industry = :h_industry
+	    AND      a.industry = b.industry
+	    AND      b.name5 <> ''
+	    AND      a.contributor_reference 
+		BETWEEN '49902125130' AND '49903397939';
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error updating ao5 for 22220 on ' + :first_table
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+	    UPDATE   :first_table a
+	    FROM     reprint_data_analysts b
+	    SET      ao_name1 = b.name6,
+		     ao_ext1  = b.ext6
+	    WHERE    a.industry = :h_industry
+	    AND      a.industry = b.industry
+	    AND      b.name6 <> ''
+	    AND      a.contributor_reference 
+		BETWEEN '49903404633' AND '99999999999';
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+            THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error updating ao6 for 22220 on ' + :first_table
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+	    UPDATE   :first_table a
+	    FROM     reprint_data_analysts b
+	    SET      ao_name1 = b.name7,
+		     ao_ext1  = b.ext7
+	    WHERE    a.industry = :h_industry
+	    AND      a.industry = b.industry
+	    AND      b.name7 <> ''
+	    AND      a.contributor_reference 
+		BETWEEN '49902975114' AND '99999999999';
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error updating ao7 for 22220 on ' + :first_table
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+********************/
+        };
+  
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+             h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error selecting 22220 from ' + :first_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+
+
+    /*-s----------------------------------------------------------------
+*    Update contributors with Euro marker - Comment out until Q1/99
+*    probably won't be needed now!!!!!!
+*    MESSAGE 'Updating Euro Contributors . . .';
+*
+*    h_retry_or_not      = 'RETRY';
+*    h_retries           = 0;
+*
+*    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+*    DO
+*
+*        h_retries = :h_retries + 1;
+*
+*        UPDATE :first_table a
+*        FROM   euro_contributor b
+*        SET    euro = 1
+*        WHERE  a.contributor_reference = b.contributor_reference
+*        AND    b.period = :period;
+*
+*        ret_val = CALLPROC check_inq_ing (
+*                  h_num_row_ck      = 1,
+*                  h_commit          = 'Y',
+*                  h_rollback        = 'N',
+*                  h_retries         = :h_retries,
+*                  h_retries_allowed = :h_retries_allowed,
+*                  h_frpr_name       = :h_frpr_name);
+*
+*        IF ret_val <> 7
+*        THEN
+*            h_retry_or_not = '';
+*        ENDIF;
+*
+*    ENDWHILE;
+*
+*    IF ret_val = 7
+*    THEN
+*        RETURN 7;
+*
+*    ELSEIF ret_val = 9
+*    THEN
+*        MESSAGE 'System error updating euro contributors on ' + :first_table
+*        WITH STYLE = POPUP;
+*        RETURN 9;
+*
+*    ENDIF;
+    ----------------------------------------------------------------e-*/
+
+    /*-s----------------------------------------------------------------
+    Calculate the front page Barcode numbers
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Calculating Barcode . . .';
+
+    IF :inquiry = 14
+    THEN
+        in_string = '014' +
+                    VARCHAR(:contributor_reference) +
+                    VARCHAR(:period + 12);
+    ELSE
+        in_string = '015' +
+                    VARCHAR(:contributor_reference) +
+                    VARCHAR(:period);
+    ENDIF;
+
+    ret_val = CALLPROC msada_cp_calc_barcode (
+                       in_string,
+                       BYREF(out_string));
+
+    IF ret_val <> 0
+    THEN
+        MESSAGE 'Unable to calculate barcode for this Contributor'
+        WITH STYLE = POPUP;
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :first_table
+        SET    barcodeline = :out_string;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating barcode on ' + :first_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows updated for barcode on ' + :first_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Calculate fax barcode
+    ----------------------------------------------------------------e-*/
+
+    f_barcode = 1;
+
+    WHILE f_barcode < 6
+    DO 
+
+    MESSAGE 'Calculating Barcode . . .';
+
+    IF :inquiry = 14
+    THEN
+        in_string = '014' +
+                    VARCHAR(:contributor_reference) +
+		    '0' +
+		    VARCHAR(f_barcode * 10000 + MOD(:period,10000)) ;
+    ELSE
+        in_string = '015' +
+                    VARCHAR(:contributor_reference) +
+		    '0' +
+		    VARCHAR(f_barcode * 10000 + MOD(:period,10000)) ;
+    ENDIF;
+
+        ret_val = CALLPROC msada_cp_calc_barcode (
+                           in_string,
+                           BYREF(out_string));
+    
+        IF ret_val <> 0
+        THEN
+            MESSAGE 'Unable to calculate fax barcode for this Contributor'
+            WITH STYLE = POPUP;
+            RETURN ret_val;
+        ENDIF;
+      
+        IF f_barcode = 1
+        THEN
+            faxbar1 = out_string;
+        ELSEIF f_barcode = 2
+        THEN
+            faxbar2 = out_string;
+        ELSEIF f_barcode = 3
+        THEN
+            faxbar3 = out_string;
+        ELSEIF f_barcode = 4
+        THEN
+            faxbar4 = out_string;
+        ELSEIF f_barcode = 5
+        THEN
+            faxbar5 = out_string;
+        ENDIF;
+
+        f_barcode = f_barcode + 1;
+
+    ENDWHILE;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :first_table
+        SET    fax_barcode1 = :faxbar1,
+               fax_barcode2 = :faxbar2,
+               fax_barcode3 = :faxbar3,
+               fax_barcode4 = :faxbar4,
+               fax_barcode5 = :faxbar5;
+               
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating barcode on ' + :first_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows updated for barcode on ' + :first_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Calculate the checkletter
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Calculating Checkletter . . .';
+
+    ret_val = CALLPROC msa_cp_check_digit (
+              :contributor_reference,
+              BYREF(:h_letter));
+
+    IF ret_val <> 0
+    THEN
+        MESSAGE 'Error calculating check digit'
+        WITH STYLE = POPUP;
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :first_table
+        SET    check_letter = :h_letter;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating checklet on ' + :first_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows updated on checklet on ' + :first_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Call the procedure to create the form_table
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC msadb_fp_form_table (
+              form_table            = :form_table,
+              period                = :period,
+              contributor_reference = :contributor_reference,
+              contributor_industry  = :contributor_industry,
+              inquiry               = :inquiry);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+
+    /*-s----------------------------------------------------------------
+    Call the report writer to produce the form
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Calling Print Program . . .';
+
+    IF region = 'YY'
+    THEN
+        country = 'NI';
+    ELSE
+        country = 'GB';
+    ENDIF;
+
+    IF blank = 'Y'
+    THEN
+        print_name = 'blank_form_' + :contributor_reference;
+        report_name = 'msada_rw_blank_form.rw';  
+    ELSE
+        report_name = 'msada_rw_form.rw';     
+   /*   report_name = 'sjh_msada_rw_form.rw';   */
+        IF :form_type = 'M'
+        THEN
+            print_name = 'duplicate_rem_' + :contributor_reference;
+        ELSE
+            print_name = 'duplicate_form_' + :contributor_reference;
+        ENDIF;
+    ENDIF;
+
+    ret_val = CALLPROC msa_cp_callsys (
+              'report ' +
+              :g_database + ' ' +
+              '''(period = ' + VARCHAR(:period) +
+              ', first_out = "' + :first_table +
+              '", form_out = "' + :form_table +
+              '", country = "' + :country +
+              '", inquiry = ' + VARCHAR(:inquiry)  +
+              ', h_count = 1' +
+              ', form_type = "' + VARCHAR(:form_type) + '"' +
+              ', output_category = "' + :output_category  +
+              '")'''  +
+              ' -f$PRINTOUT/' + :print_name +
+              ' -i$REPORTS/' + :report_name + '> report.output');
+
+    IF ret_val <> 0
+    THEN
+        MESSAGE 'Error producing form' WITH STYLE = POPUP;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Put entry in reprint_log
+    ----------------------------------------------------------------e-*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        INSERT INTO reprint_log (
+                    inquiry,
+                    period,
+                    contributor_industry,
+                    contributor_reference,
+                    user_id,
+                    time)
+        VALUES (    :inquiry,
+                    :period,
+                    :contributor_industry,
+                    :contributor_reference,
+                    :g_user_id,
+                    'now');
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in inserting into reprint_log'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows inserted into reprint_log'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    h_colour = 'WHITE';
+
+    h_temp_username = SQUEEZE(:g_user_name); 
+
+    h_int_username = LOCATE(h_temp_username, ' ');
+    h_name1        = LEFT(h_temp_username,h_int_username -1);
+    h_temp_username = SHIFT(h_temp_username, - h_int_username);
+    h_int_username = LOCATE(h_temp_username, ' ');
+    h_name2        = LEFT(h_temp_username,h_int_username -1);
+
+    h_user_name = h_name1 + '_' + h_name2;
+
+   /* h_user_name = LEFT(:g_user_name,LOCATE(:g_user_name,' ')-1); */
+
+    /*-s----------------------------------------------------------------
+    Print it
+    ----------------------------------------------------------------e-*/
+
+    IF print_yesno = 'Y'
+    THEN
+        ret_val = CALLPROC msa_cp_callsys (
+                  'lp -drxp -o' + VARCHAR(:h_colour) +
+		  '_RD_STP+?' + VARCHAR(:h_user_name) + '?' +
+                  ' $PRINTOUT/' +
+                  :print_name + ' >> report.output');
+
+        IF ret_val <> 0
+        THEN
+            MESSAGE 'Error printing form' WITH STYLE = POPUP;
+            RETURN ret_val;
+        ELSE
+            MESSAGE 'Reprint sent to central laser printer' WITH STYLE = POPUP;
+        ENDIF;
+    ENDIF;
+
+   /**********************************************************
+This code is used in place of the previous 16 lines when I want to
+print 2 copies of reprinted forms & 2nd reminders for NI prosecutions.
+(extra code also in msadb_fr_menu) (copy image to prodlive/$WIP and run in
+prodlivedb)
+                    **************************
+
+    IF print_yesno = 'Y'
+    THEN
+        ret_val = CALLPROC msa_cp_callsys (
+                  'lp -drxp -n2 -o' + VARCHAR(:h_colour) +
+		  '_RD_STP+!STEVEN!+?STEVEN?' +
+                  ' $PRINTOUT/' +
+                  :print_name + ' >> report.output');
+
+        IF ret_val <> 0
+        THEN
+            MESSAGE 'Error printing form' WITH STYLE = POPUP;
+            RETURN ret_val;
+        ELSE
+            MESSAGE '4 prints sent to central laser printer' WITH STYLE = POPUP;
+        ENDIF;
+    ENDIF;
+  ****************************************************************/
+
+    MESSAGE 'Clearing Screen . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table(h_table = :first_table);
+    ret_val = CALLPROC msa_fp_drop_table(h_table = :form_table);
+
+    RETURN 0;
+}

@@ -1,0 +1,1184 @@
+/*-S--------------------------------------------------------------------
+msadb_fr_menu
+--------------------------------------------------------------------e-*/
+
+INITIALIZE ()=
+
+DECLARE h_retries_allowed      = INTEGER1 NOT NULL,
+        h_retries              = INTEGER1 NOT NULL,
+        h_retry_or_not         = CHAR(5) NOT NULL,
+        h_frpr_name            = VARCHAR(24) NOT NULL,
+        h_output_category      = CHAR(1) NOT NULL,
+        ret_val                = INTEGER1 NOT NULL,
+        h_inquiry              = INTEGER1 NOT NULL,
+        h_contributor_industry = INTEGER4 NOT NULL,
+        h_region               = CHAR(2)  NOT NULL,
+        industry_cycle_point   = CHAR(1) NOT NULL,
+        h_param_list           = VARCHAR(100) NOT NULL,
+        h_param1               = CHAR(11) NOT NULL,
+        h_varchar_variable     = VARCHAR(100) NOT NULL,
+        h_integer_variable     = INTEGER2 NOT NULL,
+        max_period             = INTEGER4 NOT NULL,
+        ao_ext1                = CHAR(4) NOT NULL,
+        ao_ext2                = CHAR(4) NOT NULL,
+        ao_ext3                = CHAR(4) NOT NULL,
+        ao_ext4                = CHAR(4) NOT NULL,
+        ao_ext5                = CHAR(4) NOT NULL,
+        ao_ext6                = CHAR(4) NOT NULL,
+        ao_ext7                = CHAR(4) NOT NULL,
+        ao_name1               = VARCHAR(24) NOT NULL,
+        ao_name2               = VARCHAR(24) NOT NULL,
+        ao_name3               = VARCHAR(24) NOT NULL,
+        ao_name4               = VARCHAR(24) NOT NULL,
+        ao_name5               = VARCHAR(24) NOT NULL,
+        ao_name6               = VARCHAR(24) NOT NULL,
+        ao_name7               = VARCHAR(24) NOT NULL,
+        name1                  = VARCHAR(24) NOT NULL,
+        lp_load_contributor    = PROCEDURE RETURNING INTEGER
+
+{
+    msa_date = 'now';
+    h_frpr_name = 'msadb_fr_menu';
+    h_retries_allowed = 3;
+
+    blank = 'N';
+    form_type = 'R';
+    print_yesno = 'Y';
+
+    /*------------------------------------------------------------------
+     There are two fields on this form that are normally invisibile,
+     but can be made visible to make testing easier.
+
+     Normal Operation:
+     1.  SET_FORMS FIELD '' (INVISIBLE(form_type) = 1);
+     2.  SET_FORMS FIELD '' (INVISIBLE(print_yesno) = 1);
+
+     Where:
+     1.  Allows Reminders to be tested (form_type = 'M')
+     2.  Prevents the automatic printing of the form (print_yesno = 'Y')
+
+     Just make visible the required fields in the next two commands,
+     and re-image.
+    ------------------------------------------------------------------*/
+
+
+    SET_FORMS FIELD '' (INVISIBLE(flash) = 1);
+
+    SET_FORMS FIELD '' (DISPLAYONLY(contributor_reference) = 0,
+                        DISPLAYONLY(period) = 0);
+
+    g_help = CALLPROC msa_cp_getvar('PROD_HELP');
+
+    SELECT DBMSINFO('database') AS g_database;
+
+    ret_val = CALLPROC msa_fp_get_user_details (
+              h_user_id         = BYREF(:g_user_id),
+              h_user_name       = BYREF(:g_user_name),
+              h_access_level    = BYREF(:g_access_level),
+	      h_default_printer = BYREF(:g_printer),
+              h_room_number     = BYREF(:g_room));
+
+
+    /*-s-----------------------------------------------------------------
+      Allow Devs to print blank forms
+     ----------------------------------------------------------------e-*/
+   
+    IF g_user_class = 'D'
+    THEN
+        SET_FORMS FIELD '' (INVISIBLE(form_type) = 1);
+        SET_FORMS FIELD '' (INVISIBLE(blank) = 1);
+        SET_FORMS FIELD '' (INVISIBLE(print_yesno) = 1);
+    ELSE
+        SET_FORMS FIELD '' (INVISIBLE(form_type) = 0);
+        SET_FORMS FIELD '' (INVISIBLE(blank) = 0);
+        SET_FORMS FIELD '' (INVISIBLE(print_yesno) = 0);
+    ENDIF;
+
+
+    /*------------------------------------------------------------------
+    Temporarily disable reprints to all but level 5 access  
+
+
+    IF g_user_level != 5
+    THEN
+      MESSAGE 'NOTE: The reprint function has been suspended.' + X'0D0D' +
+              'Please contact Control Section for details.'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+    ------------------------------------------------------------------*/
+
+
+    /*-s----------------------------------------------------------------
+     As this form can also be called from another application, check
+     for parameter contributor_reference. If it's found,
+     load up details automatically. Otherwise, expect input.
+    ----------------------------------------------------------------e-*/
+
+    h_param_list = CALLPROC CommandLineParameters ();
+
+    h_varchar_variable = SQUEEZE(h_param_list);
+    h_integer_variable = LOCATE(h_varchar_variable, ' ');
+    h_param1           = LEFT(h_varchar_variable, h_integer_variable-1);
+
+    IF :h_param1 <> ''
+    THEN
+        contributor_reference = :h_param1;
+
+        ret_val = CALLPROC lp_load_contributor ();
+
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+        RESUME FIELD period;
+    ENDIF;
+}
+
+
+FIELD form_type =
+{
+    IF form_type <> 'F' AND form_type <> 'R' AND form_type <> 'M'
+    THEN
+        MESSAGE 'Form_Type should be F (original Form), ' +
+                'R (Reprint) or M (ReMinder)'
+        WITH STYLE = POPUP;
+        RESUME FIELD form_type;
+    ENDIF;
+
+    IF form_type = 'M'
+    THEN
+        SET_FORMS FIELD '' (INVISIBLE(blank) = 1);
+        RESUME FIELD print_yesno;
+    ELSE
+        SET_FORMS FIELD '' (INVISIBLE(blank) = 0);
+        RESUME FIELD blank;
+    ENDIF;
+	
+}
+
+
+FIELD blank =
+{
+    IF blank <> 'Y' AND blank <> 'N'
+    THEN
+        MESSAGE 'Blank should be Y or N'
+        WITH STYLE = POPUP;
+        RESUME FIELD blank;
+    ENDIF;
+
+    flash = 'BLANK';
+
+    IF blank = 'Y'
+    THEN
+        SET_FORMS FIELD '' (INVISIBLE(flash) = 0);
+    ENDIF;
+
+    RESUME FIELD print_yesno;
+}
+
+
+FIELD print_yesno =
+{
+    IF print_yesno <> 'Y' AND print_yesno <> 'N'
+    THEN
+        MESSAGE 'Print_YesNo should be Y or N'
+        WITH STYLE = POPUP;
+        RESUME FIELD print_yesno;
+    ENDIF;
+
+    RESUME FIELD contributor_reference;
+}
+
+
+FIELD contributor_reference =
+{
+    ret_val = CALLPROC lp_load_contributor ();
+
+    IF ret_val = 1
+    THEN
+        RESUME FIELD contributor_reference;
+    ELSEIF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(contributor_reference) = 1);
+
+    RESUME FIELD period;
+
+}
+
+
+FIELD period =
+{
+    MESSAGE 'Checking Contributor/Period . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+    DO
+        h_retries = :h_retries + 1;
+
+        SELECT region AS h_region,
+               inquiry AS h_inquiry,
+               contributor_industry AS h_contributor_industry,
+               output_category AS h_output_category
+        FROM   contributor_period
+        WHERE  contributor_reference = :contributor_reference
+        AND    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing contributor_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This Contributor was not selected for this Period'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    IF :h_output_category = 'Y' AND :g_access_level < 95
+    THEN
+        MESSAGE 'This Contributor is in Enforcement and only Support ' +
+		'Staff can order a reprint'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF; 
+
+
+    /*-s----------------------------------------------------------------
+    Find industry_cycle_point and latest period
+    ----------------------------------------------------------------e-*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+    DO
+        h_retries = :h_retries + 1;
+
+        SELECT   MAX(period) AS max_period
+        FROM     inquiry_period
+        WHERE    inquiry = :h_inquiry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows found on inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT   industry_cycle_point
+        FROM     industry
+        WHERE    industry = :h_contributor_industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing industry'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows found on industry table'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    IF max_period = :period AND industry_cycle_point <> 'F'
+    THEN
+        MESSAGE 'Industry_cycle_point does not = F. ' +
+                'Reprints are not available at this time for period ' +
+		VARCHAR(:period)
+        WITH STYLE = POPUP;
+	CLEAR FIELD period;
+        RESUME FIELD period;
+
+    ENDIF;
+
+    IF :period < 200800
+    THEN
+        MESSAGE 'Reprints are only available for 200800 ' +
+                'onward due to sic2007 change over.' 
+        WITH STYLE = POPUP;
+	CLEAR FIELD period;
+        RESUME FIELD period;
+
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Get analysts
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC msa_fp_get_analysts (
+              h_contributor_industry = VARCHAR(:h_contributor_industry),
+              h_table                = 'reprint_data_analysts');
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+
+    /*-s----------------------------------------------------------------
+    Check that name1 has a value in it.
+    ----------------------------------------------------------------e-*/
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT   name1
+        FROM     reprint_data_analysts
+	WHERE    name1 <> ''
+        AND      industry = :h_contributor_industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing reprint_data_analysts'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'An AO name needs to be assigned to industry ' + VARCHAR(:h_contributor_industry) + '. Please check and resubmit reprint'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update contributor_luaddress table to set unproven units to start
+    with  an '8' rather than an 'X' as on IDBR
+    ----------------------------------------------------------------e-*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE contributor_luaddress
+        SET    lu_reference = CONCAT('8',RIGHT (lu_reference,7))
+        WHERE  (lu_reference LIKE 'x%' OR lu_reference LIKE 'X%')
+        AND    contributor_reference = :contributor_reference
+        AND    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error updating contributor_luaddress'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(period) = 1);
+
+    RESUME FIELD form_type;
+}
+
+
+'Print' =
+{
+    IF blank = 'Y'
+    THEN
+	MESSAGE 'Only Desk Reprint is available when printing a blank form'
+        WITH STYLE = POPUP;
+        RESUME FIELD contributor_reference;
+    ENDIF;
+
+ /*********************
+      MESSAGE 'Please use the Urgent Print option today'
+        WITH STYLE = POPUP;
+        RESUME FIELD contributor_reference;
+ *********************/
+
+    IF :g_access_level <> 99 AND :g_access_level <> 95 
+    AND :g_access_level <> 88 AND :g_access_level <> 89
+    THEN
+        MESSAGE 'Sorry but your access level is not high enough for this option.'
+         + X'0D0D' +
+	'Please contact Inquiry Support'
+        WITH STYLE = POPUP;
+        RESUME FIELD contributor_reference;
+    ENDIF;
+
+    IF :contributor_reference = ''
+    THEN
+        MESSAGE 'You must supply a reference before ordering a reprint'
+        WITH STYLE = POPUP;
+        RESUME FIELD contributor_reference;
+    ENDIF;
+
+    IF :period = ''
+    THEN
+        MESSAGE 'You must supply a period before ordering a reprint'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+       SELECT ext1 AS ao_ext1,
+	      ext2 AS ao_ext2,
+	      ext3 AS ao_ext3,
+	      ext4 AS ao_ext4,
+	      ext5 AS ao_ext5,
+	      ext6 AS ao_ext6,
+	      ext7 AS ao_ext7,
+	      name1 AS ao_name1,
+	      name2 AS ao_name2,
+	      name3 AS ao_name3,
+	      name4 AS ao_name4,
+	      name5 AS ao_name5,
+	      name6 AS ao_name6,
+	      name7 AS ao_name7
+       FROM   reprint_data_analysts 
+       WHERE  industry = :h_contributor_industry;
+
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error selecting ao names'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Error no ao names selected'
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+/* Check inserted June 2011 MJE to plug intermittent error */
+    MESSAGE 'Checking Contributor/Period . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+    DO
+        h_retries = :h_retries + 1;
+
+        SELECT region AS h_region,
+               inquiry AS h_inquiry,
+               contributor_industry AS h_contributor_industry,
+               output_category AS h_output_category
+        FROM   contributor_period
+        WHERE  contributor_reference = :contributor_reference
+        AND    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing contributor_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This Contributor was not selected for this Period'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    IF :h_output_category = 'Y' AND :g_access_level < 95
+    THEN
+        MESSAGE 'This Contributor is in Enforcement and only Support ' +
+		'Staff can order a reprint'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF; 
+
+/* End of inserted check */
+
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        INSERT INTO batch_reprints (
+        contributor_reference,
+        period,
+        contributor_industry,
+        inquiry,
+        region,
+        output_category,
+        form_type,
+        print_yesno ,
+        user_name ,
+        user_id,
+        room_number,
+        database,
+        ao_ext1,
+	ao_ext2,
+	ao_ext3,
+	ao_ext4,
+	ao_ext5,
+	ao_ext6,
+	ao_ext7,
+	ao_name1,
+	ao_name2,
+	ao_name3,
+	ao_name4,
+	ao_name5,
+	ao_name6,
+	ao_name7,
+        print_date)
+        VALUES (
+        :contributor_reference,
+        :period,
+        :h_contributor_industry,
+        :h_inquiry,
+        :h_region,
+        :h_output_category,
+        :form_type,
+        :print_yesno ,
+        :g_user_name ,
+        :g_user_id,
+        :g_room,
+        :g_database,
+        :ao_ext1,
+	:ao_ext2,
+	:ao_ext3,
+	:ao_ext4,
+	:ao_ext5,
+	:ao_ext6,
+	:ao_ext7,
+	:ao_name1,
+	:ao_name2,
+	:ao_name3,
+	:ao_name4,
+	:ao_name5,
+	:ao_name6,
+	:ao_name7,
+        date('today'));
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error inserting into batch_reprints. ' + X'0D' +
+		'Have you requested this reprint before today? ' +
+		'If not, contact Control section.'
+        WITH STYLE = POPUP;
+
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Duplicate reprints requested ',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+
+    ELSEIF ret_val = 0
+    THEN
+        MESSAGE 'Your reprint has been ordered'
+        WITH STYLE = POPUP;
+
+        SET_FORMS FIELD '' (DISPLAYONLY(contributor_reference) = 0,
+                            DISPLAYONLY(period) = 0);
+
+        CLEAR FIELD ALL;
+        blank = 'N';
+        form_type = 'R';
+        print_yesno = 'Y';
+        msa_date = 'now';
+        SET_FORMS FIELD '' (INVISIBLE(flash) = 1);
+    ENDIF;
+
+    RESUME FIELD form_type;
+}
+
+
+'Desk Reprint' =
+{
+    IF blank = 'Y'
+    THEN
+	MESSAGE 'Only Desk Reprint is available when printing a blank form'
+        WITH STYLE = POPUP;
+        RESUME FIELD contributor_reference;
+    ENDIF;
+
+
+    IF :g_access_level <> 99 AND :g_access_level <> 95 
+    AND :g_access_level <> 88 AND :g_access_level <> 89
+    THEN
+        MESSAGE 'Sorry but your access level is not high enough for this option.'
+         + X'0D0D' +
+	'Please contact Inquiry Support'
+        WITH STYLE = POPUP;
+        RESUME FIELD contributor_reference;
+    ENDIF;
+
+    IF :contributor_reference = ''
+    THEN
+        MESSAGE 'You must supply a reference before ordering a reprint'
+        WITH STYLE = POPUP;
+        RESUME FIELD contributor_reference;
+    ENDIF;
+
+    IF :period = ''
+    THEN
+        MESSAGE 'You must supply a period before ordering a reprint'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+       SELECT ext1 AS ao_ext1,
+	      ext2 AS ao_ext2,
+	      ext3 AS ao_ext3,
+	      ext4 AS ao_ext4,
+	      ext5 AS ao_ext5,
+	      ext6 AS ao_ext6,
+	      ext7 AS ao_ext7,
+	      name1 AS ao_name1,
+	      name2 AS ao_name2,
+	      name3 AS ao_name3,
+	      name4 AS ao_name4,
+	      name5 AS ao_name5,
+	      name6 AS ao_name6,
+	      name7 AS ao_name7
+       FROM   reprint_data_analysts 
+       WHERE  industry = :h_contributor_industry;
+
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error selecting ao names'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Error no ao names selected'
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        INSERT INTO batch_reprints (
+        contributor_reference,
+        period,
+        contributor_industry,
+        inquiry,
+        region,
+        output_category,
+        form_type,
+        print_yesno ,
+        user_name ,
+        user_id,
+        room_number,
+        database,
+        ao_ext1,
+	ao_ext2,
+	ao_ext3,
+	ao_ext4,
+	ao_ext5,
+	ao_ext6,
+	ao_ext7,
+	ao_name1,
+	ao_name2,
+	ao_name3,
+	ao_name4,
+	ao_name5,
+	ao_name6,
+	ao_name7,
+        print_date)
+        VALUES (
+        :contributor_reference,
+        :period,
+        :h_contributor_industry,
+        :h_inquiry,
+        :h_region,
+        'X', /* this is to force desk despatch */
+        :form_type,
+        :print_yesno ,
+        :g_user_name ,
+        :g_user_id,
+        :g_room,
+        :g_database,
+        :ao_ext1,
+	:ao_ext2,
+	:ao_ext3,
+	:ao_ext4,
+	:ao_ext5,
+	:ao_ext6,
+	:ao_ext7,
+	:ao_name1,
+	:ao_name2,
+	:ao_name3,
+	:ao_name4,
+	:ao_name5,
+	:ao_name6,
+	:ao_name7,
+        date('today'));
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error inserting into batch_reprints. ' + X'0D' +
+		'Have you requested this reprint before today? ' +
+		'If not, contact Control section.'
+        WITH STYLE = POPUP;
+
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Duplicate reprints requested ',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+
+    ELSEIF ret_val = 0
+    THEN
+        MESSAGE 'Your reprint has been ordered'
+        WITH STYLE = POPUP;
+
+        SET_FORMS FIELD '' (DISPLAYONLY(contributor_reference) = 0,
+                            DISPLAYONLY(period) = 0);
+
+        CLEAR FIELD ALL;
+        blank = 'N';
+        form_type = 'R';
+        print_yesno = 'Y';
+        msa_date = 'now';
+        SET_FORMS FIELD '' (INVISIBLE(flash) = 1);
+    ENDIF;
+
+    RESUME FIELD form_type;
+}
+
+/***** this bit used to be for urgent prints - this is no longer
+available now that SPC have taken over printing forms ******
+
+'Urgent Print' =
+{
+
+    IF :g_access_level < 95
+    THEN
+        MESSAGE 'Sorry but your access level is not high enough for this option.'
+         + X'0D0D' +
+	'Please contact Inquiry Support'
+        WITH STYLE = POPUP;
+        RESUME FIELD contributor_reference;
+    ENDIF;
+
+    IF :contributor_reference = ''
+    THEN
+        MESSAGE 'You must supply a reference before ordering a reprint'
+        WITH STYLE = POPUP;
+        RESUME FIELD contributor_reference;
+    ENDIF;
+
+    IF :period = ''
+    THEN
+        MESSAGE 'You must supply a period before ordering a reprint'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    MESSAGE 'Calling fp_reprint_form . . .';
+
+    ret_val = CALLPROC msadb_fp_reprint_form (
+              period                = :period,
+              inquiry               = :h_inquiry,
+              region                = :h_region,
+              contributor_industry  = :h_contributor_industry,
+              output_category       = :h_output_category,
+              blank                 = :blank,
+              form_type             = :form_type,
+              print_yesno           = :print_yesno,
+              contributor_reference = :contributor_reference);
+
+    SET_FORMS FIELD '' (DISPLAYONLY(contributor_reference) = 0,
+                        DISPLAYONLY(period) = 0);
+
+
+
+	CLEAR FIELD ALL;
+
+    blank = 'N';
+    form_type = 'R';
+    print_yesno = 'Y';
+    msa_date = 'now';
+    SET_FORMS FIELD '' (INVISIBLE(flash) = 1);
+
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = 'reprint_data_analysts');
+    RESUME FIELD form_type;
+*/
+/***********************************************************
+This following code was added (in addition to the previous 11 lines)
+for me to reprint FORMS and 2nd REMINDERS at the same time. 
+This speeds up the duplicates production for NI prosecutions.
+(extra code also in msadb_fp_reprint_form)  (Image in produser/wip,
+copy to prodlive/$WIP and run in prodlivedb)
+(References must be dealt with one at a time using Urgent Print)
+                        ******************
+
+    MESSAGE 'Calling fp_reprint_form for 2nd time . . .';
+
+    form_type = 'M';
+
+    MESSAGE 'Calling fp_reprint_form for form_type ' + :form_type ;
+
+    SLEEP 1;
+
+    ret_val = CALLPROC msadb_fp_reprint_form (
+              period                = :period,
+              inquiry               = :h_inquiry,
+              region                = :h_region,
+              contributor_industry  = :h_contributor_industry,
+              output_category       = :h_output_category,
+              blank                 = :blank,
+              form_type             = :form_type,
+              print_yesno           = :print_yesno,
+              contributor_reference = :contributor_reference);
+
+    SET_FORMS FIELD '' (DISPLAYONLY(contributor_reference) = 0,
+                        DISPLAYONLY(period) = 0);
+
+    CLEAR FIELD contributor_reference;
+
+
+    blank = 'N';
+    form_type = 'F';
+    print_yesno = 'Y';
+    msa_date = 'now';
+    SET_FORMS FIELD '' (INVISIBLE(flash) = 1);
+
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = 'reprint_data_analysts');
+    RESUME FIELD contributor_reference;
+
+  ******************************************************/
+/*
+}
+*/
+
+'Clear' =
+{
+    SET_FORMS FIELD '' (DISPLAYONLY(contributor_reference) = 0,
+                        DISPLAYONLY(period) = 0);
+
+    CLEAR FIELD ALL;
+    blank = 'N';
+    form_type = 'R';
+    print_yesno = 'Y';
+    msa_date = 'now';
+    SET_FORMS FIELD '' (INVISIBLE(flash) = 1);
+
+    RESUME FIELD contributor_reference;
+}
+
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+}
+
+
+'ContactDetails' =
+{
+    CALL APPLICATION (exec= '$IMAGES/communicate',
+	  	      param = VARCHAR(contributor_reference));
+}
+
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}
+
+
+/*----------------------------------------------------------------------
+                   L O C A L   P R O C E D U R E
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_contributor () =
+{
+    MESSAGE 'Checking Contributor . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+    DO
+        h_retries = :h_retries + 1;
+
+        SELECT add_name1
+        FROM   contributor
+        WHERE  contributor_reference = :contributor_reference;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing contributor'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This Contributor does not exist'
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+    RETURN 0;
+}

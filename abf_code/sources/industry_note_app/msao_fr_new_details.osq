@@ -1,0 +1,155 @@
+/*----------------------------------------------------------------------
+msao_fr_new_details
+----------------------------------------------------------------------*/
+
+INITIALIZE ( industry_title    = CHAR(60) NOT NULL,
+             inquiry           = INTEGER1 NOT NULL,
+             h_industry        = INTEGER4 NOT NULL) =
+
+DECLARE      h_tid             = INTEGER4 NOT NULL,
+             h_frpr_name       = VARCHAR(25) NOT NULL,
+             h_retries_allowed = INTEGER1 NOT NULL,
+             h_retries         = INTEGER1 NOT NULL,
+             ret_val           = INTEGER1 NOT NULL,
+             h_retry_or_not    = CHAR(5)  NOT NULL
+
+
+{
+    h_frpr_name = 'msao_fr_new_details';
+    h_retries_allowed = 3;
+    h_tid = 0;
+}
+
+FIELD inform_source =
+{
+    IF inform_source <> 'C' AND inform_source <> 'T'
+    AND inform_source <> 'J' AND inform_source <> 'V'
+    AND inform_source <> 'I'
+    THEN
+        MESSAGE 'Information source must be C, T, J, V or I'
+        WITH STYLE = POPUP;
+        RESUME FIELD inform_source;
+    ENDIF;
+
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT  IFNULL((MAX(industry_tid) + 1),1) AS h_tid
+        FROM    industry_note_pad
+        WHERE   industry = :h_industry;
+   
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_frpr_name       = :h_frpr_name,
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_rollback        = 'N') ;
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error finding most recent information'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Error in finding most recent information'
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        INSERT INTO industry_note_pad (
+                    industry,
+                    industry_tid,
+                    inform_source,
+                    inform_date,
+                    inform_message,
+                    user_id)
+        VALUES (    :h_industry,
+                    :h_tid,
+                    :inform_source,
+                    'today',
+                    ' ',
+                    :g_user_id);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_frpr_name       = :h_frpr_name,
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_rollback        = 'N') ;
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error inserting this information'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Error inserting new details'
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+    ret_val = CALLFRAME msao_fr_update_details (
+              h_industry       = :h_industry,
+              industry_title   = :industry_title,
+              h_tid            = :h_tid);
+
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ELSE
+        RETURN ret_val;
+    ENDIF;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'Help',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+}
+
+'End', KEY FRSKEY14  =
+{
+    RETURN 0;
+}

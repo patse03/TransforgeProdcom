@@ -1,0 +1,393 @@
+/*-----------------------------------------------------------------
+
+                     msaef_fr_top_frame
+
+  This frame is the start of the application that enables users
+  to select a prodcom code from supplying a CN code. All
+  matching Prodcom code and their text is displayed.
+
+  The text may be displayed in full (all 10 lines) if required,
+  and similarly all CN Codes for the Prodcom Code may be shown.
+
+  Calls:            msaef_fr_more_text
+                    msaef_fr_more_codes
+------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed  = INTEGER1 NOT NULL,
+        h_retries          = INTEGER1 NOT NULL,
+        h_retry_or_not     = CHAR(5) NOT NULL,
+        h_frpr_name        = VARCHAR(24) NOT NULL,
+        h_return            = INTEGER1 NOT NULL,
+        h_search           = CHAR(9) NOT NULL,
+        h_field_name       = VARCHAR(30) NOT NULL,
+        h_param_list       = VARCHAR(200) NOT NULL,
+        h_integer_variable = INTEGER4 NOT NULL,
+        h_varchar_variable = VARCHAR(10) NOT NULL,
+        h_param1           = VARCHAR(10) NOT NULL,
+        h_inquiry          = INTEGER1 NOT NULL,
+        h_rows             = INTEGER4 NOT NULL,
+        h_max_period       = INTEGER4 NOT NULL,
+        h_min_period       = INTEGER4 NOT NULL,
+        lp_check_period    = PROCEDURE RETURNING INTEGER
+{
+  msa_date = 'now';
+  h_retries_allowed = 3;
+  h_frpr_name = 'msaef_fr_top_frame';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+  SET_FORMS FIELD '' (INVISIBLE(q_retrieved)= 1,
+                      MODE(tf) = 'READ');
+  SET_FORMS FIELD '' (DISPLAYONLY(period) = 0,
+                      UNDERLINE(period) = 1,
+                      REVERSE(period) = 0);
+
+  g_help = CALLPROC msa_cp_getvar('PROD_HELP');
+
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  h_param_list = CALLPROC CommandLineParameters ();
+
+  h_varchar_variable = SQUEEZE(h_param_list);
+  h_integer_variable = LOCATE(h_varchar_variable, ' ');
+  h_param1           = LEFT(h_varchar_variable, h_integer_variable-1);
+
+    IF :h_param1 != ''
+    THEN
+        period = INT4(:h_param1);
+        h_return = CALLPROC lp_check_period ();
+        IF h_return != 0
+        THEN
+            RETURN h_return;
+        ELSE
+            SET_FORMS FIELD '' (DISPLAYONLY(period) = 1,
+                                UNDERLINE(period) = 0,
+                                REVERSE(period) = 1);
+            RESUME FIELD cn_code;
+        ENDIF;
+    ENDIF;
+
+}
+
+FIELD period =
+{
+    h_return = CALLPROC lp_check_period ();
+    IF h_return = 9
+    THEN
+        RETURN 9;
+    ELSEIF h_return = 1
+    THEN
+        RESUME FIELD period;
+    ELSE
+        RESUME FIELD cn_code;
+    ENDIF;
+}
+
+FIELD cn_code =
+{
+
+    /*------------------------------------------------------------------
+      Search for matches
+    ------------------------------------------------------------------*/
+
+    SET_FORMS FIELD '' (INVISIBLE(q_retrieved)= 1);
+    REDISPLAY;
+    h_search := cn_code + '%';
+
+    MESSAGE 'Searching . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT DISTINCT    a.prodcom_code AS pcc_code,
+                           b.text_line1   AS text_line1,
+                           COUNT(a.cn_codes) AS count_cns
+        FROM               prodcom_lookup a,
+                           question_library b
+        WHERE              a.prodcom_code = b.question
+        AND                a.period = b.period
+        AND                a.period = :period
+	AND                b.lag in (0,2,5)
+        AND                a.prodcom_code IN (
+                           SELECT prodcom_code
+                           FROM   prodcom_lookup
+                           WHERE  cn_codes LIKE :h_search
+                           AND    period = :period)
+        GROUP BY           prodcom_code,
+                           text_line1;
+
+        h_return = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:q_retrieved),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF h_return != 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF h_return = 9
+    THEN
+        MESSAGE 'System error in loading from question_library & lookup tables'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    msa_date = 'now';
+    SET_FORMS FIELD '' (INVISIBLE(q_retrieved)= 0);
+
+    IF q_retrieved > 0
+    THEN
+        RESUME FIELD tf;
+    ELSE
+        RESUME FIELD cn_code;
+    ENDIF;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+}
+
+'Clear', KEY FRSKEY4 =
+{
+    CLEAR FIELD ALL;
+    msa_date = 'now';
+    SET_FORMS FIELD '' (INVISIBLE(q_retrieved)= 1,
+                        DISPLAYONLY(period) = 0,
+                        UNDERLINE(period) = 1,
+                        REVERSE(period) = 0);
+
+    RESUME FIELD period;
+}
+
+'QuestInfo', KEY FRSKEY5 =
+{
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name != 'tf'
+    THEN
+        MESSAGE 'Please highlight the required question'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'There are no questions'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    CALL APPLICATION (exec = '$IMAGES/quest_note_appl -numeric_overflow=ignore'
+		           + ' msaee_fr_in_quest_info',
+                     param = VARCHAR(:tf.pcc_code) + ' ' + VARCHAR(:period));
+    }
+
+
+'ShowCNCodes', KEY FRSKEY6 =
+{
+    msa_date = 'now';
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name != 'tf'
+    THEN
+        MESSAGE 'Please highlight the required question'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'There are no questions'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_return = CALLFRAME msaef_fr_more_codes (
+              period   = :period,
+              pcc_code = :tf.pcc_code);
+}
+
+
+'MoreText', KEY FRSKEY11 =
+{
+    msa_date = 'now';
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name != 'tf'
+    THEN
+        MESSAGE 'Please highlight the required question'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'There are no questions'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_return = CALLFRAME msaef_fr_more_text(
+              period   = :period,
+              pcc_code = :tf.pcc_code,
+              cn_code  = :cn_code);
+
+}
+
+'End', KEY FRSKEY14 =
+{
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                     L O C A L   P R O C E D U R E
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_check_period () =
+{
+    /*------------------------------------------------------------------
+      Check Max annual period - allow for one higher than the max
+      on inquiry_period
+    ------------------------------------------------------------------*/
+
+    period = period / 100 * 100;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT IFNULL(MAX(period),0) AS h_max_period
+        FROM   inquiry_period
+        WHERE  inquiry = 14;
+
+        h_return = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF h_return != 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF h_return = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Check period - if it's not on inquiry_period and it's not the
+    next annual period up, it's no good.
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT period
+        FROM   inquiry_period
+        WHERE  period = :period;
+
+        h_return = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF h_return != 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF h_return = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF h_return = 1
+    THEN
+        IF period != h_max_period + 100
+        THEN
+            MESSAGE VARCHAR(period) + ' is not a valid Annual Period'
+            WITH STYLE = POPUP;
+            RETURN 1;
+        ENDIF;
+    ENDIF;
+
+    RETURN 0;
+}

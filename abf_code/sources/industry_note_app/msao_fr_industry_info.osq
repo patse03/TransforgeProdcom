@@ -1,0 +1,194 @@
+/*----------------------------------------------------------------------
+msao_fr_industry_info
+----------------------------------------------------------------------*/
+
+INITIALIZE ( h_industry         = INTEGER4 NOT NULL ) =
+
+DECLARE      h_frpr_name        = VARCHAR(25) NOT NULL,
+             h_table            = VARCHAR(24) NOT NULL,
+             h_industry_title   = VARCHAR(60) NOT NULL,
+             h_retries_allowed  = INTEGER1 NOT NULL,
+             h_retries          = INTEGER1 NOT NULL,
+             ret_val            = INTEGER1 NOT NULL,
+             h_retry_or_not     = CHAR(5)  NOT NULL
+
+{
+
+  h_frpr_name = 'msao_fr_industry_info';
+  h_table = 'msao_industry_details';
+  h_retries_allowed = 3;
+
+  SET_FORMS FIELD '' (MODE(tf1) = 'READ');
+
+  MESSAGE 'Checking Industry . . .';
+
+  ret_val = CALLPROC msa_fp_drop_table ( h_table = :h_table);
+
+  IF ret_val <> 0
+  THEN
+    RETURN ret_val;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    CREATE TABLE :h_table AS
+    SELECT a.industry,
+           a.industry_text,
+           c.analyst_name,
+           c.coordinator_name
+    FROM   industry a,
+           industry_analysts b,
+           analyst_coordinator_manager c
+    WHERE  a.industry = :h_industry
+    AND    a.industry = b.industry
+    AND    b.user_id = c.analyst_id;
+
+    ret_val = CALLPROC check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_frpr_name       = :h_frpr_name,
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_rollback        = 'N');
+
+    IF ret_val <> 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF ret_val = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF ret_val = 9
+  THEN 
+    MESSAGE 'ERROR: Failed to create ' + :h_table + '. Error code 9. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN ret_val;
+
+  ELSEIF ret_val = 1
+  THEN 
+    MESSAGE 'ERROR: Failed to select from industry/industry_analysts for ' 
+          + 'industry ' + VARCHAR(:h_industry) + '. Error code 1. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN ret_val;
+  ENDIF;
+
+
+  h_retry_or_not      = 'RETRY';
+  h_retries = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT DISTINCT industry_text    AS h_industry_title,
+                    coordinator_name AS s_coordinator
+    FROM   :h_table;
+
+    ret_val = CALLPROC check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_frpr_name       = :h_frpr_name,
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_rollback        = 'N');
+
+    IF ret_val <> 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF ret_val = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF ret_val <> 0
+  THEN 
+    MESSAGE 'ERROR: Failed to select industry text and coordinator name '
+          + 'from table ' +VARCHAR(:h_table) + '. '
+          + 'Error code ' +VARCHAR(:ret_val) + '. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN ret_val;
+  ENDIF;
+
+  s_industry_title = 
+  SHIFT(:h_industry_title, (((62-LENGTH(h_industry_title))/2)*1));
+
+  h_retry_or_not      = 'RETRY';
+  h_retries = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    tf1 = SELECT analyst_name AS analyst
+          FROM   :h_table
+          ORDER BY analyst;
+
+    ret_val = CALLPROC check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_frpr_name       = :h_frpr_name,
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_rollback        = 'N');
+
+    IF ret_val <> 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF ret_val = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF ret_val = 9
+  THEN 
+    MESSAGE 'ERROR: Failed to select analyst names from ' + :h_table +'. '
+          + 'Error code 9. Please inform IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN ret_val;
+  ENDIF;
+
+  REDISPLAY;
+
+  ret_val = CALLFRAME msao_fr_industry_history (
+            h_industry        = :h_industry,
+            industry_title    = :s_industry_title);
+
+  ret_val = CALLPROC msa_fp_drop_table (
+            h_table = :h_table);
+
+  RETURN 0;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'Help',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+}
+
+
+'End', KEY FRSKEY14  =
+{
+    RETURN 0;
+}

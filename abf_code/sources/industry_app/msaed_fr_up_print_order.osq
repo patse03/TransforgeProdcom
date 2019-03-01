@@ -1,0 +1,750 @@
+/*------------------------------------------------------------------
+ This frame is used to view INDUSTRY data, both periodic and
+   non periodic.
+------------------------------------------------------------------*/
+
+
+INITIALIZE () =
+
+DECLARE h_retries              = INTEGER1 NOT NULL,
+        h_retries_allowed      = INTEGER1 NOT NULL,
+        h_retry_or_not         = CHAR(5)  NOT NULL,
+        h_frpr_name            = VARCHAR(24) NOT NULL,
+        h_coordinator_id       = VARCHAR(10) NOT NULL,
+        h_changed              = CHAR(1) NOT NULL,
+        h_yesno                = CHAR(1) NOT NULL,
+        h_display              = INTEGER1 NOT NULL,
+        h_state                = INTEGER1 NOT NULL,
+        h_record               = INTEGER1 NOT NULL,
+        h_count                = INTEGER1 NOT NULL,
+        industry_cycle_point   = CHAR(1) NOT NULL,
+        tf.user_id             = VARCHAR(10) NOT NULL,
+        h_order1               = INTEGER1 NOT NULL,
+        h_order2               = INTEGER1 NOT NULL,
+        h_order3               = INTEGER1 NOT NULL,
+        h_order4               = INTEGER1 NOT NULL,
+        h_order5               = INTEGER1 NOT NULL,
+        h_order6               = INTEGER1 NOT NULL,
+        h_order7               = INTEGER1 NOT NULL,
+        h_no_analysts          = INTEGER1 NOT NULL,
+        ret_val                = INTEGER NOT NULL,
+        lp_load_table          = PROCEDURE RETURNING INTEGER
+
+{
+    h_frpr_name = 'msaed_fr_up_print_order';
+    h_retries_allowed   = 3;
+    msa_date = 'now';
+    h_count = 0;
+    SET_FORMS FIELD '' (MODE(tf) = 'UPDATE',
+                        DISPLAYONLY(industry) = 0,
+                        REVERSE(industry) = 0,
+                        UNDERLINE(industry) = 1);
+}
+
+FIELD industry =
+{
+    MESSAGE 'Selecting Data . . . ';
+
+    /*------------------------------------------------------------------
+     Get Industry details
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+    DO
+        h_retries = :h_retries + 1;
+
+        SELECT inquiry,
+               industry_text,
+               present_emp_cutoff
+        FROM   industry
+        WHERE  industry = :industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing industry table'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Industry does not exist'
+        WITH STYLE = POPUP;
+        RESUME FIELD industry;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(industry) = 1,
+                        REVERSE(industry) = 1,
+                        UNDERLINE(industry) = 0);
+
+    /*------------------------------------------------------------------
+     Get Data Coordinator staff details
+    ------------------------------------------------------------------*/
+
+    /*--------------------------------------------------------------
+    21/03/03 - add NOT LIKE line to prevent dummy data coordinators (A3s) 
+    being selected. - sjh
+    ---------------------------------------------------------------*/
+
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT b.user_name AS data_coordinator,
+               a.user_id AS h_coordinator_id
+        FROM   passwords b,
+               industry_staff a
+        WHERE  a.industry = :industry
+        AND    a.grade = 'DATA COORDINATOR'
+	AND    a.user_id <> 'prod007'
+        AND    a.user_id = b.user_id
+	AND    b.user_name NOT LIKE '%-BLOGGS%';
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in finding Data Coordinator'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Get Data Analyst staff details
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Get Results Owner
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT b.user_name AS results_owner
+        FROM   industry a,
+               passwords b
+        WHERE  a.industry = :industry
+        AND    a.results_owner = b.user_id;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in finding Results Owner'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        results_owner = 'UNKNOWN';
+    ENDIF;
+
+    msa_date = 'now';
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+/*******************************
+
+Taken out until users can make a good case for it.
+This causes problems in that a user could save print orders for a number
+of industries, while only ending with confirmation check once.
+SJH 18/02/03
+
+'Clear' =
+{
+    CLEAR FIELD ALL;
+    msa_date = 'now';
+    SET_FORMS FIELD '' (DISPLAYONLY(industry) = 0,
+                        REVERSE(industry) = 0,
+                        UNDERLINE(industry) = 1);
+
+    RESUME FIELD industry;
+}
+
+*******************************/
+
+
+'UpdateResultsOwner' =
+{
+    
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(industry));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Industry' WITH STYLE = POPUP;
+        RESUME FIELD industry;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Check permission to update results owner
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT industry
+        FROM   industry_staff
+        WHERE  industry = :industry
+        AND    user_id = :g_user_id;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing industry_staff'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    IF ret_val = 1 AND :g_access_level < 89 
+    THEN
+        MESSAGE 'Sorry, but you don''t have permission' +
+                ' to update the Results Owner'
+        WITH STYLE = POPUP;
+        RESUME;
+    ELSEIF :g_access_level = 90
+    THEN
+        MESSAGE 'Sorry, but you don''t have permission' +
+                ' to update the Results Owner'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT industry_cycle_point
+        FROM   industry
+        WHERE  industry = :industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing industry'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    IF ret_val = 0 AND :industry_cycle_point = 'S'
+    THEN
+        MESSAGE 'Sorry, forms are being printed' 
+        WITH STYLE = POPUP;
+        RESUME;
+
+    ELSE
+    /*------------------------------------------------------------------
+     Call Update frame
+    ------------------------------------------------------------------*/
+
+        ret_val = CALLFRAME msaed_fr_up_results_owner (
+                  industry = :industry,
+                  results_owner = BYREF(:results_owner));
+    ENDIF;
+    msa_date = 'now';
+
+}
+
+'SavePrintOrder' =
+{
+
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(industry));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Industry' WITH STYLE = POPUP;
+        RESUME FIELD industry;
+    ENDIF;
+
+    IF h_coordinator_id <> :g_user_id
+    AND :g_access_level < 89 
+    THEN
+        MESSAGE 'Sorry, but you don''t have permission' +
+                ' to change the order of printing names on Forms.'
+        WITH STYLE = POPUP;
+        RESUME;
+    ELSEIF :g_access_level = 90
+    THEN
+        MESSAGE 'Sorry, but you don''t have permission' +
+                ' to change the order of printing names on Forms.'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT industry_cycle_point
+        FROM   industry
+        WHERE  industry = :industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing industry'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    IF :industry_cycle_point = 'S'
+    THEN
+        MESSAGE 'Sorry, forms are being printed' 
+        WITH STYLE = POPUP;
+        RESUME;
+    ELSE
+        h_count = :h_count + 1;
+    /*-----------------------------------------------------------------e
+    When the print order is changed, the highest value must not exceed
+    the number of analysts, and there must not be any missing numbers
+    (e.g. 1,2,4 is not valid, neither is 2,3 etc).
+    And mustn't have the same number twice.
+    ------------------------------------------------------------------*/
+
+    h_order1 = 0;
+    h_order2 = 0;
+    h_order3 = 0;
+    h_order4 = 0;
+    h_order5 = 0;
+    h_order6 = 0;
+    h_order7 = 0;
+
+    UNLOADTABLE tf (h_record = _record)
+    {
+        IF tf.print_order > h_no_analysts
+        THEN
+            MESSAGE 'The highest print order must be ' + 
+            VARCHAR(:h_no_analysts)
+            WITH STYLE = POPUP;
+            SCROLL tf TO h_record;
+            RESUME;
+        ENDIF;
+
+        IF tf.print_order = 0
+        THEN
+            /* do nothing */
+        ELSEIF tf.print_order = 1
+        THEN
+            IF h_order1 = 1
+            THEN
+                MESSAGE 'There are two Print Orders of 1'
+                WITH STYLE = POPUP;
+                SCROLL tf TO h_record;
+                RESUME;
+            ENDIF;
+            h_order1 = 1;
+        ELSEIF tf.print_order = 2
+        THEN
+            IF h_order2 = 1
+            THEN
+                MESSAGE 'There are two Print Orders of 2'
+                WITH STYLE = POPUP;
+                SCROLL tf TO h_record;
+                RESUME;
+            ENDIF;
+            h_order2 = 1;
+        ELSEIF tf.print_order = 3
+        THEN
+            IF h_order3 = 1
+            THEN
+                MESSAGE 'There are two Print Orders of 3'
+                WITH STYLE = POPUP;
+                SCROLL tf TO h_record;
+                RESUME;
+            ENDIF;
+            h_order3 = 1;
+        ELSEIF tf.print_order = 4
+        THEN
+            IF h_order4 = 1
+            THEN
+                MESSAGE 'There are two Print Orders of 4'
+                WITH STYLE = POPUP;
+                SCROLL tf TO h_record;
+                RESUME;
+            ENDIF;
+            h_order4 = 1;
+        ELSEIF tf.print_order = 5
+        THEN
+            IF h_order5 = 1
+            THEN
+                MESSAGE 'There are two Print Orders of 5'
+                WITH STYLE = POPUP;
+                SCROLL tf TO h_record;
+                RESUME;
+            ENDIF;
+            h_order5 = 1;
+        ELSEIF tf.print_order = 6
+        THEN
+            IF h_order6 = 1
+            THEN
+                MESSAGE 'There are two Print Orders of 6'
+                WITH STYLE = POPUP;
+                SCROLL tf TO h_record;
+                RESUME;
+            ENDIF;
+            h_order6 = 1;
+        ELSEIF tf.print_order = 7
+        THEN
+            IF h_order7 = 1
+            THEN
+                MESSAGE 'There are two Print Orders of 7'
+                WITH STYLE = POPUP;
+                SCROLL tf TO h_record;
+                RESUME;
+            ENDIF;
+            h_order7 = 1;
+        ENDIF; 
+
+    };
+
+    IF (h_order2 = 1 OR h_order3 = 1 OR h_order4 = 1 OR h_order5 = 1 OR
+        h_order6 = 1 OR h_order7 = 1) AND h_order1 = 0
+    THEN
+        MESSAGE 'There is no Print Order of 1'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    IF (h_order3 = 1 OR h_order4 = 1 OR h_order5 = 1 OR h_order6 = 1 OR 
+        h_order7 = 1) AND h_order2 = 0
+    THEN
+        MESSAGE 'There is no Print Order of 2'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    IF (h_order4 = 1 OR h_order5 = 1 OR h_order6 = 1 OR h_order7 = 1)
+    AND h_order3 = 0
+    THEN
+        MESSAGE 'There is no Print Order of 3'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    IF (h_order5 = 1 OR h_order6 = 1 OR h_order7 = 1)
+    AND h_order4 = 0
+    THEN
+        MESSAGE 'There is no Print Order of 4'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    IF (h_order6 = 1 OR h_order7 = 1)
+    AND h_order5 = 0
+    THEN
+        MESSAGE 'There is no Print Order of 5'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    IF h_order7 = 1 AND h_order6 = 0
+    THEN
+        MESSAGE 'There is no Print Order of 6'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    MESSAGE 'Updating Print Order . . .';
+
+    UNLOADTABLE tf
+    {
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+    
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+    
+            h_retries = :h_retries + 1;
+    
+            UPDATE industry_staff
+            SET    print_order = :tf.print_order
+            WHERE  industry = :industry
+            AND    user_id = :tf.user_id;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+    
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+    
+        ENDWHILE;
+    
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+    
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error updating industry_staff'
+            WITH STYLE = POPUP;
+            RETURN 9;
+    
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No rows updated on industry_staff'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+    }; 
+
+    IF h_count = 1
+    THEN
+        h_changed = 'n';
+        UNLOADTABLE tf (h_state = _state)
+        {
+            IF h_state = 3
+            THEN
+                h_changed = 'y';
+            ENDIF;
+        };
+    ENDIF; 
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ENDIF;
+    msa_date = 'now';
+}
+
+'End', KEY FRSKEY6 =
+{
+    /*------------------------------------------------------------------
+    Prompt if the print order has been changed by someone who has
+    permission to change it
+    ------------------------------------------------------------------*/
+
+        IF h_changed = 'y'
+        THEN
+            h_yesno = '';
+            WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+            DO
+                h_yesno = PROMPT 'The Print Order has been changed.' +
+                                 ' Are you happy with these changes?' +
+                                 ' Type Y/N and press <return>'
+                          WITH STYLE = POPUP;
+                h_yesno = LOWERCASE(:h_yesno);
+            ENDWHILE;
+
+            IF h_yesno = 'n'
+            THEN
+                RESUME;
+            ENDIF;
+        ENDIF;
+
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                  L O C A L   P R O C E D U R E
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_table () =
+{
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf = SELECT   b.user_name AS data_analyst,
+                      a.user_id,
+                      a.print_order
+             FROM     passwords b,
+                      industry_staff a
+             WHERE    a.industry = :industry
+             AND      a.grade = 'DATA ANALYST'
+             AND      a.user_id = b.user_id
+             ORDER BY print_order;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:h_no_analysts),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in finding Data Analysts'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    RETURN 0;
+}

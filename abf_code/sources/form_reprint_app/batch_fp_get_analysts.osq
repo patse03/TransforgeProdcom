@@ -1,0 +1,235 @@
+/*----------------------------------------------------------------------
+  Creates a table 'data_analysts' which consists of one row for
+  each industry, with all data analysts on the same row
+----------------------------------------------------------------------*/
+
+PROCEDURE batch_fp_get_analysts (
+
+        h_contributor_industry = VARCHAR(5) NOT NULL,
+        h_table                = VARCHAR(24) NOT NULL) =
+
+DECLARE h_frpr_name            = VARCHAR(24) NOT NULL,
+        ret_val                = INTEGER1 NOT NULL,
+        h_industry             = INTEGER4 NOT NULL,
+        h_name                 = VARCHAR(24) NOT NULL,
+        h_name1                = VARCHAR(24) NOT NULL,
+        h_name2                = VARCHAR(24) NOT NULL,
+        h_name3                = VARCHAR(24) NOT NULL,
+        h_name4                = VARCHAR(24) NOT NULL,
+        h_nice_name            = VARCHAR(24) NOT NULL,
+        h_ext                  = VARCHAR(4) NOT NULL,
+        h_ext1                 = VARCHAR(4) NOT NULL,
+        h_ext2                 = VARCHAR(4) NOT NULL,
+        h_ext3                 = VARCHAR(4) NOT NULL,
+        h_ext4                 = VARCHAR(4) NOT NULL,
+        h_letter               = CHAR(1) NOT NULL,
+        h_prev_letter          = CHAR(1) NOT NULL,
+        h_count                = INTEGER1 NOT NULL,
+        h_counter              = INTEGER1 NOT NULL,
+        h_print_order          = INTEGER1 NOT NULL
+
+{
+    h_frpr_name = 'batch_fp_get_analysts';
+
+    IF :h_table = ''
+    THEN
+        h_table = 'temp_data_analysts';
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table (
+              h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    IF h_contributor_industry = ''
+    THEN
+        h_contributor_industry = 'ALL';
+    ENDIF;
+
+    IF h_contributor_industry = 'ALL'
+    THEN
+
+        CREATE TABLE :h_table
+        AS SELECT    industry,
+                     '                        ' AS name1,
+                     '    ' AS ext1,
+                     '                        ' AS name2,
+                     '    ' AS ext2,
+                     '                        ' AS name3,
+                     '    ' AS ext3,
+                     '                        ' AS name4,
+                     '    ' AS ext4
+        FROM         industry;
+    ELSE
+
+        CREATE TABLE :h_table
+        AS SELECT    industry,
+                     '                        ' AS name1,
+                     '    ' AS ext1,
+                     '                        ' AS name2,
+                     '    ' AS ext2,
+                     '                        ' AS name3,
+                     '    ' AS ext3,
+                     '                        ' AS name4,
+                     '    ' AS ext4
+        FROM         industry
+        WHERE        industry = INT4(:h_contributor_industry);
+    ENDIF;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Modify
+    ------------------------------------------------------------------*/
+
+    MODIFY :h_table TO BTREE
+    UNIQUE ON industry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error modifying ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Update with names
+    ------------------------------------------------------------------*/
+
+    SELECT industry AS h_industry
+    FROM   :h_table
+    {
+        h_count = 1;
+        h_name1 = '';
+        h_name2 = '';
+        h_name3 = '';
+        h_name4 = '';
+        h_ext1 = '';
+        h_ext2 = '';
+        h_ext3 = '';
+        h_ext4 = '';
+
+        SELECT   b.user_name AS h_name,
+                 b.extension AS h_ext,
+                 a.print_order AS h_print_order
+        FROM     industry_staff a,
+                 passwords b
+        WHERE    a.user_id = b.user_id
+        AND      a.print_order <> 0
+        AND      a.grade = 'DATA ANALYST'
+        AND      a.industry = :h_industry
+        ORDER BY h_print_order
+        {
+
+            /*----------------------------------------------------------
+            Make the name pretty: e.g. JOHN SMITH ---> John Smith
+            ----------------------------------------------------------*/
+            h_counter = 1;
+            h_prev_letter = ' ';
+            h_nice_name = '';
+            WHILE h_counter <= LENGTH(h_name)
+            DO
+                h_letter = CHAREXTRACT(h_name,h_counter);
+                IF h_letter = ' '
+                THEN
+                    h_nice_name = CONCAT(h_nice_name,' ');
+                ELSEIF h_prev_letter = ' '
+                THEN
+                    h_nice_name = CONCAT(h_nice_name, h_letter);
+                ELSE
+                    h_nice_name = CONCAT(h_nice_name, LOWERCASE(h_letter));
+                ENDIF;
+                h_prev_letter = h_letter;
+                h_counter = h_counter + 1;
+            ENDWHILE;
+            
+            h_name = h_nice_name;
+
+            IF :h_count = 1
+            THEN
+                h_name1 = :h_name;
+                h_ext1 = :h_ext;
+
+            ELSEIF :h_count = 2
+            THEN
+                h_name2 = :h_name;
+                h_ext2 = :h_ext;
+
+            ELSEIF :h_count = 3
+            THEN
+                h_name3 = :h_name;
+                h_ext3 = :h_ext;
+
+            ELSEIF :h_count = 4
+            THEN
+                h_name4 = :h_name;
+                h_ext4 = :h_ext;
+            ENDIF;
+
+            h_count = :h_count + 1;
+
+        };
+
+        UPDATE :h_table
+        SET    name1 = :h_name1,
+               name2 = :h_name2,
+               name3 = :h_name3,
+               name4 = :h_name4,
+               ext1  = :h_ext1,
+               ext2  = :h_ext2,
+               ext3  = :h_ext3,
+               ext4  = :h_ext4
+        WHERE  industry = :h_industry;
+
+    };
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error in select loop updating ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    RETURN 0;
+}

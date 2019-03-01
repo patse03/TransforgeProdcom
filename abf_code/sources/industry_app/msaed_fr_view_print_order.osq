@@ -1,0 +1,398 @@
+/*------------------------------------------------------------------
+ This frame is used to view INDUSTRY data, both periodic and
+   non periodic.
+------------------------------------------------------------------*/
+
+/*------------------------------------------------------------------
+ 21/03/03 - added h_table3 creation and amended Union Select to
+ include industries without a print_order. SJH
+------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries              = INTEGER1 NOT NULL,
+        h_retries_allowed      = INTEGER1 NOT NULL,
+        h_retry_or_not         = CHAR(5)  NOT NULL,
+        h_frpr_name            = VARCHAR(24) NOT NULL,
+        h_coordinator_id       = VARCHAR(10) NOT NULL,
+        h_changed              = CHAR(1) NOT NULL,
+        h_yesno                = CHAR(1) NOT NULL,
+        h_table1               = CHAR(20) NOT NULL,
+        h_table2               = CHAR(20) NOT NULL,
+        h_table3               = CHAR(20) NOT NULL,
+        h_display              = INTEGER1 NOT NULL,
+        h_state                = INTEGER1 NOT NULL,
+        h_record               = INTEGER1 NOT NULL,
+        industry_cycle_point   = INTEGER4 NOT NULL,
+        h_order1               = INTEGER1 NOT NULL,
+        h_order2               = INTEGER1 NOT NULL,
+        h_order3               = INTEGER1 NOT NULL,
+        h_order4               = INTEGER1 NOT NULL,
+        h_no_analysts          = INTEGER1 NOT NULL,
+        ret_val                = INTEGER NOT NULL,
+        lp_load_table          = PROCEDURE RETURNING INTEGER
+
+{
+    h_frpr_name = 'msaed_fr_view_print_orders';
+    h_retries_allowed   = 3;
+    h_table1   = 'print_ords';
+    h_table2   = 'print_ords2';
+    h_table3   = 'print_ords0';
+    msa_date = 'now  ';
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+    SELECT DBMSINFO('database') AS :g_database;
+
+    ret_val = CALLPROC msa_fp_get_user_details (
+               h_user_id         = BYREF(:g_user_id),
+               h_access_level = BYREF(:g_access_level),
+               h_user_name = BYREF(:g_user_name),
+               h_default_printer = BYREF(:g_printer));
+
+    IF ret_val <> 0
+    THEN
+        RETURN 0;
+    ENDIF;
+  SET_FORMS FIELD '' (DISPLAYONLY(inquiry) = 0,
+                        REVERSE(inquiry) = 0,
+                        UNDERLINE(inquiry) = 1);
+}
+
+FIELD inquiry =
+{
+ IF inquiry <> 14 AND inquiry <> 15
+ THEN
+     MESSAGE 'Inquiry must be 14 or 15'
+     WITH STYLE = POPUP;
+     RESUME FIELD inquiry;
+ ENDIF;
+
+ SET_FORMS FIELD '' (DISPLAYONLY(inquiry) = 1,
+                     REVERSE(inquiry) = 1,
+                     UNDERLINE(inquiry) = 0);
+
+    MESSAGE 'Selecting Data . . . ';
+
+    /*------------------------------------------------------------------
+     Get Inquiry details
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msaed_fp_drop_table ( h_table = :h_table1);
+    IF ret_val = 9
+    THEN
+       RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC msaed_fp_drop_table ( h_table = :h_table2);
+    IF ret_val = 9
+    THEN
+       RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC msaed_fp_drop_table ( h_table = :h_table3);
+    IF ret_val = 9
+    THEN
+       RETURN 9;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+    DO
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table1
+        AS SELECT industry
+        FROM   industry
+        WHERE  inquiry = :inquiry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing industry table'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Inquiry does not exist'
+        WITH STYLE = POPUP;
+        RESUME FIELD inquiry;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(inquiry) = 1,
+                        REVERSE(inquiry) = 1,
+                        UNDERLINE(inquiry) = 0);
+
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+    DO
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table3 AS (
+            SELECT industry
+            FROM   :h_table1
+	    WHERE  industry NOT IN ( 
+	        SELECT industry
+	        FROM   industry_staff
+	        WHERE  print_order = 1));
+
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating table ' + :h_table3
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'All industries appear to have print_orders,' +
+		' but please check.'
+        WITH STYLE = POPUP;
+    ENDIF;
+
+
+    /*------------------------------------------------------------------
+     Get Data Coordinator staff details
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table2
+        AS SELECT c.industry,
+	          b.user_name as data_analyst ,
+                  a.print_order
+        FROM      passwords b,
+                  industry_staff a,
+	          :h_table1 c
+        WHERE     a.industry = c.industry
+        AND       a.user_id = b.user_id
+        AND       a.print_order = '1'
+        UNION SELECT c.industry,
+	             b.user_name as data_analyst ,
+                     a.print_order
+        FROM         passwords b,
+                     industry_staff a,
+	             :h_table1 c
+        WHERE        a.industry = 22220
+        AND          a.industry = c.industry
+        AND          a.user_id = b.user_id
+        AND          a.print_order > '1'
+        UNION SELECT c.industry,
+	             b.user_name as data_analyst ,
+                     a.print_order
+        FROM         passwords b,
+                     industry_staff a,
+	             :h_table1 c
+        WHERE        a.industry = c.industry
+        AND          a.user_id = b.user_id
+	AND          b.grade <> 'DATA COORDINATOR'
+        AND          a.industry IN (
+	SELECT       industry
+	FROM         :h_table3);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in finding A2s'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Get Data Analyst staff details
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    msa_date = 'now';
+    RESUME FIELD inquiry;
+
+}
+
+'Print' =
+{
+
+    MESSAGE 'Preparing Report . . .';
+    msa_date = 'now';
+
+    ret_val = CALLPROC msa_cp_callsys (
+              'report ' +
+              :g_database +
+              ' ''(user_name = "' + :g_user_name + '"' +
+              ',inquiry = ' + VARCHAR(:inquiry) +
+              ')'' -i$REPORTS/msaed_rw_print_order.rw' +
+              ' > report.output 2> report.output');
+
+    IF ret_val <> 0
+    THEN
+        MESSAGE 'Error producing report'
+        WITH STYLE = POPUP;
+    ELSE
+        /*--------------------------------------------------------------
+         Remove last line - so a blank end page is not printed
+        --------------------------------------------------------------*/
+
+        ret_val = CALLPROC msa_cp_callsys (
+              'lines=`wc -l < msaed_rw_print_order.rpt`;' +
+              'lines=`expr ${lines} - 1`;' +
+              'head -${lines} msaed_rw_print_order.rpt | ' +
+              'lp -o12p -d' + :g_printer +
+              ' >> report.output 2>> report.output');
+
+        IF ret_val <> 0
+        THEN
+            MESSAGE 'Error sending report to printer ' +
+                    :g_printer
+            WITH STYLE = POPUP;
+        ELSE
+            MESSAGE 'Report sent to printer ' + :g_printer + ' OK'
+            WITH STYLE = POPUP;
+        ENDIF;
+    ENDIF;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Clear' =
+{
+    CLEAR FIELD ALL;
+    msa_date = 'now';
+    SET_FORMS FIELD '' (DISPLAYONLY(inquiry) = 0,
+                        REVERSE(inquiry) = 0,
+                        UNDERLINE(inquiry) = 1);
+
+    RESUME FIELD inquiry;
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                  L O C A L   P R O C E D U R E
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_table () =
+{
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf = SELECT   industry,
+                      data_analyst,
+                      print_order
+             FROM     :h_table2
+             ORDER BY industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:h_no_analysts),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in finding Data Analysts'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    RETURN 0;
+}
