@@ -1,0 +1,700 @@
+/*-s--------------------------------------------------------------------
+ Procedure msaca_fp_start - Start of Application
+
+e.g. $IMAGES/ppi_sample_app -dprodlivedb -a 199900 12031 0 199800 11000 1 1
+ 199900 31 y
+
+ 199900     = period
+ 12031      = alloc_type- (where 3 is the PPI year and 1 is the PPI phase)
+ 1          = sample_type
+ 199800     = prev_ppi_period
+ 11000      = prev_alloc_type
+ 1          = process to start
+ 1          = process to end
+ 199900     = boundary_period (stays the same in phase 3 as phases 1
+              and 2 even if you select the latest Prodcom data in phase 3
+ 31         = phase
+ y          = final phase yes or no
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msaca_fp_start () =
+
+DECLARE start_proc           = INTEGER1 NOT NULL,
+        end_proc             = INTEGER1 NOT NULL,
+        run_no               = INTEGER1 NOT NULL,
+        h_period             = INTEGER4 NOT NULL,
+        h_inquiry            = INTEGER1 NOT NULL,
+        h_param_list         = VARCHAR(100) NOT NULL,
+        h_varchar_variable   = VARCHAR(100) NOT NULL,
+        h_integer_variable   = INTEGER2 NOT NULL,
+        h_param1             = VARCHAR(20) NOT NULL,
+        h_param2             = VARCHAR(20) NOT NULL,
+        h_param3             = VARCHAR(20) NOT NULL,
+        h_param4             = VARCHAR(20) NOT NULL,
+        h_param5             = VARCHAR(20) NOT NULL,
+        h_param6             = VARCHAR(20) NOT NULL,
+        h_param7             = VARCHAR(20) NOT NULL,
+        h_param8             = VARCHAR(20) NOT NULL,
+        h_param9             = VARCHAR(20) NOT NULL,
+        h_param10            = VARCHAR(20) NOT NULL,
+        ret_val              = INTEGER1 NOT NULL,
+        h_frpr_name          = VARCHAR(24) NOT NULL
+
+{
+    SELECT DBMSINFO('username') AS g_user_id;
+    SELECT DBMSINFO('database') AS g_database;
+
+    IF g_database = 'prodlivedb'
+    THEN
+        g_path_name1 = '/prodcom/live5/files/text';
+        g_path_name2 = '/admin/scratch';
+    ELSE
+        g_path_name1 = '/prodcom/source/produser/files/text';
+        g_path_name2 = '/vulcanscratch';
+    ENDIF;
+
+    h_frpr_name = 'msaca_fp_start';
+
+    h_param_list = CALLPROC CommandLineParameters();
+
+    h_varchar_variable = squeeze (h_param_list);
+
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param1         =   left (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = shift (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param2         =   left (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = shift (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param3         =   left (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = shift (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param4         =   left (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = shift (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param5         =   left (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = shift (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param6         =   left (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = shift (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param7         =   left (h_varchar_variable,h_integer_variable - 1);
+
+    h_varchar_variable = shift (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param8         =   left (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = shift (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param9         =   left (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = shift (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param10         =   left (h_varchar_variable,h_integer_variable - 1);
+
+    g_period = INT4(:h_param1);
+    g_alloc_type = INT2(:h_param2);
+    g_sample_type = INT1(:h_param3);
+    g_prev_ppi_period = INT4(:h_param4);
+    g_prev_alloc_type = INT2(:h_param5);
+    start_proc = INT1(:h_param6);
+    end_proc = INT1(:h_param7);
+    g_boundary_period = INT4(:h_param8);
+    g_phase = INT2(:h_param9);
+    g_final_phase = :h_param10;
+
+   /* g_perpha only used in output file names: currently {period}_{phase}.
+     for example: 201100_1 or 201200_2 */
+
+    g_perpha = VARCHAR(:g_period) + '_' +VARCHAR(MOD(g_phase,10));
+
+    /*------------------------------------------------------------------
+    Validate period which must be an annual period
+    ------------------------------------------------------------------*/
+
+    SELECT period AS h_period,
+	   inquiry AS h_inquiry
+    FROM   inquiry_period
+    WHERE  period = :g_period
+    AND    inquiry = 14;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error selecting from inquiry_period',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Work out quarterly periods from annual period and assign inquiry
+    ------------------------------------------------------------------*/
+
+    g_inquiry = :h_inquiry;
+    g_q1 = :g_period + 3;
+    g_q2 = :g_period + 6;
+    g_q3 = :g_period + 9;
+    g_q4 = :g_period + 12;
+
+
+    /*IF :g_alloc_type <> 11000 AND g_alloc_type <> 12000
+    AND :g_alloc_type <> 12031
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid alloc_type = ' + VARCHAR(:g_alloc_type),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+*/
+    IF :g_sample_type < 0 OR g_sample_type > 1
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid sample_type = ' + VARCHAR(:g_sample_type),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF :start_proc < 1 OR :start_proc > 14
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid Start = ' + VARCHAR(:start_proc),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF :end_proc < 1 OR :end_proc > 14
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid End = ' + VARCHAR(:end_proc),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF :start_proc > :end_proc
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid Start = ' + VARCHAR(:start_proc) +
+                    ', End = ' + VARCHAR(:end_proc),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF :g_final_phase<> 'y'        
+    AND :g_final_phase <> 'n'
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid Final Phase = ' + :g_final_phase ,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Process 1 - Create reference list of valid Prodcom contributors to
+     use in the Panel to be sampled from
+    ------------------------------------------------------------------*/
+
+    IF :start_proc = 1
+    THEN
+        ret_val = CALLPROC msaca_fp_create_reflist ();
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Creating reflist Fails in Process 1',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ELSE
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Creating reflist Process 1 ends OK',
+                        :h_frpr_name,
+                        0,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Process 2 - Load data from SCPR
+    ------------------------------------------------------------------*/
+
+    IF :start_proc <= 2 AND :end_proc >= 2
+    THEN
+
+        ret_val = CALLPROC msaca_fp_load_data();
+
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Load data Fails in Process 2',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ELSE
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Load data Process 2 ends OK',
+                        :h_frpr_name,
+                        0,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Process 3 - Create sales data and set strata
+    ------------------------------------------------------------------*/
+
+    IF :start_proc <= 3 AND :end_proc >= 3
+    THEN
+
+        ret_val = CALLPROC msaca_fp_create_data();
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Create data Fails in Process 3',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ELSE
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Create data Process 3 ends OK',
+                        :h_frpr_name,
+                        0,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Process 4 - Create random number 
+    ------------------------------------------------------------------*/
+
+    IF :start_proc <= 4 AND :end_proc >= 4 
+    THEN
+
+        ret_val = CALLPROC msaca_fp_create_random();
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Create random number Fails in Process 4',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ELSE
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Create random number Process 4 ends OK',
+                        :h_frpr_name,
+                        0,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Process 5 - Allocate sample      
+     There are two types of sampling - Sampling from PRN 0 and Rotation
+     Sampling
+    ------------------------------------------------------------------*/
+
+    IF :start_proc <= 5 AND :end_proc >= 5
+    THEN
+       IF :g_sample_type = 0
+       THEN
+
+           ret_val = CALLPROC msaca_fp_sample();
+     
+           IF ret_val <> 0
+           THEN
+               INSERT INTO error_log
+               VALUES(     'now',
+                           'PPI Sample - Allocate sample Fails in Process 5.1 for sample_type ' + VARCHAR(:g_sample_type),
+                           :h_frpr_name,
+                           :ret_val,
+                           :g_user_id);
+               COMMIT;
+               RETURN 9;
+           ELSE
+               INSERT INTO error_log
+               VALUES(     'now',
+                           'PPI Sample - Allocate sample Process 5.1 ends OK for sample_type ' + VARCHAR(:g_sample_type),
+                           :h_frpr_name,
+                           0,
+                           :g_user_id);
+               COMMIT;
+          ENDIF;
+
+
+           ret_val = CALLPROC msaca_fp_boundaries();
+     
+           IF ret_val <> 0
+           THEN
+               INSERT INTO error_log
+               VALUES(     'now',
+                           'PPI Sample - Allocate sample Fails in Process 5.2 for sample_type ' + VARCHAR(:g_sample_type),
+                           :h_frpr_name,
+                           :ret_val,
+                           :g_user_id);
+               COMMIT;
+               RETURN 9;
+           ELSE
+               INSERT INTO error_log
+               VALUES(     'now',
+                           'PPI Sample - Allocate sample Process 5.2 ends OK for sample_type ' + VARCHAR(:g_sample_type),
+                           :h_frpr_name,
+                           0,
+                           :g_user_id);
+               COMMIT;
+          ENDIF;
+
+       ELSEIF :g_sample_type > 0
+       THEN
+     
+           ret_val = CALLPROC msaca_fp_categories();
+     
+           IF ret_val <> 0
+           THEN
+               INSERT INTO error_log
+               VALUES(     'now',
+                           'PPI Sample - Allocate sample Fails in Process 5.1 for sample_type ' + VARCHAR(:g_sample_type),
+                           :h_frpr_name,
+                           :ret_val,
+                           :g_user_id);
+               COMMIT;
+               RETURN 9;
+           ELSE
+               INSERT INTO error_log
+               VALUES(     'now',
+                           'PPI Sample - Allocate sample Process 5.1 ends OK for sample_type ' + VARCHAR(:g_sample_type),
+                           :h_frpr_name,
+                           0,
+                           :g_user_id);
+               COMMIT;
+          ENDIF;
+
+           ret_val = CALLPROC msaca_fp_rotation();
+     
+           IF ret_val <> 0
+           THEN
+               INSERT INTO error_log
+               VALUES(     'now',
+                           'PPI Sample - Allocate sample Fails in Process 5.2 for sample_type ' + VARCHAR(:g_sample_type),
+                           :h_frpr_name,
+                           :ret_val,
+                           :g_user_id);
+               COMMIT;
+               RETURN 9;
+           ELSE
+               INSERT INTO error_log
+               VALUES(     'now',
+                           'PPI Sample - Allocate sample Process 5.2 ends OK for sample_type ' + VARCHAR(:g_sample_type),
+                           :h_frpr_name,
+                           0,
+                           :g_user_id);
+               COMMIT;
+          ENDIF;
+
+
+       ENDIF;
+    ENDIF;
+
+
+    /*------------------------------------------------------------------
+     Process 6 - Load file of DETR extras and process if any found
+                 on Prodcom population
+    ------------------------------------------------------------------*/
+
+    IF :start_proc <= 6 AND :end_proc >= 6
+    THEN
+
+        ret_val = CALLPROC msaca_fp_detr_extras();
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Load DETR extras Fails in Process 6',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ELSE
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Load DETR extras Process 6 ends OK',
+                        :h_frpr_name,
+                        0,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Process 7 - Create PPI/Prodcom Weight
+    ------------------------------------------------------------------*/
+/* This process is now called from process 3 as of July 2010 - MJE
+    IF :start_proc <= 7 AND :end_proc >= 7
+    THEN
+
+        ret_val = CALLPROC msaca_fp_create_weight();
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Create Prodcom Weight Fails in Process 7',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ELSE
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Create Prodcom Weight Process 7 ends OK',
+                        :h_frpr_name,
+                        0,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+    ENDIF;
+*/
+    /*------------------------------------------------------------------
+     Process 8 - Create 8 digit data and Copy Question library
+    ------------------------------------------------------------------*/
+
+    IF :start_proc <= 8 AND :end_proc >= 8
+    THEN
+
+        ret_val = CALLPROC msaca_fp_create_eightdig();
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Create eightdig Fails in Process 8',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ELSE
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Create eightdig Process 8 ends OK',
+                        :h_frpr_name,
+                        0,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Process 9 - Create enterprise sales of the
+     contributor_reference/sixdig sampled plus DETR extras
+    ------------------------------------------------------------------*/
+
+    IF :start_proc <= 9 AND :end_proc >= 9
+    THEN
+
+        ret_val = CALLPROC msaca_fp_create_entsales();
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Create enterprise sales Fails in Process 9',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ELSE
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Create enterprise sales Process 9 ends OK',
+                        :h_frpr_name,
+                        0,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Process 10 - Create PPI recruitment table
+    ------------------------------------------------------------------*/
+
+    IF :start_proc <= 10 AND :end_proc >= 10
+    THEN
+
+        ret_val = CALLPROC msaca_fp_recruitment();
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Create recruitment Fails in Process 10',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ELSE
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Create recruitment - Process 10 ends OK',
+                        :h_frpr_name,
+                        0,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Process 11 - Copy tables to flat files for both PPI IS and PPI 
+     statisticians
+    ------------------------------------------------------------------*/
+
+    IF :start_proc <= 11 AND :end_proc >= 11
+    THEN
+
+        ret_val = CALLPROC msaca_fp_copytables1();
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Copy Tables Fails in Process 11',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ELSE
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Copy Tables - Process 11 ends OK',
+                        :h_frpr_name,
+                        0,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Process 12 - Zero Prodcom sales for the following year
+    ------------------------------------------------------------------*/
+
+    IF :start_proc <= 12 AND :end_proc >= 12
+    THEN
+
+        ret_val = CALLPROC msaca_fp_zero_sales();
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Zero sales Fails in Process 12',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ELSE
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Zero Sales - Process 12 ends OK',
+                        :h_frpr_name,
+                        0,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Process 13 - testing process
+    ------------------------------------------------------------------*/
+
+    IF :start_proc <= 13 AND :end_proc >= 13
+    THEN
+
+        ret_val = CALLPROC msaca_fp_detr_extras();
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Test process 13',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ELSE
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'PPI Sample - Test - Process 13 ends OK',
+                        :h_frpr_name,
+                        0,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     End
+    ------------------------------------------------------------------*/
+
+    RETURN 0;
+}

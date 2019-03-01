@@ -1,0 +1,2517 @@
+
+/*-s--------------------------------------------------------------------
+
+Procedure msaca_fp_create_data     
+
+1. This process selects the Prodcom Sales for all contributors in the panel
+Returned Values (V), Imputed Values (I), Returned Zeros (Z) 
+and Constructed Values (C & P) are used.
+
+It creates the population file that the PPI Sample is to be chosen from
+
+2. It is possible that contributors can change reference number on
+Prodcom if they are taken over or if there is a company split or
+merger. PPI need to forward a file of one-to-one contributor reference links,
+this is loaded in Process 2.
+If a contributor has changed reference number it's PRN will be carried
+forward from the previous period. However,if both old and new reference
+number appear in the current periods population then this would result in
+duplicate PRNs being assigned. If this happens then the link must not
+be used and the PRN will not be carried forward.
+
+3. A file is also output that contains sixdigit totals that are needed
+by PPI IS (Sally) to work out their disclosure. Manually transfer this 
+file from $SCRATCH/prodcom to $SCRATCH/ppi
+
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msaca_fp_create_data () =
+
+DECLARE ret_val           = INTEGER4 NOT NULL,
+        h_table           = VARCHAR(24) NOT NULL,
+        h_table_new       = VARCHAR(24) NOT NULL,
+        h_table1          = VARCHAR(24) NOT NULL,
+        h_table2          = VARCHAR(24) NOT NULL,
+        h_table3          = VARCHAR(24) NOT NULL,
+        h_table4          = VARCHAR(24) NOT NULL,
+        h_table5          = VARCHAR(24) NOT NULL,
+        h_table6          = VARCHAR(24) NOT NULL,
+        h_table7          = VARCHAR(24) NOT NULL,
+        h_table8          = VARCHAR(24) NOT NULL,
+        h_table9          = VARCHAR(24) NOT NULL,
+        h_table10         = VARCHAR(24) NOT NULL,
+        h_table11         = VARCHAR(24) NOT NULL,
+        h_table12         = VARCHAR(24) NOT NULL,
+        h_table13         = VARCHAR(24) NOT NULL,
+        h_table14         = VARCHAR(24) NOT NULL,
+        h_table15         = VARCHAR(24) NOT NULL,
+        h_prn_table1      = VARCHAR(24) NOT NULL,
+        h_prn_table2      = VARCHAR(24) NOT NULL,
+        h_prn_table3      = VARCHAR(24) NOT NULL,
+        h_link_table      = VARCHAR(24) NOT NULL,
+	h_file1           = VARCHAR(100) NOT NULL,
+	h_file2           = VARCHAR(100) NOT NULL,
+	h_file3           = VARCHAR(100) NOT NULL,
+        question          = INTEGER4 NOT NULL,
+        original_question = INTEGER4 NOT NULL,
+        period            = INTEGER4 NOT NULL,
+        avalue            = INTEGER4 NOT NULL,
+	h_stored_sixdig   = INTEGER4 NOT NULL,
+	h_sixdig   	  = INTEGER4 NOT NULL,
+	h_ref		  = CHAR(11) NOT NULL,
+	h_avalue   	  = INTEGER4 NOT NULL,
+	h_inflated   	  = INTEGER4 NOT NULL,
+	h_accumulator  	  = INTEGER4 NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL
+
+{
+    h_frpr_name = 'msaca_fp_create_data';
+    h_table = 'ppi_refs';
+    h_table1 = 'ppi_owner_member';
+    h_table2 = 'ppi_eightdig_all';
+    h_table3 = 'ppi_sixdig_ann';
+    h_table4 = 'ppi_sixdig_ann_sum';
+    h_table5 = 'ppi_question_qtr';
+    h_table6 = 'ppi_question_count';
+    h_table7 = 'ppi_sixdig_qtr';
+    h_table8 = 'ppi_sixdig_qtr_sum';
+    h_table9 = 'ppi_question_sum';
+    h_table10 = 'ppi_sixdig_sum';
+    h_table11 = 'ppi_population';
+    h_table12 = 'ppi_sixdig_total';
+    h_table13 = 'ppi_sixdigit_strata';
+    h_table14 = 'ppi_sixdigit_bounds';
+    h_table15 = 'ppi_total_pop';
+    h_table_new = 'ppi_zeros';
+    h_prn_table1 = 'ppi_prn1';
+    h_prn_table2 = 'ppi_prn2';
+    h_prn_table3 = 'ppi_prn3';
+    h_link_table = 'ppi_temp_links';
+
+
+    h_file1 = :g_path_name2 + '/prodcom/ppi_sixdig_total_' 
+            + VARCHAR(:g_perpha) + '.txt';
+
+    /*-s----------------------------------------------------------------
+     Create a table of owner member questions to be used as a lookup
+     as the six-digit product should be that of the owner eg. 
+     15810001 is a member of 15811100 and this should be part of the
+     6-digit 158111 rather than 158100
+    ----------------------------------------------------------------e-*/
+
+    message 'Deleting existing rows from table . . .' + :h_table1;
+    
+    DELETE FROM :h_table1
+    WHERE period = :g_period;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting existing rows from ' + :h_table1,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Inserting new rows into  . . .' + :h_table1;
+
+    INSERT INTO :h_table1
+    SELECT a.*
+    FROM  owner_question a,
+          question_library b
+    WHERE a.owner_question = b.question
+    AND   a.period = b.period
+    AND   a.period = :g_period
+    AND   b.lag = 1
+    AND   MOD(a.question,10) = 1;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting rows into ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Modify table
+    ----------------------------------------------------------------e-*/
+
+    MODIFY :h_table1
+    TO BTREE UNIQUE ON period,question,owner_question;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error modifying ' + :h_table1,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Create a table of Prodcom question data selected from cqpv using 
+     the table of live references created in Process 1
+    ----------------------------------------------------------------e-*/
+
+    message 'Deleting existing rows from table . . .' + :h_table2;
+
+    DELETE FROM :h_table2
+    WHERE     period IN (:g_period,:g_q1,:g_q2,:g_q3,:g_q4)
+    AND       alloc_type = :g_alloc_type
+    AND       sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting existing rows from ' + :h_table2,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Inserting new rows into table . . .' + :h_table2;
+
+    INSERT INTO :h_table2 
+    SELECT    period,
+              contributor_reference,
+              question,
+              question as original_question,
+              avalue,
+              acell,
+              :g_alloc_type as alloc_type,
+              :g_sample_type as sample_type
+    FROM      cqpv
+    WHERE     period IN (:g_period,:g_q1,:g_q2,:g_q3,:g_q4)
+    AND       acell IN ('I','P','V','C','Z')
+    AND          MOD(question,10) = 1
+    AND          quest_order = 1
+    AND          contributor_reference IN
+                 (SELECT contributor_reference 
+                  FROM   :h_table
+                  WHERE  period/100 = :g_period/100
+                  AND    alloc_type = :g_alloc_type
+                  AND    sample_type = :g_sample_type);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting new rows into ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Update prodcom question data from the owner member look-up table
+    ----------------------------------------------------------------e-*/
+
+    message 'Updating table from ppi_owner_member . . .' + :h_table2;
+
+    UPDATE :h_table2 a
+    FROM   :h_table1 b
+    SET    question = b.owner_question
+    WHERE  a.question = b.question
+    AND    a.period/100 * 100 = b.period
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating owner/members on ' + :h_table2,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Update prodcom question data from table ppi_map                
+     This table is a lookup for the computer products industry and 
+     has to be used for the computer indices (3002) as the Prodcom
+     classificationwas changed substantially from 1995 to 1996.
+    ----------------------------------------------------------------e-*/
+
+    message 'Updating table from ppi_map . . .' + :h_table2;
+
+    UPDATE :h_table2 a
+    FROM   ppi_map b
+    SET    question = (b.sixdig * 1000) + MOD(a.question,1000)
+    WHERE  b.period = :g_period
+    AND    a.period/100 = b.period/100
+    AND    a.question = b.question
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.sample_type = :g_sample_type
+    AND    a.alloc_type = b.alloc_type
+    AND    a.sample_type = b.sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating from ppi_map for 3002 on ' + :h_table2,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Create a table of six digit annual Prodcom data from the updated 
+     cqpv table above. Only select avalue > 0 so as not to include
+     genuine imputed zeros
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table3);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table . . .' + :h_table3;
+
+    CREATE TABLE :h_table3 
+    AS SELECT    period,
+                 contributor_reference,
+                 question/1000 as sixdig,
+                 avalue
+    FROM         :h_table2
+    WHERE        period = :g_period
+    AND          acell IN ('V','C','I','P')
+    AND          avalue > 0
+    AND          alloc_type = :g_alloc_type
+    AND          sample_type = :g_sample_type
+    WITH LOCATION = (prod2);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table3,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Insert new period of summed six digit annual data into 
+     ppi_sixdig_ann_sum
+    ----------------------------------------------------------------e-*/
+
+    message 'Deleting existing rows from table . . .' + :h_table4;
+
+    DELETE FROM :h_table4
+    WHERE     period/100 = :g_period/100
+    AND       alloc_type = :g_alloc_type
+    AND       sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting existing rows from ' + :h_table4,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    INSERT INTO :h_table4
+    SELECT    period,
+              contributor_reference,
+              sixdig,
+              sum(avalue) as avalue,
+              INT1(0) as stratum,
+              INT4(0) as prn,
+              :g_alloc_type as alloc_type,
+              :g_sample_type as sample_type
+    FROM      :h_table3
+    GROUP BY  period,
+	      contributor_reference,
+              sixdig;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting summed sixdig data in ' + :h_table4,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+
+    /*-s----------------------------------------------------------------
+     Create a table of quarterly Prodcom data using the data extracted 
+     above in ppi_eightdig_all 
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table5);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table . . .' + :h_table5;
+
+    CREATE TABLE :h_table5
+    AS SELECT    period,
+                 contributor_reference,
+                 question,
+                 original_question,
+                 avalue,
+                 acell
+    FROM         :h_table2
+    WHERE        period IN (:g_q1,:g_q2,:g_q3,:g_q4)
+    AND          alloc_type = :g_alloc_type
+    AND          sample_type = :g_sample_type
+    WITH LOCATION = (prod2);
+    
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Unable to create ' + :h_table5,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create a table to count whether the question has been asked for 
+    each of the 4 quarters. Use original_question to use in the 
+    group by as the updated question may be an owner member and 
+    its count could be > 4 and therefore would be lost in the having
+    clause
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table6);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table . . .' + :h_table6;
+
+    CREATE TABLE :h_table6
+    AS SELECT    contributor_reference,
+                 question,
+                 original_question,
+                 COUNT(period) as h_count
+    FROM         :h_table5
+    GROUP BY     contributor_reference,
+		 question,
+                 original_question
+    HAVING       count(period) = 4
+    WITH LOCATION = (prod2);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+                 h_num_row_ck = 1,
+                 h_commit     = 'Y',
+                 h_rollback   = 'N',
+                 h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_table6,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+
+    /*-s----------------------------------------------------------------
+    Create a table of sixdigit data for only those contributors 
+    who have answered the eight digit question for each of the
+    4 qtrs
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table7);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table . . .' + :h_table7;
+
+    CREATE TABLE :h_table7
+    AS SELECT    period,
+                 contributor_reference,
+                 question,
+                 question/1000 as sixdig,
+                 avalue,
+                 acell
+    FROM         :h_table2 a
+    WHERE        period IN (:g_q1,:g_q2,:g_q3,:g_q4)
+    AND          alloc_type = :g_alloc_type
+    AND          sample_type = :g_sample_type
+    AND          contributor_reference IN
+                 (SELECT contributor_reference
+                  FROM   :h_table6 b
+                  WHERE  a.question = b.question)
+    WITH LOCATION = (prod2);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Unable to create ' + :h_table7,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create a table containing a count of acells <> to 'Z' by question 
+    for each of the 4 qtrs. If there are at least 3 acells that are 
+    not 'Z' for the question then this means that any sixdigit 
+    belonging to that question qualifies to be added into the total 
+    sum of the avalue for the sixdigit.
+    eg. for reference 49900027580:
+    
+    199603 173030301       173030           70        V
+    199606 173030301       173030          105        V
+    199609 173030301       173030           56        V
+    199612 173030301       173030          168        V
+    
+    199603 173030401       173030            2        V
+    199606 173030401       173030            1        V
+    199609 173030401       173030            0        Z
+    199612 173030401       173030            0        Z
+
+    199603 173030501       173030          111        V
+    199606 173030501       173030           63        V
+    199609 173030501       173030          107        V
+    199612 173030501       173030           92        V
+
+    Total sum for sixdig 173030 for above reference = 775
+
+    199603 182214401       182214            0        Z
+    199606 182214401       182214            0        Z
+    199609 182214401       182214            0        Z
+    199612 182214401       182214          179        V
+
+    199603 182214801       182214            0        Z
+    199606 182214801       182214           60        V
+    199609 182214801       182214           29        V
+    199612 182214801       182214            0        Z
+
+    The sixdig 182214 for above reference will not be included in 
+    the total
+
+
+    If a contributor_reference only answers one question/sixdigit 
+    and if there is more than one acell = 'Z' then this will not be
+    included in the total of the sixdigit for the contributor_reference
+    eg. for reference '49900046054'
+
+    199603 182130251       182130          213        V
+    199606 182130251       182130          220        I
+    199609 182130251       182130            0        Z
+    199612 182130251       182130            0        Z
+
+    This does not qualify
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table_new);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_table_new
+    AS SELECT    contributor_reference,
+                 question,
+                 question/1000 as sixdig,
+                 COUNT(acell) AS cell_count
+    FROM         :h_table7
+    WHERE        acell <> 'Z'
+    GROUP BY     contributor_reference,
+                 question
+    WITH LOCATION = (prod2);
+
+   ret_val = CALLPROC batch_check_inq_ing(
+             h_num_row_ck = 1,
+             h_commit     = 'Y',
+             h_rollback   = 'N',
+             h_frpr_name  = :h_frpr_name);
+
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'Unable to create ' + :h_table_new,
+                   :h_frpr_name,
+                    :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   DELETE FROM :h_table_new 
+   WHERE cell_count < 3;
+
+   ret_val = CALLPROC batch_check_inq_ing(
+             h_num_row_ck = 1,
+             h_commit     = 'Y',
+             h_rollback   = 'N',
+             h_frpr_name  = :h_frpr_name);
+
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'Unable to delete from ' + :h_table_new,
+                   :h_frpr_name,
+                    :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create a table of summed sixdigit data for quarterly contributors 
+    who have qualified from the table above, with their acells 
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table8);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table . . .' + :h_table8;
+
+    CREATE TABLE :h_table8
+    AS SELECT    contributor_reference,
+                 sixdig,
+                 sum(avalue) as avalue
+    FROM         :h_table7 a
+    WHERE        contributor_reference IN 
+                 (SELECT 
+                  DISTINCT contributor_reference
+                  FROM   :h_table_new b
+                  WHERE  a.sixdig = b.sixdig)
+    GROUP BY     contributor_reference,
+                 sixdig
+    WITH LOCATION = (prod2);
+
+   ret_val = CALLPROC batch_check_inq_ing(
+             h_num_row_ck = 1,
+             h_commit     = 'Y',
+             h_rollback   = 'N',
+             h_frpr_name  = :h_frpr_name);
+
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'Unable to create ' + :h_table8,
+                   :h_frpr_name,
+                    :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   /*-s----------------------------------------------------------------
+   Some of the 8-digit products may not have been present for each of 
+   the 4 qtrs on Prodcom but their values should be added into the 
+   totals for the 6-digit product, which will be used to define into 
+   which PPI stratum the contributor falls for selection. 
+
+   eg.
+   182214 182214101  199603 V   29
+                     199606 Z    0
+                     199609 V   87
+                     199612 V   73  subtotal for question 189
+
+          182214301  199609 V   38
+                     199612 V   35  subtotal for question 73
+
+          182214701  199603 V   78 
+                     199606 V   59
+                     199609 V  381
+                     199612 V  725 subtotal for question 1243
+                                   Total for 6-digit 1505
+
+
+   Before inserting the quarterly data into the annual table go back 
+   to ppi_eightdig_all and for the sixdigs that have been 
+   successfully selected sum the question data.
+   ----------------------------------------------------------------e-*/
+
+   ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table9);
+
+   IF ret_val <> 0
+   THEN
+       RETURN ret_val;
+   ENDIF;
+
+
+   message 'Creating table . . .' + :h_table9;
+
+   CREATE TABLE :h_table9 
+   AS SELECT    contributor_reference,
+                question/1000 as sixdig,
+                sum(avalue) as avalue
+   FROM         :h_table2 a 
+   WHERE        a.period/100 = :g_period/100
+   AND          a.alloc_type = :g_alloc_type
+   AND          a.sample_type = :g_sample_type
+   AND          contributor_reference IN
+                 (SELECT contributor_reference
+                 FROM   :h_table8 b
+                 WHERE  a.question/1000 = b.sixdig)
+   GROUP BY     contributor_reference,question; 
+
+   ret_val = CALLPROC batch_check_inq_ing(
+             h_num_row_ck = 1,
+             h_commit     = 'Y',
+             h_rollback   = 'N',
+             h_frpr_name  = :h_frpr_name);
+
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'Unable to create ' + :h_table9,
+                   :h_frpr_name,
+                    :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+    /*-s----------------------------------------------------------------
+   Now sum the sixdig data 
+   The total value needs to be > 0 for all contributors
+   ----------------------------------------------------------------e-*/
+
+   ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table10);
+
+   IF ret_val <> 0
+   THEN
+       RETURN ret_val;
+   ENDIF;
+
+   message 'Creating table . . .' + :h_table10;
+
+   CREATE TABLE :h_table10 
+   AS SELECT    contributor_reference,
+                sixdig,
+                sum(avalue) as avalue
+   FROM         :h_table9  
+   GROUP BY     contributor_reference,sixdig 
+   HAVING       SUM(avalue) > 0;
+
+   ret_val = CALLPROC batch_check_inq_ing(
+             h_num_row_ck = 1,
+             h_commit     = 'Y',
+             h_rollback   = 'N',
+             h_frpr_name  = :h_frpr_name);
+
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'Unable to create ' + :h_table10,
+                   :h_frpr_name,
+                    :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Merge quarterly annualised data into ppi_sixdig_ann_sum which 
+    already contains the annual data. This is the main population table.
+    ----------------------------------------------------------------e-*/
+
+    INSERT INTO :h_table4
+    SELECT :g_q4,
+           contributor_reference,
+           sixdig,
+           avalue,
+           0,
+           0,
+           :g_alloc_type as alloc_type,
+           :g_sample_type as sample_type
+    FROM   :h_table10;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting ' + :h_table10 + ' into ' + :h_table4,
+                    :h_frpr_name,
+                     :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-----------------------------------------------------------------
+    The following code has been commented out and a new method of 
+    strata calculation introduced.
+
+    Update table setting the strata using the boundaries of sales (that
+    have been worked out previously) and are held in table 
+    ppi_bound_params, created in Process 2
+    ----------------------------------------------------------------
+
+    UPDATE :h_table4 a
+    FROM    ppi_bound_params b      
+    SET     stratum = b.stratum
+    WHERE   a.avalue > b.lower_bound
+    AND     a.avalue <= b.upper_bound
+    AND     a.sixdig/100 = b.fourdig
+    AND     a.period/100 = :g_period/100
+    AND     a.period/100 = b.period/100
+    AND     a.alloc_type = :g_alloc_type
+    AND     a.sample_type = :g_sample_type
+    AND     a.alloc_type = b.alloc_type
+    AND     a.sample_type = b.sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating ' + :h_table4 + 'from ppi_bound_params',
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+End of old strata calc.
+----------------------------------------------------------------------------*/
+
+/*---------------------------------------------------------------------------
+New strata calculation method indroduced by MJE in July 2010
+
+Set up the working table to handle strata calculation
+A
+----------------------------------------------------------------------------*/
+
+ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table13);
+
+IF ret_val <> 0
+THEN
+    RETURN ret_val;
+ENDIF;
+
+message 'Creating table . . .' + :h_table13;
+
+CREATE TABLE :h_table13(
+contributor_reference,
+sixdig,
+avalue,
+inflated,
+accumulated,
+stratum)
+AS
+SELECT contributor_reference,sixdig,avalue,INT4(0),INT4(0),INT1(0)
+FROM :h_table4
+WHERE period = :g_period
+AND alloc_type = :g_alloc_type
+AND sample_type = :g_sample_type;
+
+ret_val = CALLPROC batch_check_inq_ing( h_num_row_ck = 1,
+					h_commit     = 'Y',
+				        h_rollback   = 'N',
+				        h_frpr_name = :h_frpr_name);
+
+IF ret_val = 9 THEN
+	INSERT INTO error_log
+	VALUES ('now',
+		'Error creating '+:h_table13 +  ' from ' + :h_table4,
+		:h_frpr_name,
+		 9,
+	        :g_user_id);
+	COMMIT;
+	RETURN ret_val;
+ENDIF;
+
+/*-----------------------------------------------------------------
+The following process was run at a later stage, but has been 
+brought forward to allow the W1 inflator weights to be used here.
+-------------------------------------------------------------------*/
+
+ret_val = CALLPROC msaca_fp_create_weight();
+
+IF ret_val <> 0
+THEN
+    RETURN ret_val;
+ENDIF;
+
+message 'set inflated values';
+
+UPDATE :h_table13 a FROM :h_table15 b
+SET inflated = a.avalue * prodcom_weight
+WHERE a.contributor_reference = b.contributor_reference
+AND a.sixdig = b.sixdig
+AND b.period = :g_period
+AND b.alloc_type = :g_alloc_type
+AND b.sample_type = :g_sample_type;
+
+ret_val = CALLPROC batch_check_inq_ing( h_num_row_ck = 1,
+					h_commit     = 'Y',
+				        h_rollback   = 'N',
+				        h_frpr_name = :h_frpr_name);
+
+IF ret_val = 9 THEN
+	INSERT INTO error_log
+	VALUES ('now',
+		'Error updating '+:h_table13 +  ' from ' + :h_table15,
+		:h_frpr_name,
+		 9,
+	        :g_user_id);
+	COMMIT;
+	RETURN ret_val;
+ENDIF;
+
+
+/*-----------------------------------------------------------------------
+The working table is processed a sixdigit code at a time, each one
+in the original sales order ascending. The running total of the inflated
+sales is put on each row of the table 
+------------------------------------------------------------------------*/
+message 'Entering accumulator loop';
+h_stored_sixdig = 0;
+
+SELECT sixdig AS h_sixdig,
+contributor_reference AS h_ref,
+avalue AS h_avalue,
+inflated AS h_inflated
+FROM :h_table13
+ORDER BY h_sixdig,h_avalue,h_ref
+{
+	IF h_stored_sixdig != h_sixdig
+	THEN
+		h_accumulator = h_inflated;
+		h_stored_sixdig = h_sixdig;
+		message 'sixdig = '+char(:h_sixdig);
+	ELSE
+		h_accumulator = h_accumulator + h_inflated;
+	ENDIF;
+
+	UPDATE :h_table13
+	SET accumulated = :h_accumulator
+	WHERE sixdig = :h_sixdig
+	AND contributor_reference = :h_ref;
+
+	ret_val = CALLPROC batch_check_inq_ing( h_num_row_ck = 1,
+					h_commit     = 'Y',
+				        h_rollback   = 'N',
+				        h_frpr_name = :h_frpr_name);
+
+	IF ret_val = 9 THEN
+		INSERT INTO error_log
+		VALUES ('now',
+		'Error updating '+:h_table13 +  ' in select loop.',
+		:h_frpr_name,
+		 9,
+	        :g_user_id);
+		COMMIT;
+		RETURN ret_val;
+	ENDIF;
+
+};
+
+ret_val = CALLPROC batch_check_inq_ing( h_num_row_ck = 1,
+					h_commit     = 'Y',
+				        h_rollback   = 'N',
+				        h_frpr_name = :h_frpr_name);
+
+IF ret_val = 9 THEN
+	INSERT INTO error_log
+	VALUES ('now',
+		'Error in '+:h_table13 +  ' select loop.',
+		:h_frpr_name,
+		 9,
+	        :g_user_id);
+	COMMIT;
+	RETURN ret_val;
+ENDIF;
+
+COMMIT;
+
+/*---------------------------------------------------------------------
+The boundaries between the three strata are calculated for each six
+digit code and then applied to the working table based on the running
+total
+----------------------------------------------------------------------*/
+
+ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table14);
+
+IF ret_val <> 0
+THEN
+    RETURN ret_val;
+ENDIF;
+
+message 'Creating table . . .' + :h_table14;
+
+CREATE TABLE :h_table14 AS 
+SELECT 	sixdig,
+	FLOAT8(SUM(inflated)/3.00) AS bound1,
+	FLOAT8(SUM(inflated)*2.00/3.00) AS bound2
+FROM :h_table13
+GROUP BY sixdig;
+
+ret_val = CALLPROC batch_check_inq_ing( h_num_row_ck = 1,
+					h_commit     = 'Y',
+				        h_rollback   = 'N',
+				        h_frpr_name = :h_frpr_name);
+
+IF ret_val = 9 THEN
+	INSERT INTO error_log
+	VALUES ('now',
+		'Error creating '+:h_table14 +  ' from '+ :h_table13,
+		:h_frpr_name,
+		 9,
+	        :g_user_id);
+	COMMIT;
+	RETURN ret_val;
+ENDIF;
+
+
+UPDATE :h_table13
+SET stratum = 1;
+
+ret_val = CALLPROC batch_check_inq_ing( h_num_row_ck = 1,
+					h_commit     = 'Y',
+				        h_rollback   = 'N',
+				        h_frpr_name = :h_frpr_name);
+
+IF ret_val = 9 THEN
+	INSERT INTO error_log
+	VALUES ('now',
+		'Error updating '+:h_table13 +  ' with stratum 1 ',
+		:h_frpr_name,
+		 9,
+	        :g_user_id);
+	COMMIT;
+	RETURN ret_val;
+ENDIF;
+
+
+UPDATE :h_table13 a FROM :h_table14 b
+SET stratum = 2
+WHERE a.sixdig = b.sixdig
+AND a.accumulated > b.bound1;
+
+ret_val = CALLPROC batch_check_inq_ing( h_num_row_ck = 1,
+					h_commit     = 'Y',
+				        h_rollback   = 'N',
+				        h_frpr_name = :h_frpr_name);
+
+IF ret_val = 9 THEN
+	INSERT INTO error_log
+	VALUES ('now',
+		'Error updating '+:h_table13 +  ' with stratum 2 ',
+		:h_frpr_name,
+		 9,
+	        :g_user_id);
+	COMMIT;
+	RETURN ret_val;
+ENDIF;
+
+
+UPDATE :h_table13 a FROM :h_table14 b
+SET stratum = 3
+WHERE a.sixdig = b.sixdig
+AND a.accumulated > b.bound2;
+
+ret_val = CALLPROC batch_check_inq_ing( h_num_row_ck = 1,
+					h_commit     = 'Y',
+				        h_rollback   = 'N',
+				        h_frpr_name = :h_frpr_name);
+
+IF ret_val = 9 THEN
+	INSERT INTO error_log
+	VALUES ('now',
+		'Error updating '+:h_table13 +  ' with stratum 3 ',
+		:h_frpr_name,
+		 9,
+	        :g_user_id);
+	COMMIT;
+	RETURN ret_val;
+ENDIF;
+
+
+/*--------------------------------------------------------------------
+The strata are written back to the master table; ppi_sixdig_ann_sum
+---------------------------------------------------------------------*/
+UPDATE :h_table4 a FROM :h_table13 b
+SET stratum = b.stratum
+WHERE a.period = :g_period
+AND a.alloc_type = :g_alloc_type
+AND a.sample_type = :g_sample_type
+AND a.contributor_reference = b.contributor_reference
+AND a.sixdig = b.sixdig;
+
+ret_val = CALLPROC batch_check_inq_ing( h_num_row_ck = 1,
+					h_commit     = 'Y',
+				        h_rollback   = 'N',
+				        h_frpr_name = :h_frpr_name);
+
+IF ret_val = 9 THEN
+	INSERT INTO error_log
+	VALUES ('now',
+		'Error updating '+:h_table4 +  ' from '+ :h_table13,
+		:h_frpr_name,
+		 9,
+	        :g_user_id);
+	COMMIT;
+	RETURN ret_val;
+ENDIF;
+/*----------------------------------------------------------------
+ End of the strata calculation code introduced July 2010 by MJE
+-----------------------------------------------------------------*/
+
+    /*-s----------------------------------------------------------------
+    Delete any amri and steel data from the populations provided 
+    by PPI that is already on the Prodcom population table 
+    ppi_sixdig_ann_sum
+
+    DELETE FROM ppi_amri_pop a
+    WHERE  period = :g_period
+    AND    contributor_reference IN
+           (SELECT contributor_reference
+            FROM   :h_table4 b
+            WHERE  a.sixdig = b.sixdig
+            AND    a.period/100 = b.period/100
+	    AND    b.alloc_type = :g_alloc_type
+	    AND    b.sample_type = :g_sample_type);
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting duplicate data from ppi_amri_pop',
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+    ----------------------------------------------------------------e-*/
+
+    DELETE FROM ppi_steel_pop a
+    WHERE  period = :g_period
+    AND    contributor_reference IN
+           (SELECT contributor_reference
+            FROM   :h_table4 b
+            WHERE  a.sixdig = b.sixdig
+            AND    a.period/100 = b.period/100
+	    AND    a.stratum = b.stratum
+	    AND    b.alloc_type = :g_alloc_type
+	    AND    b.sample_type = :g_sample_type);
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting duplicate data from ppi_steel_pop',
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Insert amri and steel population data provided by PPI into
+    ProdCom population table ppi_sixdig_ann_sum.
+
+    Delete existing rows first
+
+    DELETE FROM :h_table4 a
+    WHERE a.period/100 = :g_period/100
+    AND   a.alloc_type = :g_alloc_type
+    AND   a.sample_type = :g_sample_type
+    AND   a.contributor_reference IN
+	  (SELECT contributor_reference
+	   FROM   ppi_amri_pop b
+	   WHERE  a.period/100 = b.period/100
+	   AND    a.sixdig = b.sixdig);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting amri data from ' + :h_table4,
+                    :h_frpr_name,
+                     :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    INSERT INTO :h_table4
+    SELECT      period,
+		contributor_reference,
+		sixdig,
+		avalue,
+		stratum,
+		0 as prn,
+		:g_alloc_type,
+		:g_sample_type
+    FROM        ppi_amri_pop
+    WHERE       period/100 = :g_period/100;
+		 
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting amri data into ' + :h_table4,
+                    :h_frpr_name,
+                     :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+    ----------------------------------------------------------------e-*/
+/* Aug 2010 - MJE
+    DELETE FROM :h_table4 a
+    WHERE a.period/100 = :g_period/100
+    AND   a.alloc_type = :g_alloc_type
+    AND   a.sample_type = :g_sample_type
+    AND   a.contributor_reference IN
+	  (SELECT contributor_reference
+	   FROM   ppi_steel_pop b
+	   WHERE  a.period/100 = b.period/100
+	   AND    a.stratum = b.stratum
+	   AND    a.sixdig = b.sixdig);
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting steel data from ' + :h_table4,
+                    :h_frpr_name,
+                     :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    INSERT INTO :h_table4
+    SELECT      period,
+		contributor_reference,
+		sixdig,
+		avalue,
+		stratum,
+		0 as prn,
+		:g_alloc_type,
+		:g_sample_type
+    FROM        ppi_steel_pop
+    WHERE       period/100 = :g_period/100;
+		 
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting steel data into ' + :h_table4,
+                    :h_frpr_name,
+                     :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+*/
+/*************
+THIS code was used as the PPI selection was carried out in stages. 
+In Year 3 - run period 199900 on Prodcom just carry forward the PRN 
+from Year 2 which was 199800 Prodcom data, 11000 allocation and sample 
+type of 1.
+    -s----------------------------------------------------------------
+    Carry forward from previous period the PRN number for 
+    contributor-product pairs selected again for current period
+
+    The periods are hard coded in the following code until PPI 
+    sampling is in YEAR3 when YEAR2 PRNs will be carried forward 
+    completely and new PRNs will be created for newly selected CPPs.
+    Until then carry forward the PRNs from each of the phases of the 
+    sampling for YEAR1 
+ 
+    eg 1996 (phase1) carry forward PRNs to 1997 (phase2)
+       1996 (phase1) + 1997 (phase2) carry forward to 1997 (phase3a)
+       1996 (phase1) + 1997 (phase2) + 1997 (phase3a) carry forward to 
+                                                      1998 (phase 3b)
+
+     Phase 3b 199800 prns from sample type 0 need to be carried forward
+     to Pilot Rotation 199800 sample type 1.
+    ----------------------------------------------------------------e-
+**************/
+
+    ret_val = CALLPROC msa_fp_prev_periods (
+		    inquiry      = :g_inquiry,
+                    period       = :g_period,
+                    prev_period1 = BYREF(:g_prev_period1));
+
+    IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error calling for previous periods',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+    ENDIF; 
+/*************
+ 
+    UPDATE :h_table4 a
+    FROM  :h_table4 b
+    SET   prn = b.prn
+    WHERE a.period/100 = :g_period/100
+    AND   a.alloc_type = :g_alloc_type
+    AND   a.sample_type = :g_sample_type
+    AND   b.period/100 = 1996
+    AND   a.contributor_reference = b.contributor_reference
+    AND   a.sixdig = b.sixdig;
+
+     
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating with new PRNs for 1996 on ' + :h_table4,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+    UPDATE :h_table4 a
+    FROM  :h_table4 b
+    SET   prn = b.prn
+    WHERE a.period/100 = :g_period/100
+    AND   b.period/100 = 1997
+    AND   a.alloc_type = :g_alloc_type
+    AND   a.sample_type = :g_sample_type
+    AND   a.sample_type = b.sample_type
+    AND   a.contributor_reference = b.contributor_reference
+    AND   a.sixdig = b.sixdig
+    AND   b.alloc_type = 11000;
+
+     
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating with new PRNs for 1997 alloc11000 on ' + :h_table4,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    UPDATE :h_table4 a
+    FROM  :h_table4 b
+    SET   prn = b.prn
+    WHERE a.period/100 = :g_period/100
+    AND   b.period/100 = 1997
+    AND   a.alloc_type = :g_alloc_type
+    AND   a.sample_type = :g_sample_type
+    AND   a.contributor_reference = b.contributor_reference
+    AND   a.sixdig = b.sixdig
+    AND   b.alloc_type = 12000;
+
+     
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating with new PRNs for 1997 for alloc12000 on ' + :h_table4,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+-s----------------------------------------------------------------
+    Extra hard coding for Pilot Rotation  run for 199800 data 
+    sample_tpye = 1 and alloc_type = 12000 to carry forward the prns
+    created in the prn0 sample run from phase 3b
+    ----------------------------------------------------------------e-
+
+    UPDATE :h_table4 a
+    FROM  :h_table4 b
+    SET   prn = b.prn
+    WHERE a.period/100 = :g_period/100
+    AND   b.period/100 = 1998
+    AND   a.alloc_type = :g_alloc_type
+    AND   a.sample_type = :g_sample_type
+    AND   a.contributor_reference = b.contributor_reference
+    AND   a.sixdig = b.sixdig
+    AND   b.alloc_type = 12000
+    AND   b.sample_type = 0;
+
+     
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating with new PRNs for 1998 pilot rotation on ' + :h_table4,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+**************/
+    /*-s----------------------------------------------------------------
+    Carry forward the previous PRN to the current period
+
+    The previous data will have 2 year's Prodcom data in so you 
+    cannot match on prev_ppi_period alone.
+
+    Use prev_ppi_period to match with the data that was selected 
+    from Prodcom in the first and second phases and also 
+    boundary_period (current) as this will match on the data from 
+    the third phase of the previous run as this is generally later 
+    than the period in phases 1 and 2
+    The previous alloc_types also need to be used as there is an
+    ambiguous replace if you only join on periods
+
+    UPDATE :h_table4 a
+    FROM  :h_table4 b
+    SET   prn = b.prn
+    WHERE a.period/100 = :g_period/100
+    AND   b.period/100 IN 
+          (:g_prev_ppi_period/100,:g_boundary_period/100)
+    AND   a.alloc_type = :g_alloc_type
+    AND   a.sample_type = :g_sample_type
+    AND   a.contributor_reference = b.contributor_reference
+    AND   a.sixdig = b.sixdig
+    AND   b.alloc_type IN ((:g_prev_alloc_type/10 * 10) + 1,
+                           (:g_prev_alloc_type/10 * 10) + 2,
+                           (:g_prev_alloc_type/10 * 10) + 3)
+    AND   b.sample_type = 1;
+
+    the above update failed in phase 5.1 so I have split it up 
+    into loads of updates and hard coded periods and alloc_types
+    UPDATED Jan 2004 - phase 6.1 to change hard coding
+    start with prev alloc which was 5.3 and work backwards
+
+    Added more updates April 2005 (for safety in case prn's not 
+    carrying forward
+    Added more updates September 2005 (for safety in case prn's not 
+    carrying forward
+    ----------------------------------------------------------------e-*/
+    UPDATE :h_table4 a
+    FROM  :h_table4 b
+    SET   prn = b.prn
+    WHERE a.period/100 = :g_period/100
+    AND   b.period/100 =  200400/100
+    AND   a.alloc_type = :g_alloc_type
+    AND   a.sample_type = :g_sample_type
+    AND   a.contributor_reference = b.contributor_reference
+    AND   a.sixdig = b.sixdig
+    AND   b.alloc_type = 12073
+    AND   b.sample_type = 1;
+     
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error 73 carrying forward PRNs from previous period (1999 onwards) on ' + :h_table4,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    UPDATE :h_table4 a
+    FROM  :h_table4 b
+    SET   prn = b.prn
+    WHERE a.period/100 = :g_period/100
+    AND   b.period/100 =  200300/100
+    AND   a.alloc_type = :g_alloc_type
+    AND   a.sample_type = :g_sample_type
+    AND   a.contributor_reference = b.contributor_reference
+    AND   a.sixdig = b.sixdig
+    AND   b.alloc_type = 12072
+    AND   b.sample_type = 1;
+     
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error 72 carrying forward PRNs from previous period (1999 onwards) on ' + :h_table4,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    UPDATE :h_table4 a
+    FROM  :h_table4 b
+    SET   prn = b.prn
+    WHERE a.period/100 = :g_period/100
+    AND   b.period/100 =  200300/100
+    AND   a.alloc_type = :g_alloc_type
+    AND   a.sample_type = :g_sample_type
+    AND   a.contributor_reference = b.contributor_reference
+    AND   a.sixdig = b.sixdig
+    AND   b.alloc_type = 12071
+    AND   b.sample_type = 1;
+     
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error 71 carrying forward PRNs from previous period (1999 onwards) on ' + :h_table4,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    UPDATE :h_table4 a
+    FROM  :h_table4 b
+    SET   prn = b.prn
+    WHERE a.period/100 = :g_period/100
+    AND   b.period/100 =  200300/100
+    AND   a.alloc_type = :g_alloc_type
+    AND   a.sample_type = :g_sample_type
+    AND   a.contributor_reference = b.contributor_reference
+    AND   a.sixdig = b.sixdig
+    AND   b.alloc_type = 12063
+    AND   b.sample_type = 1;
+     
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error 1 carrying forward PRNs from previous period (1999 onwards) on ' + :h_table4,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    UPDATE :h_table4 a
+    FROM  :h_table4 b
+    SET   prn = b.prn
+    WHERE a.period/100 = :g_period/100
+    AND   b.period/100 =  200200/100
+    AND   a.alloc_type = :g_alloc_type
+    AND   a.sample_type = :g_sample_type
+    AND   a.contributor_reference = b.contributor_reference
+    AND   a.sixdig = b.sixdig
+    AND   b.alloc_type = 12062
+    AND   a.prn = 0
+    AND   b.sample_type = 1;
+     
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error 2 carrying forward PRNs from previous period (1999 onwards) on ' + :h_table4,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    UPDATE :h_table4 a
+    FROM  :h_table4 b
+    SET   prn = b.prn
+    WHERE a.period/100 = :g_period/100
+    AND   b.period/100 =  200200/100
+    AND   a.alloc_type = :g_alloc_type
+    AND   a.sample_type = :g_sample_type
+    AND   a.contributor_reference = b.contributor_reference
+    AND   a.sixdig = b.sixdig
+    AND   b.alloc_type = 12061
+    AND   a.prn = 0
+    AND   b.sample_type = 1;
+     
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error 3 carrying forward PRNs from previous period (1999 onwards) on ' + :h_table4,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    UPDATE :h_table4 a
+    FROM  :h_table4 b
+    SET   prn = b.prn
+    WHERE a.period/100 = :g_period/100
+    AND   b.period/100 =  200200/100
+    AND   a.alloc_type = :g_alloc_type
+    AND   a.sample_type = :g_sample_type
+    AND   a.contributor_reference = b.contributor_reference
+    AND   a.sixdig = b.sixdig
+    AND   b.alloc_type = 12053
+    AND   a.prn = 0
+    AND   b.sample_type = 1;
+     
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error 4 carrying forward PRNs from previous period (1999 onwards) on ' + :h_table4,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    UPDATE :h_table4 a
+    FROM  :h_table4 b
+    SET   prn = b.prn
+    WHERE a.period/100 = :g_period/100
+    AND   b.period/100 =  200100/100
+    AND   a.alloc_type = :g_alloc_type
+    AND   a.sample_type = :g_sample_type
+    AND   a.contributor_reference = b.contributor_reference
+    AND   a.sixdig = b.sixdig
+    AND   b.alloc_type = 12052
+    AND   a.prn = 0
+    AND   b.sample_type = 1;
+     
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error 5 carrying forward PRNs from previous period (1999 onwards) on ' + :h_table4,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+    UPDATE :h_table4 a
+    FROM  :h_table4 b
+    SET   prn = b.prn
+    WHERE a.period/100 = :g_period/100
+    AND   b.period/100 =  200100/100
+    AND   a.alloc_type = :g_alloc_type
+    AND   a.sample_type = :g_sample_type
+    AND   a.contributor_reference = b.contributor_reference
+    AND   a.sixdig = b.sixdig
+    AND   b.alloc_type = 12051
+    AND   a.prn = 0
+    AND   b.sample_type = 1;
+     
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error 6 carrying forward PRNs from previous period (1999 onwards) on ' + :h_table4,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    UPDATE :h_table4 a
+    FROM  :h_table4 b
+    SET   prn = b.prn
+    WHERE a.period/100 = :g_period/100
+    AND   b.period/100 =  200100/100
+    AND   a.alloc_type = :g_alloc_type
+    AND   a.sample_type = :g_sample_type
+    AND   a.contributor_reference = b.contributor_reference
+    AND   a.sixdig = b.sixdig
+    AND   b.alloc_type = 12043
+    AND   a.prn = 0
+    AND   b.sample_type = 1;
+     
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error 7 carrying forward PRNs from previous period (1999 onwards) on ' + :h_table4,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+    UPDATE :h_table4 a
+    FROM  :h_table4 b
+    SET   prn = b.prn
+    WHERE a.period/100 = :g_period/100
+    AND   b.period/100 =  200000/100
+    AND   a.alloc_type = :g_alloc_type
+    AND   a.sample_type = :g_sample_type
+    AND   a.contributor_reference = b.contributor_reference
+    AND   a.sixdig = b.sixdig
+    AND   b.alloc_type = 12042
+    AND   a.prn = 0
+    AND   b.sample_type = 1;
+     
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error 8 carrying forward PRNs from previous period (1999 onwards) on ' + :h_table4,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    UPDATE :h_table4 a
+    FROM  :h_table4 b
+    SET   prn = b.prn
+    WHERE a.period/100 = :g_period/100
+    AND   b.period/100 =  200000/100
+    AND   a.alloc_type = :g_alloc_type
+    AND   a.sample_type = :g_sample_type
+    AND   a.contributor_reference = b.contributor_reference
+    AND   a.sixdig = b.sixdig
+    AND   b.alloc_type = 12041
+    AND   a.prn = 0
+    AND   b.sample_type = 1;
+     
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error 9 carrying forward PRNs from previous period (1999 onwards) on ' + :h_table4,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+    UPDATE :h_table4 a
+    FROM  :h_table4 b
+    SET   prn = b.prn
+    WHERE a.period/100 = :g_period/100
+    AND   b.period/100 =  200000/100
+    AND   a.alloc_type = :g_alloc_type
+    AND   a.sample_type = :g_sample_type
+    AND   a.contributor_reference = b.contributor_reference
+    AND   a.sixdig = b.sixdig
+    AND   b.alloc_type = 12033
+    AND   a.prn = 0
+    AND   b.sample_type = 1;
+     
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error 10 carrying forward PRNs from previous period (1999 onwards) on ' + :h_table4,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    UPDATE :h_table4 a
+    FROM  :h_table4 b
+    SET   prn = b.prn
+    WHERE a.period/100 = :g_period/100
+    AND   b.period/100 =  199900/100
+    AND   a.alloc_type = :g_alloc_type
+    AND   a.sample_type = :g_sample_type
+    AND   a.contributor_reference = b.contributor_reference
+    AND   a.sixdig = b.sixdig
+    AND   b.alloc_type = 12032
+    AND   a.prn = 0
+    AND   b.sample_type = 1;
+     
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error 11 carrying forward PRNs from previous period (1999 onwards) on ' + :h_table4,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    UPDATE :h_table4 a
+    FROM  :h_table4 b
+    SET   prn = b.prn
+    WHERE a.period/100 = :g_period/100
+    AND   b.period/100 =  199900/100
+    AND   a.alloc_type = :g_alloc_type
+    AND   a.sample_type = :g_sample_type
+    AND   a.contributor_reference = b.contributor_reference
+    AND   a.sixdig = b.sixdig
+    AND   b.alloc_type = 12031
+    AND   a.prn = 0
+    AND   b.sample_type = 1;
+     
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error 12 carrying forward PRNs from previous period (1999 onwards) on ' + :h_table4,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+   /*-s----------------------------------------------------------------
+    Added September 2000:
+    If contributor_references on Prodcom have changed number on IDBR
+    from one year to the next and PPI has found evidence of this, they
+    will be included on a file of links passed from PPI Statisticians 
+    and loaded in Process 2. If any found in the new population then
+    their PRN number from the previous period must be carried forward 
+    rather than creating a new PRN and treating it as a new Contributor
+    Product Pair. If the new_reference AND the old_reference are both
+    found in any periods population then the PRNs will not be carried 
+    over. 
+   ----------------------------------------------------------------e-*/
+
+   /*-s----------------------------------------------------------------
+   Create a temporary links table so that any incorrect links can be 
+   deleted from here rather than the original table
+   ----------------------------------------------------------------e-*/
+   
+   ret_val = CALLPROC batch_fp_drop_table(h_table = :h_link_table);
+
+   IF ret_val <> 0
+   THEN
+       RETURN ret_val;
+   ENDIF;
+
+   message 'Creating table . . .' + :h_link_table;
+
+   CREATE TABLE :h_link_table
+   AS SELECT * 
+   FROM      ppi_links
+   WHERE     period = :g_period
+   AND       alloc_type = :g_alloc_type
+   AND       sample_type = :g_sample_type;
+
+   ret_val = CALLPROC batch_check_inq_ing(
+             h_num_row_ck = 1,
+             h_commit     = 'Y',
+             h_rollback   = 'N',
+             h_frpr_name  = :h_frpr_name);
+
+   IF ret_val = 9
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'Error creating ' + :h_link_table,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   /*-s----------------------------------------------------------------
+   Find any contributors from the prodcom population table 
+   ppi_sixdig_ann_sum that have been included in the links table as
+   new_references
+   ----------------------------------------------------------------e-*/
+
+   ret_val = CALLPROC batch_fp_drop_table(h_table = :h_prn_table1);
+
+   IF ret_val <> 0
+   THEN
+       RETURN ret_val;
+   ENDIF;
+
+   message 'Creating table . . .' + :h_prn_table1;
+
+   CREATE TABLE :h_prn_table1
+   AS SELECT * 
+   FROM      :h_table4
+   WHERE     period/100  = :g_period/100
+   AND       alloc_type  = :g_alloc_type
+   AND       sample_type = :g_sample_type
+   AND       contributor_reference IN
+             (SELECT new_reference
+              FROM   ppi_links
+	      WHERE  period = :g_period
+              AND    alloc_type = :g_alloc_type
+              AND    sample_type = :g_sample_type);
+
+   ret_val = CALLPROC batch_check_inq_ing(
+             h_num_row_ck = 1,
+             h_commit     = 'Y',
+             h_rollback   = 'N',
+             h_frpr_name  = :h_frpr_name);
+
+   IF ret_val = 9
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'Error creating ' + :h_prn_table1,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   /*-s----------------------------------------------------------------
+   Find the corresponding 'old' reference that this new reference has
+   been linked to in the links table
+   ----------------------------------------------------------------e-*/
+
+   ret_val = CALLPROC batch_fp_drop_table(h_table = :h_prn_table2);
+
+   IF ret_val <> 0
+   THEN
+       RETURN ret_val;
+   ENDIF;
+
+   message 'Creating table . . .' + :h_prn_table2;
+
+   CREATE TABLE :h_prn_table2
+   AS SELECT * 
+   FROM      ppi_links
+   WHERE     period = :g_period
+   AND       alloc_type = :g_alloc_type
+   AND       sample_type = :g_sample_type
+   AND       new_reference IN
+             (SELECT contributor_reference
+              FROM   :h_prn_table1);
+
+   ret_val = CALLPROC batch_check_inq_ing(
+             h_num_row_ck = 1,
+             h_commit     = 'Y',
+             h_rollback   = 'N',
+             h_frpr_name  = :h_frpr_name);
+
+   IF ret_val = 9
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'Error creating ' + :h_prn_table2,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   /*-s----------------------------------------------------------------
+   Check that the old reference has not already been selected in the 
+   population as well as the new_reference
+   If any old references found in the population, delete them from the 
+   links table. These links cannot be used to carry forward PRNs.
+   Print contents of table ppi_prn3 to find out which contributors
+   were found under both old and new references and inform PPI users
+   ----------------------------------------------------------------e-*/
+   ret_val = CALLPROC batch_fp_drop_table(h_table = :h_prn_table3);
+
+   IF ret_val <> 0
+   THEN
+       RETURN ret_val;
+   ENDIF;
+
+   message 'Creating table . . .' + :h_prn_table3;
+
+   CREATE TABLE :h_prn_table3
+   AS SELECT * 
+   FROM      :h_prn_table2
+   WHERE     old_reference IN
+             (SELECT contributor_reference
+              FROM   :h_table4
+              WHERE  period/100  = :g_period/100
+              AND    alloc_type  = :g_alloc_type
+              AND    sample_type = :g_sample_type);
+
+   ret_val = CALLPROC batch_check_inq_ing(
+             h_num_row_ck = 1,
+             h_commit     = 'Y',
+             h_rollback   = 'N',
+             h_frpr_name  = :h_frpr_name);
+
+   IF ret_val = 9
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'Error creating ' + :h_prn_table3,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+
+   ELSEIF ret_val = 0
+   THEN
+       DELETE FROM :h_link_table
+       WHERE       period/100 = :g_period/100
+       AND         alloc_type = :g_alloc_type
+       AND         sample_type = :g_sample_type
+       AND         old_reference IN
+                   (SELECT old_reference
+                    FROM   :h_prn_table3);
+
+       ret_val = CALLPROC batch_check_inq_ing(
+                 h_num_row_ck = 1,
+                 h_commit     = 'Y',
+                 h_rollback   = 'N',
+                 h_frpr_name  = :h_frpr_name);
+    
+       IF ret_val = 9
+       THEN
+           INSERT INTO error_log
+           VALUES (    'now',
+                       'Error deleting incorrect links from table ' + :h_link_table,
+                       :h_frpr_name,
+                       :ret_val,
+                       :g_user_id);
+           COMMIT;
+           RETURN ret_val;
+       ENDIF;
+
+   ENDIF;
+
+  /*-s----------------------------------------------------------------
+  Added April 2001
+  For contributors selected under the new reference for the current
+  run period, find their previous reference on ppi_sixdig_ann_sum
+  If they were selected under the new reference for the previous period
+  under their own right do not carry forward the PRN of the old_reference from
+  the links table. Delete these contributors from h_prn_table1
+  Do not use them to update ppi_sixdig_ann_sum by carrying forward the PRNs 
+  ----------------------------------------------------------------e-*/
+
+  DELETE FROM :h_prn_table1 a
+  WHERE  contributor_reference IN 
+	 (SELECT contributor_reference
+	  FROM   ppi_sixdig_ann_sum b
+	  WHERE  period/100 = :g_prev_ppi_period/100
+	  AND    alloc_type = :g_prev_alloc_type
+	  AND    sample_type = 1
+	  AND    a.sixdig = b.sixdig);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+/* Changed 07/09/2006 by MJE
+    IF ret_val <> 0
+*/
+   IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting new refs from temp ppi_sixdig_ann_sum - ' + :h_prn_table1,
+                    :h_frpr_name,
+                     :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+  /*-s----------------------------------------------------------------
+HEREEEEEEEEEEEEEEEEEEEEEEEEEE
+   Those Contributor Product pairs that are left in the first table
+   - ppi_prn1 above need to have the PRN of the old reference they 
+   are linked to, carried forward to the new reference in the current 
+   run period
+  ----------------------------------------------------------------e-*/
+    UPDATE ppi_sixdig_ann_sum a
+    FROM   ppi_sixdig_ann_sum b,
+           :h_prn_table1 c,
+           :h_link_table d
+    SET    prn = b.prn
+    WHERE  a.sixdig = b.sixdig
+    AND    a.sixdig = c.sixdig
+    AND    a.period/100 = :g_period/100
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.sample_type = :g_sample_type
+    AND    b.period/100 = :g_prev_ppi_period/100
+    AND    b.alloc_type = :g_prev_alloc_type                
+    AND    b.sample_type = 1                
+    AND    a.alloc_type = c.alloc_type
+    AND    a.sample_type = c.sample_type
+    AND    a.contributor_reference = c.contributor_reference
+    AND    a.contributor_reference = d.new_reference
+    AND    b.contributor_reference = d.old_reference;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+/* Changed 07/09/2006 by MJE
+    IF ret_val <> 0
+*/
+   IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating ppi_sixdig_ann_sum with carried forward PRN numbers',
+                    :h_frpr_name,
+                     :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+  /*-s----------------------------------------------------------------
+    Create a table to sum the total of the sixdigits. This table is
+    needed by PPI IS (Sally) for disclosure purposes - they need the 
+    total sales for all Prodcom contributors/sixdigits not just the 
+    total of the enterprises from which PPI is sampled which is 
+    created in process 7 later on.
+  ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table12);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_table12
+    AS SELECT period,
+              sixdig,
+              sum(avalue) as total_sales
+    FROM      :h_table4
+    WHERE     period/100 = :g_period/100
+    AND       alloc_type = :g_alloc_type
+    AND       sample_type = :g_sample_type
+    GROUP BY  period,
+              sixdig
+    WITH LOCATION = (prod2);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table12,
+                    :h_frpr_name,
+                     :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Copy table to comma separated file and put in $SCRATCH/prodcom
+    ----------------------------------------------------------------e-*/
+
+    COPY TABLE :h_table12(
+                period = c0comma,
+                sixdig = c0comma,
+                total_sales = c0nl)
+    INTO  :h_file1;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error copying ' + :h_file1,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create a table to count the contributors in this main data table
+    by sixdig and stratum.
+    This count will be the Prodcom population ie. the total number of
+    contributors used to sample PPI from
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table11);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table . . .' + :h_table11;
+
+    CREATE  table :h_table11 
+    AS SELECT :g_period as period,
+              sixdig,
+              stratum,
+              COUNT(contributor_reference) as prodcom_pop
+    FROM      :h_table4       
+    WHERE     period/100 = :g_period/100
+    AND       alloc_type = :g_alloc_type
+    AND       sample_type = :g_sample_type
+    GROUP BY  sixdig,
+              stratum
+    WITH LOCATION = (prod2);
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table11,
+                    :h_frpr_name,
+                     :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update  ppi_all_params column prodcom_pop with the counts from 
+    the above table
+    ----------------------------------------------------------------e-*/
+
+    UPDATE  ppi_all_params a
+    FROM   :h_table11 b      
+    SET     prodcom_pop = b.prodcom_pop
+    WHERE   a.period = :g_period
+    AND     a.alloc_type = :g_alloc_type
+    AND     a.sample_type = :g_sample_type
+    AND     a.sixdig = b.sixdig
+    AND     a.stratum = b.stratum
+    AND     a.period = b.period;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating ppi_all_params from ' + :h_table11,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+   RETURN 0;
+}
+    

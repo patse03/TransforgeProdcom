@@ -1,0 +1,768 @@
+/*****************************************************************************
+  DESCRIPTION: Frame to make selected application live. 
+
+               Moves signed off UAT image to storage on VALIANT PRODCODEDB 
+               and image folder on VULCAN PRODLIVEDB. Stored copy has version
+               and point release numbers appended for backing out of a change
+               if necessary.
+  
+               Places a copy of the application code in PRODCODEDB on both
+               VALIANT and VULCAN, again for emergency recovery.
+  
+               Records the change in the log and tidies up.
+
+  CREATED: Dom Ford - April 2012
+
+  CHANGES: May 2012 - DF - Added header info now program functional.
+
+*****************************************************************************/
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_return          = INTEGER1 NOT NULL,
+        h_version         = INTEGER1 NOT NULL WITH DEFAULT,
+        h_point           = INTEGER1 NOT NULL WITH DEFAULT,
+        h_exit            = CHAR(1) NOT NULL,
+        h_prompt          = CHAR(1) NOT NULL,
+        h_who             = CHAR(3) NOT NULL,
+        h_fullname        = VARCHAR(40) NOT NULL,
+        h_password        = VARCHAR(10) NOT NULL,
+        h_source_db       = VARCHAR(40) NOT NULL,
+        h_dummy           = INTEGER4 NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_message         = VARCHAR(70) NOT NULL,
+        h_dir             = VARCHAR(55) NOT NULL,
+        h_copy_dir        = VARCHAR(55) NOT NULL,
+        h_copy_source     = VARCHAR(55) NOT NULL,
+        h_output1         = VARCHAR(55) NOT NULL,
+        h_output2         = VARCHAR(55) NOT NULL,
+        h_sml_dir         = VARCHAR(55) NOT NULL,
+        h_img_dir         = VARCHAR(55) NOT NULL,
+        h_src_dir         = VARCHAR(55) NOT NULL,
+        h_command         = VARCHAR(1000) NOT NULL,
+
+        lp_drop_table           = PROCEDURE RETURNING INTEGER,
+        lp_pop_table            = PROCEDURE RETURNING INTEGER,
+        lp_error_check          = PROCEDURE RETURNING INTEGER,
+        lp_full_error_check     = PROCEDURE RETURNING INTEGER
+{
+
+SELECT DBMSINFO('username') AS g_user_id;
+SELECT DBMSINFO('database') AS g_database;
+
+h_frpr_name = 'control_5_fr';
+msa_date = 'now';
+
+IF SQUEEZE(:g_authorisation)  =''
+THEN
+  MESSAGE 'WARNING: No authorissation to access live server has been entered.'
+        + X'0D'
+        + '         Therefore, this option may not be used.'
+  WITH STYLE = POPUP;
+  RETURN;
+ENDIF;
+
+h_retry_or_not      = 'RETRY';
+h_retries           = 0;
+h_retries_allowed   = 3;
+
+h_return = CALLPROC lp_pop_table;
+IF h_return = 1 THEN RETURN; ENDIF;
+IF h_return > 1 THEN EXIT; ENDIF;
+
+RESUME FIELD tf;
+
+END
+
+/*=======================================================================
+   FRSKEY4: Go 
+======================================================================*/
+
+'Go', KEY FRSKEY4 =
+BEGIN
+
+g_application = :tf.application;
+h_who         = :tf.who;
+h_fullname    = :tf.fullname;
+h_version     = :tf.version;
+h_point       = :tf.point;
+
+IF h_who != g_who
+THEN
+
+  h_message = 'This application is currently being tested by ';
+  h_prompt = '';
+
+  WHILE h_prompt != 'Y'
+    AND h_prompt != 'N'
+  do
+    h_prompt = PROMPT 'CAUTION: ' + :h_message
+             + SQUEEZE(VARCHAR(:h_fullname)) +'.' +X'0D'
+             + '         Do you have authorisation to make it live? [Y/N]'
+    WITH STYLE = POPUP;
+    h_prompt = UPPER(h_prompt);
+  ENDWHILE;
+
+  IF h_prompt != 'Y'
+  THEN
+    RESUME FIELD tf;
+  ENDIF;
+
+ENDIF;
+
+/*---------------------------------------------------------------------------
+    Copy application and image to VALIANT PRODCODEDB
+---------------------------------------------------------------------------*/
+
+/*...........................................................................
+   Select source database, destination app directory and source directory.
+...........................................................................*/
+
+h_retry_or_not      = 'RETRY';
+h_retries           = 0;
+h_retries_allowed   = 3;
+
+WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+DO
+
+  h_retries = :h_retries + 1;
+  
+  SELECT test_location AS h_source_db
+  FROM   pvc_application_testing
+  WHERE  application = :g_application;
+
+  h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF h_return <> 7
+  THEN
+    h_retry_or_not = '';
+  ENDIF;
+
+ENDWHILE;
+
+IF h_return != 0
+THEN
+  MESSAGE 'ERROR: Failed to select source database from '
+        + 'pvc_application_testing table. Error code ' +VARCHAR(:h_return) +'.'
+  WITH STYLE = POPUP;
+  RETURN;
+ENDIF;
+
+h_retry_or_not      = 'RETRY';
+h_retries           = 0;
+h_retries_allowed   = 3;
+
+WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+DO
+
+  h_retries = :h_retries + 1;
+
+  SELECT application_dir AS h_copy_dir,
+         source_dir      AS h_copy_source
+  FROM   pvc_databases
+  WHERE  database = 'prodcodedb';
+
+  h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF h_return <> 7
+  THEN
+    h_retry_or_not = '';
+  ENDIF;
+
+ENDWHILE;
+
+IF h_return != 0
+THEN
+  MESSAGE 'ERROR: Failed to select source directories from '
+        + 'pvc_databases table. Error code ' +VARCHAR(:h_return) +'.'
+  WITH STYLE = POPUP;
+  RETURN;
+ENDIF;
+
+/*..................................................................
+     Sets up variables
+...................................................................*/
+
+msa_date = 'now'; /* Needed to sync */
+
+h_sml_dir = LEFT(:h_source_db,(LENGTH(:h_source_db)-2));
+h_dir = '/home/prodcom/admin/' +h_sml_dir +'/';
+h_img_dir = '/prodcom/source/' +:h_sml_dir +'/images';
+h_src_dir = '/prodcom/source/' +:h_sml_dir +'/sources';
+
+
+h_output1 = :g_application + '_copyout.error';
+h_output2 = :g_application + '_copyin.error';
+
+
+/*..................................................................
+     Copies image to prodcode $IMAGES
+...................................................................*/
+MESSAGE 'Copying application image to code database...';
+
+h_command = 'cd ' + :h_img_dir 
+          + ' ; cp ' +:g_application +' /prodcom/source/prodcode/images/ ';
+          
+h_return = CALLPROC callsys_cp(:h_command);
+
+IF h_return != 0
+THEN
+  MESSAGE 'ERROR: Failed to copy image to prodcodedb image directory. '
+        + 'Error code ' +VARCHAR(:h_return) +'.' +X'0D'
+        + ' ' +X'0D'
+        + :h_command +X'0D'
+        + ' ' +X'0D'
+  WITH STYLE = POPUP;
+  EXIT;
+ENDIF;
+
+REDISPLAY;
+
+/*...........................................................................
+     Creates application directory on prodcodedb
+..........................................................................*/
+
+  MESSAGE 'creating new application folder...';
+
+  h_command = '$SCRIPTS/create_app_dir.script '
+            + :g_application + ' prodcode valiant';
+  h_return = CALLPROC callsys_cp(:h_command);
+
+IF h_return != 0
+THEN
+  MESSAGE 'ERROR: Failed to create application folder on '+:h_sml_dir +'. '
+        + 'Error code ' +VARCHAR(:h_return) +'. Unable to continue.'
+  WITH STYLE = POPUP;
+  RETURN;
+ENDIF;
+
+/*...........................................................................
+     Populates application directory on prodcodedb
+..........................................................................*/
+
+  MESSAGE 'Populating application folder...';
+
+  h_command = '$SCRIPTS/pop_app_dir.script '
+            + :h_src_dir  +' '
+            + :g_application  ;
+  h_return = CALLPROC callsys_cp(:h_command);
+
+IF h_return != 0
+THEN
+  MESSAGE 'ERROR: Failed to populate application folder on '+:h_sml_dir +'. '
+        + 'Error code ' +VARCHAR(:h_return) +'. Unable to continue.'
+  WITH STYLE = POPUP;
+  RETURN;
+ENDIF;
+
+/*...........................................................................
+     Copying application out from test database.
+...........................................................................*/
+
+MESSAGE 'Copying application out..';
+
+h_command = 'cd ' + :h_dir 
+          + '; copyapp out '
+          + '-d/admin/scratch/prodcom_copy_area ' 
+          + '-tcopyapp_' + :g_application 
+          + ' ' + :h_source_db 
+          + ' ' + :g_application 
+          + ' > ' + :h_dir + 'copyapp/' 
+          + :h_output1 ;
+
+h_return = CALLPROC callsys_cp(:h_command);
+
+IF h_return != 0
+THEN
+  MESSAGE 'ERROR: Failed to process copyapp out. Error code '
+        + VARCHAR(:h_return) +'.' +X'0D'
+        + 'Command was: ' +VARCHAR(:h_command)
+  WITH STYLE = POPUP;
+  EXIT;
+ENDIF;
+
+/*...........................................................................
+     Alters the copy_app file to change produat to prodcode.
+..........................................................................*/
+
+MESSAGE 'Altering copy_app...';
+
+h_command = '/home/prodcom/admin/produser/scripts/alter_copyapp.script '
+          + :g_application + ' 2>/dev/null';
+
+h_return  = CALLPROC callsys_cp(:h_command);
+
+IF h_return != 0
+THEN
+  MESSAGE 'ERROR: Failed to alter copyapp from produat to prodcode. '
+        + 'Error code ' +VARCHAR(:h_return) +'. Unable to continue.'
+  WITH STYLE = POPUP;
+  RETURN;
+ENDIF;
+
+/*...........................................................................
+     Copying application in to valiant prodcodedb.
+...........................................................................*/
+
+MESSAGE 'Copying application in..';
+
+h_command = 'cd ' + :h_copy_dir 
+          + ' ; copyapp in'
+          + ' -d/admin/scratch/prodcom_copy_area'
+          + ' -r' 
+          + ' prodcodedb' 
+          + ' copyapp_' +:g_application 
+          + ' > ' + :h_copy_dir + 'copyapp/' + :h_output2 
+          + ' 2>&1' ;
+
+h_return = CALLPROC callsys_cp(:h_command);
+
+IF h_return != 0
+THEN
+  MESSAGE 'ERROR: Failed to process copyapp in to prodcodedb. Error code '
+        + VARCHAR(:h_return) +'.' +X'0D'
+        + 'Command was: ' +VARCHAR(:h_command)
+  WITH STYLE = POPUP;
+  EXIT;
+ENDIF;
+
+/*---------------------------------------------------------------------------
+    Copy application to VULCAN PRODCODEDB
+---------------------------------------------------------------------------*/
+
+/*...........................................................................
+     Creates application directory on VULCAN PRODCODEDB if missing.
+..........................................................................*/
+
+  MESSAGE 'creating new application folder...';
+
+  h_command = '~prodlive/./cp_runasuser "ssh -q vulcan '
+            + '/home/prodcom/admin/prodlive/scripts/create_app_dir.script '
+            + :g_application + ' prodcode vulcan 2>&1"';
+  h_return = CALLPROC callsys_cp(:h_command);
+
+IF h_return != 0
+THEN
+  MESSAGE 'ERROR: Failed to create application folder on VULCAN prodcode. '
+        + 'Error code ' +VARCHAR(:h_return) +'. Unable to continue.'
+  WITH STYLE = POPUP;
+  RETURN;
+ENDIF;
+
+/*...........................................................................
+     Copying application in to vulcan prodcodedb.
+...........................................................................*/
+
+MESSAGE 'Copying application up..';
+
+h_command = 'cd ' + :h_copy_dir 
+          + ' ; copyapp in'
+          + ' -c'                                          
+          + ' -d/admin/scratch/prodcom_copy_area'
+          + ' -r' 
+          + ' vulb6::prodcodedb' 
+          + ' copyapp_' +:g_application 
+          + ' > ' + :h_copy_dir + 'copyapp/' + :h_output2 
+          + ' 2>&1' ;
+
+h_return = CALLPROC callsys_cp(:h_command);
+
+IF h_return != 0
+THEN
+  MESSAGE 'ERROR: Failed to process copyapp in to prodcodedb on VULCAN. '
+        + 'Error code ' + VARCHAR(:h_return) +'.' +X'0D'
+        + 'Command was: ' +VARCHAR(:h_command)
+  WITH STYLE = POPUP;
+  EXIT;
+ENDIF;
+
+/*...........................................................................
+     Copying application code up to vulcan prodcodedb.
+...........................................................................*/
+
+MESSAGE 'Copying application code up..';
+
+  h_command = '/home/prodcom/admin/produser/scripts/copyup_code.script '
+            + :g_application + ' 2>/dev/null';
+  h_return = CALLPROC callsys_cp(:h_command);
+
+IF h_return != 0
+THEN
+  MESSAGE 'WARNING: Failed to copy up application code for '+:g_application+'. '
+        + 'Error code ' +VARCHAR(:h_return) +'. Please complete this manually.'
+  WITH STYLE = POPUP;
+ENDIF;
+
+/*------------------------------------------------------------------
+     Moves image to VULCAN PRODLIVEDB  
+-------------------------------------------------------------------*/
+
+/*..................................................................
+     Copies image to prodlive $IMAGES
+...................................................................*/
+
+MESSAGE 'Copying application image to code database...';
+
+h_command = '$SCRIPTS/copyup_image.script '
+             + SQUEEZE(:g_authorisation) + ' '
+             + SQUEEZE(:g_application);
+
+h_return = CALLPROC callsys_cp(:h_command);
+
+IF h_return > 1 
+THEN
+  MESSAGE 'ERROR: Failed to copy image to the live image directory on '
+        + 'VULCAN. Error code ' +VARCHAR(:h_return) +'.'
+  WITH STYLE = POPUP;
+  EXIT;
+ELSEIF h_return = 1
+THEN
+  MESSAGE 'WARNING: Failed to CHMODthe image of ' +:g_application + ' ' 
+        + 'in the live image directory on VULCAN. '
+        + 'Error code ' +VARCHAR(:h_return) +'.'
+  WITH STYLE = POPUP;
+ENDIF;
+
+REDISPLAY;
+
+/*------------------------------------------------------------------
+     Insert into pvc_copy_log_apps
+-------------------------------------------------------------------*/
+
+h_retry_or_not      = 'RETRY';
+h_retries           = 0;
+h_retries_allowed   = 3;
+
+WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+DO
+
+  h_retries = :h_retries + 1;
+
+  INSERT INTO pvc_copy_log_apps
+  VALUES    ( :g_application,
+              :g_option,
+              :msa_date,
+              :g_who,
+              :g_user_id,
+              :h_version,
+              :h_point); 
+
+  h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF h_return <> 7
+  THEN
+    h_retry_or_not = '';
+  ENDIF;
+
+ENDWHILE;
+
+IF h_return > 1
+THEN
+  MESSAGE 'ERROR: Failed to insert into pvc_copy_log_apps. Error code '
+        + VARCHAR(:h_return) +'. Please construct row manually.'
+  WITH STYLE = POPUP;
+  EXIT;
+ENDIF;
+
+/*--------------------------------------------------------------------------
+     Deleting test record from pvc_application_testing
+--------------------------------------------------------------------------*/
+
+MESSAGE 'Deleting test record...';
+
+h_retry_or_not      = 'RETRY';
+h_retries           = 0;
+h_retries_allowed   = 3;
+
+WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+DO
+
+  h_retries = :h_retries + 1;
+
+  DELETE FROM   pvc_application_testing
+  WHERE         application = :g_application;
+
+  h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF h_return <> 7
+  THEN
+    h_retry_or_not = '';
+  ENDIF;
+
+ENDWHILE;
+
+IF h_return = 7
+THEN
+  EXIT;
+
+ ELSEIF h_return > 1
+ THEN
+  MESSAGE 'ERROR: Failed to delete test record from pvc_application_testing. '
+        + 'Error code ' +VARCHAR(:h_return)+'. Please delete the row manually.'
+  WITH STYLE = POPUP;
+ENDIF;
+
+/*------------------------------------------------------------------
+     Update Image Version Number in VALIANT prodcodedb
+-------------------------------------------------------------------*/
+
+MESSAGE 'Adding version number to stored image...';
+
+h_command = 'cp /prodcom/source/prodcode/images/'
+           + SQUEEZE(:g_application) +' '
+           + '/prodcom/source/prodcode/images/'
+           + SQUEEZE(:g_application) +'_'
+           + SQUEEZE(VARCHAR(:h_version)) +'.'
+           + SQUEEZE(VARCHAR(:h_point));
+
+h_return = CALLPROC callsys_cp(:h_command);
+
+IF h_return > 1 
+THEN
+  MESSAGE 'ERROR: Failed to rename image in prodcode on VALIANT. '
+        + ' Error code ' +VARCHAR(:h_return) +'. Unable to continue..'
+  WITH STYLE = POPUP;
+  EXIT;
+ELSEIF h_return = 1
+THEN
+  MESSAGE 'ERROR: Failed to rename image in prodcode on VALIANT. '
+        + ' Error code ' +VARCHAR(:h_return) +'. Please ammend manually.'
+  WITH STYLE = POPUP;
+ENDIF;
+
+REDISPLAY;
+
+/*------------------------------------------------------------------
+     Update application status.
+-------------------------------------------------------------------*/
+
+h_retry_or_not      = 'RETRY';
+h_retries           = 0;
+h_retries_allowed   = 3;
+
+WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+DO
+
+  h_retries = :h_retries + 1;
+
+  UPDATE pvc_application_status
+  SET    status  = 'L',
+         who     = :g_who,
+         date    = :msa_date
+  WHERE  application = :g_application;
+
+  h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF h_return <> 7
+  THEN
+    h_retry_or_not = '';
+  ENDIF;
+
+ENDWHILE;
+
+IF h_return > 1
+THEN
+  MESSAGE 'ERROR: Failed to update pvc_application_status. Error code '
+        + VARCHAR(:h_return) +'.'
+  WITH STYLE = POPUP;
+  EXIT;
+ENDIF;
+
+RETURN;
+
+END
+
+/*=======================================================================
+   FRSKEY6: (F12) Back - Returns to the val gate menu.                    
+======================================================================*/
+
+'Back', KEY FRSKEY12 = 
+BEGIN
+  RETURN;
+END
+
+
+/****************************************************************************/
+/*********************** LOCAL PROCEDURES ***********************************/
+/****************************************************************************/
+
+/*===========================================================================
+	      Local procedure for error checking within retry loop.
+============================================================================*/
+
+PROCEDURE lp_full_error_check
+	  (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT)=
+
+DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+
+BEGIN
+
+lp_return = CALLPROC check_inq_ing ( h_num_row_ck      = :p_num_row_ck,
+ 				    h_commit          = 'Y',
+				    h_rollback        = 'N',
+				    h_retries         = :h_retries,
+                                    h_retries_allowed = :h_retries_allowed,
+                                    h_frpr_name       = 'val_gates_1.fr');
+RETURN :lp_return;
+
+END
+
+/*===========================================================================
+	      Local procedure for basic error checking.
+============================================================================*/
+
+PROCEDURE lp_error_check
+	  (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT)=
+
+DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+
+BEGIN
+
+lp_return = CALLPROC check_inq_ing ( h_num_row_ck      = :p_num_row_ck,
+ 				    h_commit          = 'Y',
+				    h_rollback        = 'N',
+				    h_retries         = 1,
+                                    h_retries_allowed = 1,
+                                    h_frpr_name       = 'val_gates_1.fr');
+RETURN :lp_return;
+
+END
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = VARCHAR(36) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = VARCHAR(36) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+
+/*===========================================================================
+	      Local procedure for populating the table field.   
+============================================================================*/
+
+PROCEDURE lp_pop_table() = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+BEGIN
+
+lp_return = CALLPROC lp_drop_table (p_table_name = 'tt_control5');
+IF lp_return != 0 THEN RETURN 9; ENDIF;
+
+MESSAGE '                   Collecting data, please wait...';
+
+CREATE TABLE tt_control5 AS
+SELECT b.status AS status,
+       a.object_name AS application,
+       b.version AS version, 
+       b.point AS point, 
+       b.who AS who,
+       'someone                                 ' AS fullname 
+FROM   ii_objects a,
+       pvc_application_status b 
+WHERE  a.object_name = b.application
+  AND  a.object_class = 2001
+  AND  b.status = 'T'; 
+
+lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+IF lp_return = 1
+THEN
+  MESSAGE 'NOTE: There are no applications currently marked as in testing.'
+  WITH STYLE = POPUP;
+  RETURN 1;
+ELSEIF lp_return >1
+THEN
+  MESSAGE 'SYSTEM ERROR: Failed to create tt_control5. Error code '
+	+ VARCHAR(:lp_return) +'.' +X'0D'
+  WITH STYLE = POPUP;
+  RETURN 9;
+ENDIF;
+
+UPDATE tt_control5 a
+  FROM pvc_developers b
+   SET fullname = SQUEEZE(b.first_name) + ' ' +SQUEEZE(b.second_name)
+ WHERE a.who = b.initials;
+
+lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+IF lp_return > 1
+THEN
+  MESSAGE 'ERROR: Failed to update tt_control5 with developer info.'+X'0D'
+	+ '       Error code ' +VARCHAR(:lp_return) +'.' 
+	   WITH STYLE = POPUP;
+  RETURN 9;
+ENDIF;
+
+INITTABLE tf READ;
+
+tf = SELECT status,
+	    application, 
+            version, 
+            point, 
+            who,
+            fullname 
+       FROM tt_control5
+   ORDER BY application;
+
+lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+IF lp_return != 0
+THEN
+  MESSAGE 'SYSTEM ERROR: Failed to initiate table field. Error code '
+	+ VARCHAR(:lp_return) +'.' +X'0D'
+	WITH STYLE = POPUP;
+  RETURN 9;
+ENDIF;
+
+REDISPLAY;
+
+END
+

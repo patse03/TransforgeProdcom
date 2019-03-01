@@ -1,0 +1,662 @@
+/*-s--------------------------------------------------------------------
+
+Procedure msaca_fp_create_entsales
+
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msaca_fp_create_entsales     () =
+
+DECLARE ret_val               = INTEGER4 NOT NULL,
+        h_sample_table        = VARCHAR(24) NOT NULL,
+        h_ent_table           = VARCHAR(24) NOT NULL,
+        h_table1              = VARCHAR(24) NOT NULL,
+        h_table2              = VARCHAR(24) NOT NULL,
+        h_table3              = VARCHAR(24) NOT NULL,
+        h_table4              = VARCHAR(24) NOT NULL,
+        h_table5              = VARCHAR(24) NOT NULL,
+        h_table6              = VARCHAR(24) NOT NULL,
+        h_table7              = VARCHAR(24) NOT NULL,
+        contributor_reference = CHAR(11) NOT NULL,
+        acell                 = CHAR(2) NOT NULL,
+        question              = INTEGER4 NOT NULL,
+        period                = INTEGER4 NOT NULL,
+        h_frpr_name           = VARCHAR(24) NOT NULL
+
+{
+    h_frpr_name     = 'msaca_fp_create_entsales';
+    h_sample_table  = 'temp_ppi_am_st_sample';
+    h_ent_table     = 'ppi_am_st_ent';
+    h_table1        = 'ppi_ents1';
+    h_table2        = 'ppi_ents2';
+    h_table3        = 'ppi_ents3';
+    h_table4        = 'ppi_ents4';
+    h_table5        = 'ppi_ents5';
+    h_table6        = 'ppi_ents6';
+    h_table7        = 'ppi_contribs_found_ent';
+
+   /*-s----------------------------------------------------------------
+    For each of the contributors/sixdigits in the prodcom_population
+    contained in table ppi_sixdig_ann_sum, find their original eight
+    digit question. This is held in table ppi_eightdig_all created
+    in process 3.
+    This is needed as this is the Prodcom question before it has been
+    updated with owner members and the map file for the Computing
+    industry 30020. Go back to cqpv and find the sales of the sixdig
+    for all contributors that belong to the enterprise of the contributor
+
+    Amended December 1999 due to Amri/Steel data causing rows to be
+    missed from the final enterprise table as there were records in
+    the sample - ppi_contribs_found but when this joined with Prodcom
+    data, records were lost as the original population data is given to
+    Prodcom from PPI statisticians and is not held on Prodcom (with a
+    few exceptions)
+   ----------------------------------------------------------------e-*/
+
+   /*-s----------------------------------------------------------------
+   Create a temporary sample table to just contain amri and steel CPPs
+   Should be no rows for AMRI as not selected from phase 3.3
+   ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_sample_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_sample_table
+    AS SELECT a.*
+    FROM      ppi_contribs_found a
+    WHERE     period = :g_period
+    AND       alloc_type = :g_alloc_type
+    AND       contributor_reference IN
+              (SELECT contributor_reference
+               FROM   ppi_steel_pop b
+               WHERE  a.sixdig = b.sixdig
+               AND    a.period = b.period);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_sample_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+    /************* comment out and replaced amri above with steel 
+    ELSEIF ret_val = 0
+    THEN
+
+       -s----------------------------------------------------------------
+       Insert steel CPPs into temp_ppi_amri_sample
+       ----------------------------------------------------------------e-
+
+        INSERT INTO :h_sample_table
+        SELECT    a.*
+        FROM      ppi_contribs_found a
+        WHERE     period = :g_period
+        AND       alloc_type = :g_alloc_type
+        AND       contributor_reference IN
+                  (SELECT contributor_reference
+                   FROM   ppi_steel_pop b
+                   WHERE  a.sixdig = b.sixdig
+                   AND    a.period = b.period);
+
+        ret_val = CALLPROC batch_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9 
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error inserting into ' + :h_sample_table,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+    ENDIF;
+***************/
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table1);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+   /*-s----------------------------------------------------------------
+   Create enterprise sales from temp_ppi_contribs_found for non
+   amri/steel/ CPPs
+   ----------------------------------------------------------------e-*/
+
+    message 'Creating table ...' + :h_table1;
+
+    CREATE TABLE :h_table1
+    AS SELECT    period,
+                 contributor_reference,
+                 original_question,
+                 question/1000 as sixdig,
+                 acell
+    FROM         ppi_eightdig_all a
+    WHERE        a.period IN (:g_period,:g_q1,:g_q2,:g_q3,:g_q4)
+    AND          a.alloc_type = :g_alloc_type
+    AND          a.sample_type = :g_sample_type
+    AND          a.question/1000 IN
+                (SELECT sixdig
+                 FROM   ppi_sixdig_ann_sum b
+                 WHERE  period/100 = :g_period/100
+                 AND    a.contributor_reference = b.contributor_reference
+                 AND    a.alloc_type = b.alloc_type
+                 AND    a.sample_type = b.sample_type);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Find the enterprise that the contributor is in. Use the annual
+    period for annual but the 4th quarter for quarterly as enterprises
+    may have changed during the year
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table2);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table2;
+
+    CREATE TABLE :h_table2
+    AS SELECT DISTINCT
+              a.contributor_reference,
+              b.enterprise
+    FROM      :h_table1 a,
+              contributor_period b
+    WHERE     a.contributor_reference = b.contributor_reference
+    AND       b.period IN (:g_period,:g_q4);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Find all contributors that belong to the enterprise of the selected
+    contributor
+    ----------------------------------------------------------------e-*/
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table3);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table3;
+
+    CREATE TABLE :h_table3
+    AS SELECT    contributor_reference,
+		 period,
+                 enterprise
+    FROM         contributor_period
+    WHERE        period IN (:g_period,:g_q4)
+    AND          enterprise IN
+                 (SELECT enterprise
+                  FROM   :h_table2);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table3,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+
+    /*-s----------------------------------------------------------------
+    For all the contributors in ppi_ents3 go back to cqpv and select
+    their values
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table4);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table4;
+
+    CREATE TABLE :h_table4
+    AS SELECT  b.enterprise,
+	       a.period,
+               a.contributor_reference,
+               a.question,
+               a.question_industry,
+               a.contributor_industry,
+               a.acell,
+               a.avalue
+    FROM       cqpv a,
+               :h_table3 b
+    WHERE      a.period IN (:g_period,:g_q1,:g_q2,:g_q3,:g_q4)
+    AND        a.contributor_reference = b.contributor_reference
+    AND        a.quest_order = 1
+    AND        MOD(a.question,10) = 1;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating table ' + :h_table4,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+
+    /*-s----------------------------------------------------------------
+    Update the original question selected from cqpv from
+    ppi_owner_member, created in Process 3 as PPI's sixdigits
+    correspond to these rather than Prodcom's questions
+
+    Update again from PPI Map file for the computing industry 30020
+    ----------------------------------------------------------------e-*/
+
+    UPDATE :h_table4 a
+    FROM   ppi_owner_member b
+    SET    question = b.owner_question
+    WHERE  a.question = b.question
+    AND    b.period = :g_period
+    AND    a.period/100 * 100 = b.period;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating (1)' + :h_table4,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Amended Oct 2003 as the ppi mapping file was edited to take out the 
+    majority of 3002 questions. The following failed as there were no 
+    questions that equalled on both tables so the ret_val was changed 
+    to = 9 for just system error checking.
+    ----------------------------------------------------------------e-*/
+    UPDATE :h_table4 a
+    FROM   ppi_map b
+    SET    question = (b.sixdig * 1000) + MOD (a.question,1000)
+    WHERE  a.question = b.question
+    AND    b.period = :g_period
+    AND    b.alloc_type = :g_alloc_type
+    AND    a.period/100 * 100 = b.period;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating (2)' + :h_table4,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create a table to change the questions to sixdigit level
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table5);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table5;
+
+    CREATE TABLE :h_table5
+    AS SELECT  enterprise,
+               question/1000 as sixdig,
+               avalue
+    FROM       :h_table4 ;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating table ' + :h_table5,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create a table to sum the values by enterprise within sixdigit
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table6);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table6;
+
+    CREATE TABLE :h_table6
+    AS SELECT  enterprise,
+               sixdig,
+               sum(avalue) as ent_sales
+    FROM       :h_table5
+    GROUP BY   enterprise,
+	       sixdig;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating table ' + :h_table6,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Insert new periods data into ppi_contribs_found_ent
+    Copy this table to $SCRATCH/ppi
+    ----------------------------------------------------------------e-*/
+
+    DELETE FROM :h_table7
+    WHERE period/100 = :g_period/100
+    AND   alloc_type = :g_alloc_type
+    AND   sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting existing rows from table ' + :h_table7,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Amended May 2001
+    Insert annual period as now the data being used is the whole 
+    population rather than just the sample and it has been 
+    selected from ppi_sixdig_ann_sum which contains quarterly periods.
+    ----------------------------------------------------------------e-*/
+    message 'Inserting new periods data into table ...' + :h_table7;
+
+    INSERT INTO :h_table7
+    SELECT  :g_period,
+            a.contributor_reference,
+            a.sixdig,
+            a.avalue,
+            a.prn,
+            a.stratum,
+	    b.enterprise,
+	    INT4(0) as ent_sales,
+            a.alloc_type,
+            a.sample_type
+    FROM    ppi_sixdig_ann_sum a,
+	    contributor_period b
+    WHERE   a.contributor_reference = b.contributor_reference
+    AND     a.alloc_type = :g_alloc_type
+    AND     a.sample_type = :g_sample_type
+    AND     a.period/100 = b.period/100
+    AND     b.period IN (:g_period,:g_q4);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting new periods data into ' + :h_table7,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    UPDATE :h_table7 a
+    FROM   :h_table6 b
+    SET    ent_sales = b.ent_sales
+    WHERE  a.sixdig = b.sixdig
+    AND    a.enterprise = b.enterprise
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.sample_type = :g_sample_type
+    AND    a.period/100 =  :g_period/100;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating ' + :h_table7,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create a separate amri/steel enterprise table by joining table
+    temp_ppi_am_st_sample with ppi_steel_ent_sales and
+    ppi_amri_ent_sales supplied from PPI Statisticians
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_ent_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+
+    CREATE TABLE :h_ent_table
+    AS SELECT a.*,
+              '          ' AS enterprise,
+              INT4(0) AS ent_sales
+    FROM      :h_sample_table a;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_ent_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+/**********************************
+    UPDATE :h_ent_table a
+    FROM   ppi_amri_ent_sales b
+    SET    enterprise = b.enterprise,
+           ent_sales  = b.ent_sales
+    WHERE  a.period = :g_period
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.sample_type = :g_sample_type
+    AND    a.period = b.period
+    AND    a.alloc_type = b.alloc_type
+    AND    a.sample_type = b.sample_type
+    AND    a.contributor_reference = b.contributor_reference
+    AND    a.sixdig = b.sixdig;
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating amri ent_sales ' + :h_ent_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+*****************************/
+    UPDATE :h_ent_table a
+    FROM   ppi_steel_ent_sales b
+    SET    enterprise = b.enterprise,
+           ent_sales  = b.ent_sales
+    WHERE  a.period = :g_period
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.sample_type = :g_sample_type
+    AND    a.period = b.period
+    AND    a.alloc_type = b.alloc_type
+    AND    a.sample_type = b.sample_type
+    AND    a.contributor_reference = b.contributor_reference
+    AND    a.sixdig = b.sixdig;
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating steel ent_sales ' + :h_ent_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+   RETURN 0;
+}
+

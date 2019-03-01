@@ -1,0 +1,577 @@
+/*****************************************************************************
+  DESCRIPTION: Second frame in check in sequence.
+
+               Version and point release numbers are assigned automatically
+               at this stage. See the form trim for explanations of the
+               choices available. 
+
+               If there is a Version or Point change, a brief description is
+               collected for use in the change logs.
+
+  CREATED: Dom Ford - April 2012
+
+  CHANGES: May 2012 - DF - Added header info now program functional.
+
+*****************************************************************************/
+
+INITIALIZE (p_who     = CHAR(1) NOT NULL,
+            p_version = INTEGER1 NOT NULL,
+            p_point   = INTEGER1 NOT NULL)=
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_return          = INTEGER1 NOT NULL,
+        h_prompt          = CHAR(1) NOT NULL,
+        h_who             = CHAR(3) NOT NULL,
+        h_fullname        = VARCHAR(40) NOT NULL,
+        h_version         = INTEGER1 NOT NULL,
+        h_point           = INTEGER1 NOT NULL,
+        h_status          = CHAR(1) NOT NULL,
+        h_dummy           = INTEGER4 NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_message         = VARCHAR(70) NOT NULL,
+        h_command         = VARCHAR(1000) NOT NULL,
+
+        lp_check_in             = PROCEDURE RETURNING INTEGER,
+        lp_copy_application     = PROCEDURE RETURNING INTEGER,
+        lp_drop_table           = PROCEDURE RETURNING INTEGER,
+        lp_error_check          = PROCEDURE RETURNING INTEGER,
+        lp_full_error_check     = PROCEDURE RETURNING INTEGER
+{
+
+
+h_frpr_name = 'control_3a_fr';
+s_trim = 'Please enter brief note of change made:';
+msa_date = 'now';
+
+h_retry_or_not      = 'RETRY';
+h_retries           = 0;
+h_retries_allowed   = 3;
+
+SET_FORMS FIELD '' (INVISIBLE(s_trim) = 1);
+SET_FORMS FIELD '' (INVISIBLE(s_text) = 1);
+REDISPLAY;
+
+RESUME FIELD s_choice;
+
+END
+
+/*=======================================================================
+   FIELD ACTIVATION s_choice: Choice of update type: V,P,A or D. 
+======================================================================*/
+
+FIELD s_choice =
+{
+  s_choice = UPPER(:s_choice);
+
+  IF  s_choice != 'V'
+  AND s_choice != 'P'
+  AND s_choice != 'A'
+  AND s_choice != 'N'
+  THEN
+    s_choice = '';
+    RESUME FIELD s_choice;
+  ENDIF;
+
+  IF s_choice = 'V'
+  OR s_choice = 'P'
+  THEN
+ 
+    SET_FORMS FIELD '' (INVISIBLE(s_trim) = 0);
+    SET_FORMS FIELD '' (INVISIBLE(s_text) = 0);
+    REDISPLAY;
+
+    RESUME FIELD s_text;
+
+  ENDIF; 
+
+  h_return = CALLPROC lp_check_in;
+
+  RETURN :h_return;
+
+} 
+
+/*=======================================================================
+   FIELD ACTIVATION s_text: Description of change made.
+======================================================================*/
+
+FIELD s_text =
+
+{
+  h_return = CALLPROC lp_check_in;
+  RETURN :h_return;
+} 
+
+
+/*=======================================================================
+   FRSKEY6: (F12) Back - Returns to the val gate menu.                    
+======================================================================*/
+
+'ABORT', KEY FRSKEY12 = 
+BEGIN
+  RETURN 1;
+END
+
+
+/****************************************************************************/
+/*********************** LOCAL PROCEDURES ***********************************/
+/****************************************************************************/
+
+/*===========================================================================
+	   Local procedure to copy application back to produser.
+============================================================================*/
+
+PROCEDURE lp_copy_application ()=
+
+DECLARE lp_return          = INTEGER4 NOT NULL WITH DEFAULT,
+        lp_dir             = VARCHAR(55) NOT NULL,
+        lp_copy_dir        = VARCHAR(55) NOT NULL,
+        lp_copy_source     = VARCHAR(55) NOT NULL,
+        lp_output1         = VARCHAR(55) NOT NULL,
+        lp_output2         = VARCHAR(55) NOT NULL,
+
+{
+lp_dir = '/home/prodcom/admin/proddev/';
+lp_copy_dir = '/home/prodcom/admin/produser/';
+lp_copy_source = '/prodcom/source/produser/sources/';
+lp_output1 = :g_application + '_copyout.error';
+lp_output2 = :g_application + '_copyin.error';
+
+/*...........................................................................
+     Creates application directory on produserdb
+..........................................................................*/
+
+  MESSAGE 'Checking application folder...';
+
+   h_command = '$SCRIPTS/create_app_dir.script '
+            + :g_application + ' produser valiant';
+  h_return = CALLPROC callsys_cp(:h_command);
+
+IF h_return != 0
+THEN
+  MESSAGE 'ERROR: Failed to ensure application folder on produserdb. '
+        + 'Error code ' +VARCHAR(:h_return) +'. Unable to continue.'
+  WITH STYLE = POPUP;
+  RETURN 1;
+ENDIF;
+
+
+/*...........................................................................
+     Copying application out.
+...........................................................................*/
+
+MESSAGE 'Copying application out..';
+
+h_command = 'cd ' + :lp_dir 
+          + '; copyapp out '
+          + '-d/admin/scratch/prodcom_copy_area ' 
+          + '-tcopyapp_' + :g_application 
+          + ' proddevdb ' + :g_application 
+          + ' > ' + :lp_dir + 'copyapp/' 
+          + :lp_output1 ;
+
+
+  h_return = CALLPROC callsys_cp(:h_command);
+
+IF h_return != 0
+THEN
+  MESSAGE 'ERROR: Failed to process copyapp out. Error code '
+        + VARCHAR(:h_return) +'.' +X'0D'
+        + 'Command was: ' +VARCHAR(:h_command)
+  WITH STYLE = POPUP;
+  EXIT;
+ENDIF;
+
+/*...........................................................................
+     Copying application in.
+...........................................................................*/
+
+MESSAGE 'Copying application in..';
+
+h_command = 'cd ' + :lp_copy_dir 
+          + ' ; copyapp in'
+/*        + ' -c '       */
+          + ' -d/admin/scratch/prodcom_copy_area'
+          + ' -r' 
+          + ' -s' +:lp_copy_source + :g_application    
+          + ' produserdb' 
+          + ' copyapp_' +:g_application 
+          + ' > ' + :lp_copy_dir + 'copyapp/' + :lp_output2 
+          + ' 2>&1' ;
+
+  h_return = CALLPROC callsys_cp(:h_command);
+
+IF h_return != 0
+THEN
+  MESSAGE 'ERROR: Failed to process copyapp in. Error code '
+        + VARCHAR(:h_return) +'.' +X'0D'
+        + 'Command was: ' +VARCHAR(:h_command)
+  WITH STYLE = POPUP;
+  EXIT;
+ENDIF;
+
+  /*................................................................
+        Insert into pvc_copy_log_apps
+  ................................................................*/
+    
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_allowed   = 3;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO pvc_copy_log_apps
+    VALUES    ( :g_application,
+                :g_option,
+                :msa_date,
+                :g_who,
+                :g_user_id,
+                :h_version,
+                :h_point);
+
+    lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF lp_return <> 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF lp_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to insert into pvc_copy_log_apps. Error code '
+          + VARCHAR(:lp_return) +'. Please construct row manually.'
+    WITH STYLE = POPUP;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/*===========================================================================
+	      Local procedure to complete application check in.
+============================================================================*/
+
+PROCEDURE lp_check_in ()=
+
+DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+{
+
+  msa_date = 'now';
+  h_version = p_version;
+  h_point = p_point;
+
+  /*-------------------------------------------------------------------
+          First, deal with Version or Point updates.
+  -------------------------------------------------------------------*/
+
+  IF s_choice = 'V' 
+  OR s_choice = 'P'
+  THEN
+
+    /*................................................................
+          Alter Version or Point number as apropriate.
+    ................................................................*/
+
+    IF s_choice = 'V'
+    THEN
+      h_version = p_version +1;
+      h_point = 0;
+    ELSE
+      h_point = p_point +1;
+    ENDIF;
+
+    MESSAGE '' + UPPER(:g_application) +X'0D'
+          + 'Recording application release number change...' +X'0D' 
+          +  X'0D'
+          + 'Old release: ' +VARCHAR(:p_version) +'.' +VARCHAR(:p_point) +X'0D' 
+          + 'New release: ' +VARCHAR(:h_version) +'.' +VARCHAR(:h_point) +X'0D' 
+          +  X'0D'
+    WITH STYLE = POPUP;
+
+    /*................................................................
+          Move application to produser.
+    ................................................................*/
+    
+    lp_return = CALLPROC lp_copy_application;
+
+    IF lp_return != 0
+    THEN
+      MESSAGE 'WARNING: Checking in of application was unsuccessful.'+X'0D'
+            + '         Returning to menu without updating status or history.'
+      WITH STYLE = POPUP;
+      RETURN 1;
+    ENDIF; 
+
+    /*................................................................
+          Update version_status.
+    ................................................................*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+    h_retries_allowed   = 3;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      UPDATE pvc_application_status
+      SET    version = :h_version,
+             point   = :h_point,
+             status  = 'W',
+             who     = :g_who,
+             date    = :msa_date
+      WHERE  application = :g_application;
+
+      lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF lp_return <> 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF lp_return > 1
+    THEN
+      MESSAGE 'ERROR: Failed to update pvc_application_status. Error code '
+            + VARCHAR(:lp_return) +'.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+    /*................................................................
+          Insert new update into pvc_application_history
+    ................................................................*/
+    
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+    h_retries_allowed   = 3;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      INSERT INTO pvc_application_history
+      VALUES    ( :g_application,
+                  :h_version,
+                  :h_point,
+                  :g_who,
+                  :s_text,
+                  :msa_date);
+
+      lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF lp_return <> 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF lp_return > 1
+    THEN
+      MESSAGE 'ERROR: Failed to update pvc_application_history. Error code '
+            + VARCHAR(:lp_return) +'.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+
+  ENDIF;  /* V or P */
+
+  /*-------------------------------------------------------------------
+          Now deal with Admin or Nill updates.
+  -------------------------------------------------------------------*/
+
+  h_status = 'L';
+
+  IF s_choice = 'A' 
+  THEN
+
+    h_status = 'W';
+
+    /*................................................................
+          Admin update: Move application to produser.
+    ................................................................*/
+
+    lp_return = CALLPROC lp_copy_application;
+
+    IF lp_return != 0
+    THEN
+      MESSAGE 'WARNING: Checking in of application was unsuccessful.'+X'0D'
+            + '         Returning to menu without updating status.'
+      WITH STYLE = POPUP;
+      RETURN 1;
+    ENDIF; 
+
+  /*.....................................................................
+       Nil update: Prompt for confirmation of return to live status
+  .....................................................................*/
+
+  ELSE
+
+    h_prompt = '';
+
+    WHILE h_prompt != 'Y'
+      AND h_prompt != 'N'
+    DO
+      h_prompt =
+      PROMPT 'WARNING: THIS WILL RETURN THE CODE ON PRODUSER TO LIVE STATUS.'
+           + X'0D'
+           + '         All changes made on proddev will be lost.' + X'0D'
+           + '         Do you want to continue? [Y/N]'
+      WITH STYLE = POPUP;
+      h_prompt = UPPER(h_prompt);
+    ENDWHILE;
+
+    IF h_prompt = 'N'
+    THEN
+      RETURN 0;
+    ENDIF;
+
+  ENDIF;
+
+  /*................................................................
+        Update version_status.
+  ................................................................*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_allowed   = 3;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE pvc_application_status
+    SET    status  = :h_status,
+           who     = :g_who,
+           date    = 'now'
+    WHERE  application = :g_application;
+
+    lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF lp_return <> 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to update pvc_application_status. Error code '
+          + VARCHAR(:lp_return) +'.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+RETURN 0;
+
+}
+
+/*===========================================================================
+	      Local procedure for error checking within retry loop.
+============================================================================*/
+
+PROCEDURE lp_full_error_check
+	  (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT)=
+
+DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+
+BEGIN
+
+lp_return = CALLPROC check_inq_ing ( h_num_row_ck      = :p_num_row_ck,
+ 				    h_commit          = 'Y',
+				    h_rollback        = 'N',
+				    h_retries         = :h_retries,
+                                    h_retries_allowed = :h_retries_allowed,
+                                    h_frpr_name       = 'val_gates_1.fr');
+RETURN :lp_return;
+
+END
+
+/*===========================================================================
+	      Local procedure for basic error checking.
+============================================================================*/
+
+PROCEDURE lp_error_check
+	  (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT)=
+
+DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+
+BEGIN
+
+lp_return = CALLPROC check_inq_ing ( h_num_row_ck      = :p_num_row_ck,
+ 				    h_commit          = 'Y',
+				    h_rollback        = 'N',
+				    h_retries         = 1,
+                                    h_retries_allowed = 1,
+                                    h_frpr_name       = 'val_gates_1.fr');
+RETURN :lp_return;
+
+END
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = VARCHAR(36) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = VARCHAR(36) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+

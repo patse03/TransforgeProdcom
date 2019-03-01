@@ -1,0 +1,144 @@
+/*****************************************************************************
+  DESCRIPTION: Called either manually as needed, or as part of the overnight
+               hosekeeping tasks.
+
+               Crates a table on VALIANT PRODUSERDB containing the names of 
+               all tables on VULCAN PRODLIVEDB.
+
+               Can only be run on VULCAN PRODLIVEDB.
+
+$IMAGES/prodcom_control export_tablenames -numeric_overflow=ignore -dprodlivedb
+
+  CREATED: Dom Ford - April 2012
+
+  CHANGES: May 2012 - DF - Added header info now program functional.
+
+*****************************************************************************/
+
+PROCEDURE export_tablenames () =
+
+DECLARE
+        h_return      = INTEGER1      NOT NULL,
+        h_command     = VARCHAR(1000) NOT NULL WITH DEFAULT,
+
+        lp_drop_table           = PROCEDURE RETURNING INTEGER,
+        lp_error_check          = PROCEDURE RETURNING INTEGER
+
+BEGIN
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  IF g_database != 'prodlivedb' THEN EXIT; ENDIF;  
+
+  h_return = CALLPROC lp_drop_table (p_table_name = 'pvc_export_tablenames');
+  IF h_return != 0 THEN EXIT; ENDIF;
+
+  CREATE TABLE pvc_export_tablenames
+  AS
+    SELECT DISTINCT table_name AS tablename
+    FROM   iitables
+    WHERE  table_owner = 'prodlive'
+      AND  table_type  = 'T';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+  IF h_return != 0 THEN EXIT; ENDIF;
+
+  MODIFY pvc_export_tablenames TO BTREE ON tablename;
+  commit;
+
+  DELETE FROM pvc_export_tablenames   
+    WHERE tablename = 'passwords'
+       OR tablename = 'passwords_new'
+       OR tablename = 'passwords_old'
+       OR LEFT(tablename,2) IN ('tt','df','js')
+       OR LEFT(tablename,3) IN ('sim','pvc')
+       OR LEFT(tablename,4) IN ('temp');
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+  IF h_return != 0 THEN EXIT; ENDIF;
+
+  h_command = '$COPYTABLES/daily_copy_tables  2>/dev/null';
+
+  h_return = CALLPROC callsys_cp(:h_command);
+
+  EXIT;
+  
+END
+
+
+/****************************************************************************/
+/*********************** LOCAL PROCEDURES ***********************************/
+/****************************************************************************/
+
+/*===========================================================================
+	      Local procedure for basic error checking.
+============================================================================*/
+
+PROCEDURE lp_error_check
+	  (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT)=
+
+DECLARE h_return = INTEGER4 NOT NULL WITH DEFAULT
+
+
+BEGIN
+
+h_return = CALLPROC check_inq_ing ( h_num_row_ck      = :p_num_row_ck,
+ 				    h_commit          = 'Y',
+				    h_rollback        = 'N',
+				    h_retries         = 1,
+                                    h_retries_allowed = 1,
+                                    h_frpr_name       = 'val_gates_1.fr');
+RETURN :h_return;
+
+END
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = VARCHAR(36) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = VARCHAR(36) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    SLEEP 5;
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END

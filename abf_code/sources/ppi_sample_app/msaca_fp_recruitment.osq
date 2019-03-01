@@ -1,0 +1,955 @@
+/*-s--------------------------------------------------------------------
+
+Procedure msaca_fp_recruitment     
+
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msaca_fp_recruitment () =
+
+DECLARE ret_val               = INTEGER4 NOT NULL,
+        h_table1              = VARCHAR(24) NOT NULL,
+        h_table2              = VARCHAR(24) NOT NULL,
+        h_table3              = VARCHAR(24) NOT NULL,
+        h_table4              = VARCHAR(24) NOT NULL,
+        h_table5              = VARCHAR(24) NOT NULL,
+        h_check_table1        = VARCHAR(24) NOT NULL,
+        ppi_file1             = VARCHAR(100) NOT NULL,
+        contributor_reference = CHAR(11) NOT NULL,
+        acell                 = CHAR(2) NOT NULL,
+        question              = INTEGER4 NOT NULL,
+        period                = INTEGER4 NOT NULL,
+        h_frpr_name           = VARCHAR(24) NOT NULL
+
+{
+    h_frpr_name = 'msaca_fp_recruitment';
+    h_table1 = 'ppi_recruitment';
+    h_table2 = 'ppi_recruitment_copy';
+    h_table3 = 'ppi_weight_distinct';
+    h_table4 = 'ppi_distinct_addresses';
+    h_table5 = 'ppi_distinct_contacts';
+    h_check_table1 = 'ppi_excl_errors';
+
+    ppi_file1 = :g_path_name2 + '/prodcom/ppi_recruitment_'
+              + VARCHAR(:g_perpha) + '.txt';
+
+   /*-s----------------------------------------------------------------
+   Delete existing rows from ppi_recruitment table
+   ----------------------------------------------------------------e-*/
+
+   DELETE FROM :h_table1
+   WHERE period = :g_period
+   AND   alloc_type = :g_alloc_type
+   AND   sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting existing rows from ' + :h_table1,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+
+    /*-s----------------------------------------------------------------
+    Insert all successfully sampled contributors into table
+    ----------------------------------------------------------------e-*/
+
+    message 'Inserting new rows into ...' + :h_table1;
+
+    INSERT INTO :h_table1
+    SELECT DISTINCT contributor_reference,
+                    period,
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    float8(0) as prodcom_weight,
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+                    '',
+		    alloc_type,
+		    sample_type
+    FROM ppi_contribs_found
+    WHERE period = :g_period
+    AND   alloc_type = :g_alloc_type
+    AND   sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting new period into ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update table with entref
+    ----------------------------------------------------------------e-*/
+
+    message 'Updating table with entref...' + :h_table1;
+
+    UPDATE :h_table1 a
+    FROM   ppi_refs b
+    SET    entref = b.entref
+    WHERE  a.period/100 = :g_period/100
+    AND    a.period/100 = b.period/100
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.alloc_type = b.alloc_type
+    AND    a.sample_type = :g_sample_type
+    AND    a.contributor_reference = b.contributor_reference;
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating entref' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update table with enterprise and region
+    ----------------------------------------------------------------e-*/
+
+    message 'Updating table with enterprise,region ...' + :h_table1;
+
+    UPDATE :h_table1 a
+    FROM   contributor_period b
+    SET    enterprise = b.enterprise,
+	   region = b.region
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.period = :g_period
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.sample_type = :g_sample_type
+    AND    b.period in (:g_period,:g_q4);
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating enterprise & region' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update table with enterprise for amri contributors that have no 
+    information held on Prodcom
+    Create a distinct table first as there were duplicates in the amri
+    file from PPI
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table4);
+
+    IF ret_val <> 0
+    THEN
+	 RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_table4
+    AS SELECT DISTINCT *
+    FROM      ppi_amri_addresses
+    WHERE     period = :g_period
+    AND       alloc_type = :g_alloc_type
+    AND       sample_type = :g_sample_type;
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating distinct table ' + :h_table4,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Updating table with enterprise for amri ...' + :h_table1;
+
+    UPDATE :h_table1 a
+    FROM   :h_table4 b
+    SET    enterprise = b.enterprise
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.enterprise = ''
+    AND    a.period = :g_period
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.sample_type = :g_sample_type
+    AND    a.period = b.period
+    AND    a.alloc_type = b.alloc_type
+    AND    a.sample_type = b.sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating enterprise for amri contributors ' + :h_table1,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+    ----------------------------------------------------------------e-*/
+
+    /*-s----------------------------------------------------------------
+    Update table with enterprise for steel contributors that have no 
+    information held on Prodcom
+    ----------------------------------------------------------------e-*/
+
+    message 'Updating table with enterprise for steel ...' + :h_table1;
+
+    UPDATE :h_table1 a
+    FROM   ppi_steel_addresses b
+    SET    enterprise = b.enterprise
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.enterprise = ''
+    AND    a.period = :g_period
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.sample_type = :g_sample_type
+    AND    a.period = b.period
+    AND    a.alloc_type = b.alloc_type
+    AND    a.sample_type = b.sample_type;
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating enterprise for steel contributors ' + :h_table1,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update table with contributor details
+    ----------------------------------------------------------------e-*/
+
+    message 'Updating table with contributor data ...' + :h_table1;
+
+    UPDATE :h_table1 a
+    FROM   contributor b
+    SET    contact_name = b.phone_contact,
+	   add_name1 = b.add_name1,
+	   add_name2 = b.add_name2,
+	   add_name3 = b.add_name3,
+	   add_line1 = b.add_line1,
+	   add_line2 = b.add_line2,
+	   add_line3 = b.add_line3,
+	   add_line4 = b.add_line4,
+	   add_line5 = b.add_line5,
+	   add_postcode = b.add_postcode,
+	   phone = CONCAT(CONCAT(phone_area_code,'     '),b.phone),
+	   fax = CONCAT(CONCAT(fax_area_code,'     '),b.fax),
+	   email = b.email
+    WHERE  a.period = :g_period
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.sample_type = :g_sample_type
+    AND    a.contributor_reference = b.contributor_reference;
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating with contributor data ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update table with contributor address and contact details for amri
+    contributors that have no information on Prodcom
+    Use distinct table created above
+    ----------------------------------------------------------------e-*/
+
+    message 'Updating table with amri contributor data ...' + :h_table1;
+
+    UPDATE :h_table1 a
+    FROM   :h_table4 b
+    SET    add_line1 = b.add_line1,
+	   add_line2 = b.add_line2,
+	   add_line3 = b.add_line3,
+	   add_line4 = b.add_line4,
+	   add_line5 = b.add_line5,
+	   add_postcode = b.add_postcode
+    WHERE  a.add_line1 = ''
+    AND    a.period = :g_period
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.sample_type = :g_sample_type
+    AND    a.contributor_reference = b.contributor_reference
+    AND    a.period = b.period
+    AND    a.alloc_type = b.alloc_type 
+    AND    a.sample_type = b.sample_type;
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating with amri contributor data ' + :h_table1,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update table with contributor contact details for amri
+    contributors that have no information on Prodcom
+
+    Create distinct table first as file contains a row for each sixdigit
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table5);
+
+    IF ret_val <> 0
+    THEN
+	 RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_table5
+    AS SELECT 
+    DISTINCT  period,
+              contributor_reference,
+              add_name1,
+              phone,
+              phone_contact,
+              alloc_type,
+              sample_type
+    FROM      ppi_amri_contacts
+    WHERE     period = :g_period
+    AND       alloc_type = :g_alloc_type
+    AND       sample_type = :g_sample_type;
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating distinct table ' + :h_table5,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    UPDATE :h_table1 a
+    FROM   :h_table5 b
+    SET    add_name1 = b.add_name1
+    WHERE  a.add_name1 = ''
+    AND    a.period = :g_period
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.sample_type = :g_sample_type
+    AND    a.contributor_reference = b.contributor_reference
+    AND    a.period = b.period
+    AND    a.alloc_type = b.alloc_type 
+    AND    a.sample_type = b.sample_type;
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating with amri contact data ' + :h_table1,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    UPDATE :h_table1 a
+    FROM   :h_table5 b
+    SET    phone = b.phone
+    WHERE  a.phone = ''
+    AND    a.period = :g_period
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.sample_type = :g_sample_type
+    AND    a.contributor_reference = b.contributor_reference
+    AND    a.period = b.period
+    AND    a.alloc_type = b.alloc_type 
+    AND    a.sample_type = b.sample_type;
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating with amri phone no ' + :h_table1,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    UPDATE :h_table1 a
+    FROM   :h_table5 b
+    SET    contact_name = b.phone_contact
+    WHERE  a.contact_name = ''
+    AND    a.period = :g_period
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.sample_type = :g_sample_type
+    AND    a.contributor_reference = b.contributor_reference
+    AND    a.period = b.period
+    AND    a.alloc_type = b.alloc_type 
+    AND    a.sample_type = b.sample_type;
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating with amri phone contact ' + :h_table1,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+    ----------------------------------------------------------------e-*/
+
+    /*-s----------------------------------------------------------------
+    Update table with contributor address and contact details for steel
+    contributors that have no information on Prodcom
+    ----------------------------------------------------------------e-*/
+
+    message 'Updating table with steel contributor data ...' + :h_table1;
+
+    UPDATE :h_table1 a
+    FROM   ppi_steel_addresses b
+    SET    add_name1 = b.add_name1,
+           add_line1 = b.add_line1,
+	   add_line2 = b.add_line2,
+	   add_line3 = b.add_line3,
+	   add_line4 = b.add_line4,
+	   add_line5 = b.add_line5,
+	   add_postcode = b.add_postcode
+    WHERE  a.add_name1 = ''
+    AND    a.period = :g_period
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.sample_type = :g_sample_type
+    AND    a.contributor_reference = b.contributor_reference
+    AND    a.period = b.period
+    AND    a.alloc_type = b.alloc_type 
+    AND    a.sample_type = b.sample_type;
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating with steel contributor data ' + :h_table1,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update table with CBU marker - 'V' = OH despatch, 'Z' = desk
+    despatch
+    ----------------------------------------------------------------e-*/
+
+    message 'Updating table with cbu marker ...' + :h_table1;
+
+    UPDATE :h_table1 a
+    FROM   contributor_period b
+    SET    cbu_marker = b.output_category
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.period = :g_period
+    AND    b.period IN (:g_period,:g_q4)
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.sample_type = :g_sample_type
+    AND    b.output_category IN ('V','Z');
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'System error updating with cbu ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update table with Welsh postcode marker
+    These are contributors that IDBR have marked as having a Welsh
+    postcode and therefore they need the Welsh sentence on them
+    ----------------------------------------------------------------e-*/
+
+    message 'Updating table with welsh marker ...' + :h_table1;
+
+    UPDATE :h_table1 a
+    FROM   welsh_contributor b
+    SET    welsh_form = 'Y'
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.period = :g_period
+    AND    b.period IN (:g_period,:g_q4)
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.sample_type = :g_sample_type;
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'System Error updating with welsh form marker ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update table with sel_marker from IDBR - 'X' means reporting 
+    unit death
+    ----------------------------------------------------------------e-*/
+
+    message 'Updating table with sel marker ...' + :h_table1;
+
+    UPDATE :h_table1 a
+    FROM   ppi_prodcom_live b
+    SET    sel_marker = b.sel_marker
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.period = b.period
+    AND    a.period = :g_period
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.alloc_type = b.alloc_type
+    AND    a.sample_type = :g_sample_type;
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'System Error updating with IDBR sel_marker ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update table with PPI/PRODCOM weight
+    Create a distinct table first of all because of ambiguous replace
+    with new version of Ingres
+    ----------------------------------------------------------------e-*/
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table3);
+
+    IF ret_val <> 0
+    THEN
+	 RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_table3
+    AS SELECT DISTINCT
+              contributor_reference,
+              period,
+              prodcom_weight
+    FROM      ppi_prodcom_weight
+    WHERE     period/100 = :g_period/100
+    AND       alloc_type = :g_alloc_type
+    AND       sample_type = :g_sample_type;
+ 
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating distinct table Weight1 ' + :h_table3,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Updating table with Weight1 ...' + :h_table1;
+
+    UPDATE :h_table1 a
+    FROM   :h_table3 b
+    SET    prodcom_weight = b.prodcom_weight
+    WHERE  a.period = :g_period
+    AND    a.period/100 = b.period/100
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.sample_type = :g_sample_type
+    AND    a.contributor_reference = b.contributor_reference;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating with Weight1 ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update amri and steel contributors prodcom weight to = 1 as
+    they are a census of contributors
+
+    UPDATE :h_table1 a
+    SET    prodcom_weight = 1               
+    WHERE  a.period = :g_period
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.sample_type = :g_sample_type
+    AND    a.contributor_reference in
+	   (SELECT distinct contributor_reference
+	    FROM   ppi_amri_pop b
+            WHERE  a.period/100 = b.period/100);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating Weight1 to = 1 for amri contributors',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+    ----------------------------------------------------------------e-*/
+
+    UPDATE :h_table1 a
+    SET    prodcom_weight = 1               
+    WHERE  a.period = :g_period
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.sample_type = :g_sample_type
+    AND    a.contributor_reference in
+	   (SELECT distinct contributor_reference
+	    FROM   ppi_steel_pop b
+            WHERE  a.period/100 = b.period/100);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating Weight1 to = 1 for steel contributors',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create a table of current period's recruitment data. Check table
+    against sample in ppi_contribs_found. If any differences write to 
+    error_log and inform PPI
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table2);
+
+    IF ret_val <> 0
+    THEN
+	 RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_table2
+    AS SELECT * 
+    FROM  :h_table1
+    WHERE period      = :g_period
+    AND   alloc_type  = :g_alloc_type
+    AND   sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table2,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_check_table1);
+
+    IF ret_val <> 0
+    THEN
+	 RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_check_table1
+    AS SELECT a.* 
+    FROM  ppi_contribs_found a
+    WHERE a.period      = :g_period
+    AND   a.alloc_type  = :g_alloc_type
+    AND   a.sample_type = :g_sample_type
+    AND   a.contributor_reference NOT IN
+          (SELECT contributor_reference
+           FROM   :h_table2 b
+           WHERE  a.period      = b.period
+           AND    a.alloc_type  = b.alloc_type
+           AND    a.sample_type = b.sample_type);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_check_table1,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+
+    ELSEIF ret_val = 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Contributors missing from Recruitment table - Check: ' + :h_check_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Copy table to $SCRATCH/ppi
+    ----------------------------------------------------------------e-*/
+
+    message 'Copying table ...' + :h_table2;
+   
+    COPY TABLE :h_table2(
+    contributor_reference = c0tab,
+    period                = c0tab,
+    entref                = c0tab,
+    enterprise            = c0tab,
+    contact_name          = c0tab,
+    add_name1             = c0tab,
+    add_name2             = c0tab,
+    add_name3             = c0tab,
+    add_line1             = c0tab,
+    add_line2             = c0tab,
+    add_line3             = c0tab,
+    add_line4             = c0tab,
+    add_line5             = c0tab,
+    add_postcode          = c0tab,
+    phone                 = c0tab,
+    fax                   = c0tab,
+    email                 = c0tab,
+    region                = c0tab,
+    welsh_form            = c0tab,
+    prodcom_weight        = c0tab,
+    supplier_status       = c0tab,
+    supplier_ret_type     = c0tab,
+    pub_source            = c0tab,
+    cbu_marker            = c0tab,
+    no_recruit            = c0tab,
+    sel_marker            = c0nl)
+    INTO :ppi_file1;
+    
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error copying file ' + :ppi_file1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+
+   RETURN 0;
+}
+    

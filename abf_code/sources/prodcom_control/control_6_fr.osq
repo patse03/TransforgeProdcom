@@ -1,0 +1,603 @@
+/*****************************************************************************
+  DESCRIPTION: Frame to copy down tables from VULCAN PRODLIVEDB to selected
+               data type database (ie proddevd1 for froddevdb etc).
+
+               The loop copies down one table at a time, working through
+               the list of tables on pvc_copy_tables_list.
+
+               The contents of that table depends on the four subframes
+               linked to the menu options in this frame. See the form
+               trim for more details. 
+
+  CREATED: Dom Ford - April 2012
+
+  CHANGES: May 2012 - DF - Added header info now program functional.
+
+*****************************************************************************/
+
+INITIALIZE (p_who = CHAR(1) NOT NULL)=
+
+DECLARE h_retries_allowed = INTEGER1    NOT NULL,
+        h_retries         = INTEGER1    NOT NULL,
+        h_retry_or_not    = CHAR(5)     NOT NULL,
+        h_return          = INTEGER1    NOT NULL,
+        h_return2         = INTEGER1    NOT NULL,
+        h_return3         = INTEGER1    NOT NULL,
+        h_prompt          = CHAR(1)     NOT NULL,
+        h_who             = CHAR(3)     NOT NULL,
+        h_tablename       = VARCHAR(32) NOT NULL,
+        h_target          = VARCHAR(10) NOT NULL,
+        h_word            = VARCHAR(6)  NOT NULL,
+        h_count           = INTEGER4    NOT NULL,
+        h_pass            = INTEGER4    NOT NULL,
+        h_fail            = INTEGER4    NOT NULL,
+        h_total           = INTEGER4    NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+
+        lp_create_pvc_copy_tables_list = PROCEDURE RETURNING INTEGER,
+        lp_pop_table                 = PROCEDURE RETURNING INTEGER,
+        lp_copy_table                = PROCEDURE RETURNING INTEGER,
+        lp_drop_table                = PROCEDURE RETURNING INTEGER,
+        lp_error_check               = PROCEDURE RETURNING INTEGER,
+        lp_full_error_check          = PROCEDURE RETURNING INTEGER
+{
+
+
+  h_frpr_name = 'control_6_fr';
+  s_trim = 'Select destination database:';
+  msa_date = 'now';
+
+  h_return = CALLPROC lp_pop_table;
+  IF h_return != 0 THEN EXIT; ENDIF;
+
+  SET_FORMS FIELD '' (INVISIBLE(s_trim) = 1);
+  SET_FORMS FIELD '' (INVISIBLE(tf) = 1);
+  REDISPLAY;
+
+/*--------------------------------------------------------------------------
+    Recreate core compiled group on table_groups table
+--------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_allowed   = 3;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    DELETE
+    FROM  pvc_table_groups
+    WHERE groupname = 'core_compiled';
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to delete core_compiled list from pvc_table_groups. '
+          + 'Error code ' + VARCHAR(:h_return) +'. Exiting program.'
+    WITH STYLE = POPUP;
+    EXIT;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_allowed   = 3;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO pvc_table_groups 
+    SELECT DISTINCT 'core_compiled',
+                    a.tablename
+    FROM   pvc_table_groups a
+    WHERE  a.groupname != 'core_system'
+      AND  a.tablename IN 
+           (SELECT b.tablename
+            FROM   pvc_export_tablenames b);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to insert core_compiled list into pvc_table_groups. '
+          + 'Error code ' + VARCHAR(:h_return) +'. Exiting program.'
+    WITH STYLE = POPUP;
+    EXIT;
+  ENDIF;
+
+/*--------------------------------------------------------------------------
+    Housekeep lists
+--------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_allowed   = 3;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    DELETE
+    FROM  pvc_table_groups a
+    WHERE  a.groupname != 'core_system'
+      AND  a.tablename NOT IN 
+           (SELECT b.tablename
+            FROM   pvc_export_tablenames b);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to hosekeep lists on pvc_table_groups. '
+          + 'Error code ' + VARCHAR(:h_return) +'. Exiting program.'
+    WITH STYLE = POPUP;
+    EXIT;
+  ENDIF;
+
+
+RESUME FIELD s_choice;
+
+END
+
+/*=======================================================================
+   FIELD ACTIVATION s_choice: Choice of update type: A,G,S,C,P.
+======================================================================*/
+
+FIELD s_choice =
+{
+  s_choice = UPPER(:s_choice);
+
+  IF  s_choice != 'A'
+  AND s_choice != 'G'
+  AND s_choice != 'S'
+  AND s_choice != 'C'
+  AND s_choice != 'P'
+  THEN
+    s_choice = '';
+    RESUME FIELD s_choice;
+  ENDIF;
+
+  SET_FORMS FIELD '' (INVISIBLE(s_trim) = 0);
+  SET_FORMS FIELD '' (INVISIBLE(tf) = 0);
+  REDISPLAY;
+
+  RESUME FIELD tf;
+
+} 
+
+/*=======================================================================
+   FRSKEY4: (F4) Go - Starts to action the refresh.
+======================================================================*/
+
+'GO', KEY FRSKEY4 = 
+
+{
+
+  h_target = tf.target;
+  g_target = tf.target;
+
+  /*----------------------------------------------------------------------
+       Create list of tables for copying.
+  ----------------------------------------------------------------------*/
+
+  h_return = CALLPROC lp_create_pvc_copy_tables_list (p_choice = :s_choice);
+
+  IF h_return = 1 
+  THEN 
+    SET_FORMS FIELD '' (INVISIBLE(s_trim) = 1);
+    SET_FORMS FIELD '' (INVISIBLE(tf) = 1);
+    REDISPLAY;
+    s_choice = '';
+    RESUME field s_choice;
+  ELSEIF h_return > 1
+  THEN    
+    MESSAGE 'ERROR: Failed to create table pvc_copy_tables_list. Error code '
+          + VARCHAR(:h_return) +'.' +X'0D'
+          + '       Exiting program.'
+    WITH STYLE = POPUP;
+    EXIT;
+  ENDIF; 
+  
+  /*----------------------------------------------------------------------
+       Loop to copy tables listed on pvc_copy_tables_list.
+  ----------------------------------------------------------------------*/
+
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_allowed   = 3;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT COUNT(tablename) as h_total
+    FROM   pvc_copy_tables_list;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select h_count for from pvc_copy_tables_list. '
+          + 'Error code ' + VARCHAR(:h_return) +'. Exiting program.'
+    WITH STYLE = POPUP;
+    EXIT;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_allowed   = 3;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    h_count = 0;
+    h_fail = 0;
+
+    SELECT tablename AS h_tablename
+    FROM   pvc_copy_tables_list
+    BEGIN
+      REDISPLAY;
+      h_count = h_count +1;
+      MESSAGE '[' +VARCHAR(:h_count) + '/' +VARCHAR(:h_total) + '] ' 
+            + 'Copying from ' +:h_target +': ' +:h_tablename +'. . .'; 
+
+      h_return2 = CALLPROC lp_copy_table (p_tablename = :h_tablename,
+                                          p_target    = :h_target);
+
+      IF h_return2 != 0 
+      THEN
+        MESSAGE 'WARNING: Failed to copy ' +VARCHAR(:h_tablename) + ' ' 
+              + 'to ' +VARCHAR(:h_target) + X'0D'
+              + 'Please check log file held in  /tmp/pvc for details '
+              + 'before you hit return to carry on.'
+        WITH STYLE = POPUP;    
+        h_fail = :h_fail + 1;
+      ENDIF;
+         
+    END;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Table copying loop failed. Error code '
+          + VARCHAR(:h_return) +'. Exiting program.'
+    WITH STYLE = POPUP;
+    EXIT;
+  ENDIF;
+  
+  CLEAR SCREEN;
+
+  IF h_count = 1 
+  THEN 
+    h_word = 'table'; 
+  ELSE 
+    h_word = 'tables';
+  ENDIF;
+
+  h_pass = h_count -h_fail;
+  
+  MESSAGE 'RESULT: ' + VARCHAR(h_pass) +'/' +VARCHAR(:h_count) + ' ' + h_word 
+        + ' copied to ' + :h_target +'.'
+  WITH STYLE = POPUP;
+
+RETURN;
+
+} 
+
+/*=======================================================================
+   FRSKEY8: (F8) GROUPS - Opens table group control screen
+======================================================================*/
+
+'GROUPS', KEY FRSKEY8 = 
+BEGIN
+  MESSAGE 'Still in development. Please edit groups manually on table_groups.'
+  WITH STYLE = POPUP;
+  RETURN;
+END
+
+
+/*=======================================================================
+   FRSKEY6: (F12) Back - Returns to the val gate menu.                    
+======================================================================*/
+
+'ABORT', KEY FRSKEY12 = 
+BEGIN
+  RETURN;
+END
+
+
+/*********************** LOCAL PROCEDURES ***********************************/
+
+/*===========================================================================
+	   Local procedure to copy table from PRODLIVE to target database
+============================================================================*/
+
+PROCEDURE lp_copy_table (p_tablename = VARCHAR(32) NOT NULL,
+                         p_target    = VARCHAR(10) NOT NULL)=
+
+DECLARE lp_return  = INTEGER4 NOT NULL WITH DEFAULT, 
+        lp_return2 = INTEGER4 NOT NULL WITH DEFAULT, 
+        lp_command = VARCHAR(1000) NOT NULL WITh DEFAULT
+
+{
+  lp_command = '$SCRIPTS/copydown_table.script '
+             + SQUEEZE(:p_target) + ' '
+             + SQUEEZE(:p_tablename) + ' ' 
+             + '2>/dev/null';
+
+  lp_return = CALLPROC callsys_cp(:lp_command);
+
+  IF lp_return != 0 
+  THEN   
+    /* Error message handled after return */
+    RETURN :lp_return;
+  ENDIF;
+
+  /*................................................................
+        Insert into pvc_copy_log_tabs
+  ................................................................*/
+    
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_allowed   = 3;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO pvc_copy_log_tabs
+    VALUES    ( :p_tablename,
+                :p_target,
+                'REFRESH',
+                'now',
+                :g_who,
+                :g_user_id);
+
+    lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF lp_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF lp_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to insert into pvc_copy_log_tabs. Error code '
+          + VARCHAR(:lp_return) +'. '
+    WITH STYLE = POPUP;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/*===========================================================================
+	      Local procedure to create pvc_copy_tables_list
+============================================================================*/
+
+PROCEDURE lp_create_pvc_copy_tables_list 
+          (p_choice = CHAR(1) NOT NULL WITH DEFAULT)=
+
+DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+{
+  lp_return = 0;
+
+  IF p_choice = 'A'
+  THEN
+    lp_return = CALLPROC control_6a_fp();
+  ELSEIF p_choice = 'G'
+  THEN
+    lp_return = CALLFRAME control_6b_fr();
+  ELSEIF p_choice = 'S'
+  THEN
+    lp_return = CALLFRAME control_6c_fr();
+  ELSEIF p_choice = 'P'
+  THEN
+    lp_return = CALLPROC control_6e_fp();
+  ELSE
+    MESSAGE 'Safety catch on! (C)' WITH STYLE = POPUP;
+  ENDIF;
+
+  RETURN lp_return;
+
+}
+
+/*===========================================================================
+	      Local procedure for error checking within retry loop.
+============================================================================*/
+
+PROCEDURE lp_full_error_check
+	  (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT)=
+
+DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+
+BEGIN
+
+lp_return = CALLPROC check_inq_ing ( h_num_row_ck      = :p_num_row_ck,
+ 				    h_commit          = 'Y',
+				    h_rollback        = 'N',
+				    h_retries         = :h_retries,
+                                    h_retries_allowed = :h_retries_allowed,
+                                    h_frpr_name       = 'val_gates_1.fr');
+RETURN :lp_return;
+
+END
+
+/*===========================================================================
+	      Local procedure for basic error checking.
+============================================================================*/
+
+PROCEDURE lp_error_check
+	  (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT)=
+
+DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+
+BEGIN
+
+lp_return = CALLPROC check_inq_ing ( h_num_row_ck      = :p_num_row_ck,
+ 				    h_commit          = 'Y',
+				    h_rollback        = 'N',
+				    h_retries         = 1,
+                                    h_retries_allowed = 1,
+                                    h_frpr_name       = 'val_gates_1.fr');
+RETURN :lp_return;
+
+END
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = VARCHAR(36) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = VARCHAR(36) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+
+/*===========================================================================
+	      Local procedure for populating the table field.   
+============================================================================*/
+
+PROCEDURE lp_pop_table() = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+{
+
+lp_return = CALLPROC lp_drop_table (p_table_name = 'tt_control6');
+IF lp_return != 0 THEN RETURN 9; ENDIF;
+
+MESSAGE '                   Collecting data, please wait...';
+
+CREATE TABLE tt_control6 AS
+SELECT database AS target
+FROM   pvc_databases
+WHERE  machine = 'VALIANT'
+  AND  type = 'DATA';
+
+lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+IF lp_return = 1
+THEN
+  MESSAGE 'NOTE: There are no databases declared for data testing on VALIANT.'
+  WITH STYLE = POPUP;
+  RETURN 1;
+ELSEIF lp_return >1
+THEN
+  MESSAGE 'SYSTEM ERROR: Failed to create tt_control6. Error code '
+	+ VARCHAR(:lp_return) +'.' +X'0D'
+  WITH STYLE = POPUP;
+  RETURN 9;
+ENDIF;
+
+INITTABLE tf READ;
+
+tf = SELECT target
+       FROM tt_control6
+   ORDER BY target;
+
+lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+IF lp_return != 0
+THEN
+  MESSAGE 'SYSTEM ERROR: Failed to initiate table field. Error code '
+	+ VARCHAR(:lp_return) +'.' +X'0D'
+	WITH STYLE = POPUP;
+  RETURN 9;
+ENDIF;
+
+REDISPLAY;
+
+END
+

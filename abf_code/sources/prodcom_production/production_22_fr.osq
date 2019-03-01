@@ -1,0 +1,283 @@
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1      NOT NULL,
+        h_retries         = INTEGER1      NOT NULL,
+        h_retry_or_not    = CHAR(5)       NOT NULL,
+        h_return          = INTEGER1      NOT NULL,
+        h_return2         = INTEGER1      NOT NULL,
+        h_prompt          = CHAR(1)       NOT NULL,
+        h_who             = CHAR(3)       NOT NULL,
+        h_fullname        = VARCHAR(40)   NOT NULL,
+        h_dummy           = INTEGER4      NOT NULL,
+        h_period          = INTEGER4      NOT NULL,
+        h_idbr_period     = INTEGER4      NOT NULL,
+        h_frpr_name       = VARCHAR(24)   NOT NULL,
+        h_message         = VARCHAR(70)   NOT NULL,
+        h_title           = VARCHAR(80)   NOT NULL,
+        h_command         = VARCHAR(1000) NOT NULL,
+        h_filename        = VARCHAR(60)   NOT NULL,
+        h_suffix          = VARCHAR(3)    NOT NULL,
+
+        lp_error_check          = PROCEDURE RETURNING INTEGER
+
+{
+
+SELECT DBMSINFO('username') AS g_user_id;
+SELECT DBMSINFO('database') AS g_database;
+
+h_frpr_name = 'production_22_fr';
+msa_date = 'now';
+
+h_title       = 'CALCULATE KEY GAINS AND LOSSES ON PRODCLONEDB';
+s_title       = SHIFT(:h_title, (((80-LENGTH(h_title))/2)*1));
+
+h_period      = g_period + 100;
+h_idbr_period = h_period + 12;
+
+IF RIGHT(SQUEEZE(:g_task_name),1) = '1'
+THEN
+  h_suffix = 'd1'
+
+ELSEIF RIGHT(SQUEEZE(:g_task_name),1) = '2'
+THEN
+  h_suffix = 'd2'
+
+ELSEIF RIGHT(SQUEEZE(:g_task_name),1) = '3'
+THEN
+  h_suffix = 'd3'
+
+ELSE
+  h_suffix = 'dx'
+
+ENDIF;
+
+}
+
+/*=======================================================================
+   FRSKEY4: Go - Run task
+======================================================================*/
+
+'GO', KEY FRSKEY4 =
+{
+
+/*---------------------------------------------------------------------
+ #1: Running batch_contrib_sel_app process 13
+----------------------------------------------------------------------*/
+
+MESSAGE ' RUNNING: Batch contributor selection process 13. . .';
+SLEEP 2;
+
+h_command = '$IMAGES/batch_contrib_sel_app '
+          + '-numeric_overflow=ignore '
+          + '-dprodclonedb '
+          + '-a D '
+          +  VARCHAR(:h_period)  + ' '
+          + '13 13 '
+          + ' 1>/dev/null '
+          + ' 2>/dev/null';
+
+h_return = CALLPROC callsys_cp(:h_command);
+
+/* No error handling as ABF images run through callsys don't return a value */
+
+/*---------------------------------------------------------------------
+  #2: Check process log for errors
+-----------------------------------------------------------------------*/
+
+MESSAGE ' CHECKING: Analysing process log. . .';
+SLEEP 1;
+
+h_command = '$SCRIPTS/check_for_error_prodclonedb.script '
+          + 'dmy '
+          + ' 1>/dev/null '
+          + ' 2>/dev/null';
+
+h_return = CALLPROC callsys_cp(:h_command);
+
+IF h_return != 0
+THEN  MESSAGE 'ERROR: Warnings or errors detected in dmy_process_log. '
+        + 'Please investigate, correct, then reset and try again. '
+  WITH STYLE = POPUP;
+  RETURN;
+ENDIF;
+
+/*---------------------------------------------------------------------
+  #3: Check output files exists.
+----------------------------------------------------------------------*/
+
+MESSAGE ' CHECKING: Looking for G&L files. . .';
+SLEEP 1;
+
+h_command = '$SCRIPTS/check_file_exists.script '
+          + '/admin/scratch/'
+          + 'gains_losses_s_' +VARCHAR(:h_period) +'.txt'
+          + ' 1>/dev/null '
+          + ' 2>/dev/null';
+
+h_return = CALLPROC callsys_cp(:h_command);
+
+IF h_return != 0
+THEN
+  MESSAGE 'ERROR: S-Type G&L data file not found so it looks like '
+        + 'key gains and losses did not run correctly. '
+        + 'Please investigate, then reset and try again. '
+        + 'Error code was ' +VARCHAR(:h_return) +'.'
+  WITH STYLE = POPUP;
+  RETURN;
+ENDIF;
+
+h_command = '$SCRIPTS/check_file_exists.script '
+          + '/admin/scratch/'
+          + 'gains_losses_c_' +VARCHAR(:h_period) +'.txt'
+          + ' 1>/dev/null '
+          + ' 2>/dev/null';
+
+h_return = CALLPROC callsys_cp(:h_command);
+
+IF h_return != 0
+THEN
+  MESSAGE 'ERROR: C-Type G&L data file not found so it looks like '
+        + 'key gains and losses did not run correctly. '
+        + 'Please investigate, then reset and try again. '
+        + 'Error code was ' +VARCHAR(:h_return) +'.'
+  WITH STYLE = POPUP;
+  RETURN;
+ENDIF;
+
+h_command = '$SCRIPTS/check_file_exists.script '
+          + '/idbr/live20/infer/iss/'
+          + 'prodgainloss014_' +VARCHAR(:h_idbr_period) 
+          + ' 1>/dev/null '
+          + ' 2>/dev/null';
+
+h_return = CALLPROC callsys_cp(:h_command);
+
+IF h_return != 0
+THEN
+  MESSAGE 'ERROR: IDBR G&L output file not found so it looks like '
+        + 'key gains and losses did not run correctly. '
+        + 'Please investigate, then reset and try again. '
+        + 'Error code was ' +VARCHAR(:h_return) +'.'
+  WITH STYLE = POPUP;
+  RETURN;
+ENDIF;
+
+/*---------------------------------------------------------------------
+ #4:   Create Backups of G&L Files.
+----------------------------------------------------------------------*/
+
+MESSAGE ' RUNNING: Backing up G&L files. . .';
+SLEEP 2;
+
+h_command = 'cp /admin/scratch/'
+          + 'gains_losses_c_' +VARCHAR(:h_period) +'.txt ' 
+          + '/home/prodcom/admin/prodlive/gains_losses/' 
+          + 'gains_losses_c_' +VARCHAR(:h_period) +'_' +:h_suffix +'.txt ' 
+          + ' 1>/dev/null ' 
+          + ' 2>/dev/null';
+
+h_return = CALLPROC callsys_cp(:h_command);
+
+IF h_return != 0
+THEN
+  MESSAGE 'ERROR: Failed to back up C-class G&L file. ' 
+        + 'Please investigate and then try again. '
+        + 'Error code was ' +VARCHAR(:h_return) +'.'
+  WITH STYLE = POPUP;
+ENDIF;
+
+h_command = 'cp /admin/scratch/'
+          + 'gains_losses_s_' +VARCHAR(:h_period) +'.txt ' 
+          + '/home/prodcom/admin/prodlive/gains_losses/' 
+          + 'gains_losses_s_' +VARCHAR(:h_period) +'_' +:h_suffix +'.txt ' 
+          + ' 1>/dev/null ' 
+          + ' 2>/dev/null';
+
+h_return = CALLPROC callsys_cp(:h_command);
+
+IF h_return != 0
+THEN
+  MESSAGE 'ERROR: Failed to back up S-class G&L file. ' 
+        + 'Please investigate and then try again. '
+        + 'Error code was ' +VARCHAR(:h_return) +'.'
+  WITH STYLE = POPUP;
+ENDIF;
+
+h_command = 'cp /idbr/live20/infer/iss/'
+          + 'prodgainloss014_' +VARCHAR(:h_idbr_period) +' ' 
+          + '/home/prodcom/admin/prodlive/gains_losses/' 
+          + 'prodgainloss014_' +VARCHAR(:h_idbr_period) +'_' +:h_suffix +' ' 
+          + ' 1>/dev/null ' 
+          + ' 2>/dev/null';
+
+h_return = CALLPROC callsys_cp(:h_command);
+
+IF h_return != 0
+THEN
+  MESSAGE 'ERROR: Failed to back up IDBR G&L file. ' 
+        + 'Please investigate and then try again. '
+        + 'Error code was ' +VARCHAR(:h_return) +'.'
+  WITH STYLE = POPUP;
+ENDIF;
+
+/*-------------------------------------------------------------------
+   Record completion in ppc_task_status.
+-------------------------------------------------------------------*/
+
+  INSERT INTO ppc_task_status
+  VALUES (    :g_task_name,
+              :g_period,
+              :g_who,
+              DATE('today'));
+
+h_return = CALLPROC lp_error_check (p_num_row_ck  = 1);
+
+IF h_return != 0
+THEN
+  MESSAGE 'ERROR: Failed to insert into ppc_task_status. Error code '
+        + VARCHAR(:h_return) +'. Please complete this manually. Continuing...'
+  WITH STYLE = POPUP;
+ENDIF;
+
+MESSAGE 'PROCESS COMPLETED SUCCESSFULLY.' WITH STYLE = POPUP;
+
+RETURN;
+
+}
+
+
+/*=======================================================================
+   FRSKEY12: (F12) ABORT - Return to main menu.
+======================================================================*/
+
+'ABORT', KEY FRSKEY12 = 
+BEGIN
+  RETURN;
+END
+
+
+/*********************** LOCAL PROCEDURES ***********************************/
+
+/*===========================================================================
+	      Local procedure for basic error checking.
+============================================================================*/
+
+PROCEDURE lp_error_check
+	  (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT)=
+
+DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+
+BEGIN
+
+lp_return = CALLPROC check_inq_ing ( h_num_row_ck      = :p_num_row_ck,
+ 				    h_commit          = 'Y',
+				    h_rollback        = 'N',
+				    h_retries         = 1,
+                                    h_retries_allowed = 1,
+                                    h_frpr_name       = :h_frpr_name);
+RETURN :lp_return;
+
+END
+
+

@@ -1,0 +1,360 @@
+/*-s--------------------------------------------------------------------
+
+Procedure msaca_fp_zero_sales
+
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msaca_fp_zero_sales     () =
+
+DECLARE ret_val               = INTEGER4 NOT NULL,
+        h_table1              = VARCHAR(24) NOT NULL,
+        h_table2              = VARCHAR(24) NOT NULL,
+        h_table3              = VARCHAR(24) NOT NULL,
+        h_table4              = VARCHAR(24) NOT NULL,
+        h_table5              = VARCHAR(24) NOT NULL,
+        h_file1               = VARCHAR(100) NOT NULL,
+        h_frpr_name           = VARCHAR(24) NOT NULL
+
+{
+    h_frpr_name = 'msaca_fp_zero_sales';
+    h_table1 = 'ppi_zero_sales1';
+    h_table2 = 'ppi_zero_sales2';
+    h_table3 = 'ppi_contribs_found_zero';
+    h_table4 = 'ppi_zero_sales3';
+    h_table5 = 'ppi_zero_sales4';
+
+    h_file1 = :g_path_name2 + '/prodcom/ppi_zero_sales_' 
+            + VARCHAR(:g_perpha) + '.txt';
+
+   /*-s----------------------------------------------------------------
+   Create table of question data from ppi_eightdig_all use column
+   question as this has been updated and matches the ppi sixdigit
+   ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table1);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table1;
+
+    CREATE TABLE :h_table1
+    AS SELECT    a.*
+    FROM         ppi_eightdig_all a
+    WHERE        period/100 = :g_period/100
+    AND          alloc_type = :g_alloc_type
+    AND          sample_type = :g_sample_type
+    AND          a.contributor_reference IN
+		 (SELECT contributor_reference
+		  FROM   ppi_contribs_found b
+		  WHERE  a.period/100 = b.period/100
+		  AND    a.alloc_type = b.alloc_type
+		  AND    a.sample_type = b.sample_type
+		  AND    a.question/1000 = b.sixdig);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table1,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+   /*-s----------------------------------------------------------------
+   Create a second table of cqpv data for the following year's periods.
+   This time use column original_question created in the table above
+   as this will match the questions on cqpv
+   ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table2);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table2;
+
+    CREATE TABLE :h_table2
+    AS SELECT    a.*
+    FROM         cqpv a
+    WHERE        a.period/100 = (:g_period+100)/100
+    AND          a.contributor_reference IN
+                 (SELECT contributor_reference
+                  FROM   :h_table1 b
+                  WHERE  a.question = b.original_question);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table2,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+   /*-s----------------------------------------------------------------
+   Update question on cqpv data above from ppi_owner_member
+   ----------------------------------------------------------------e-*/
+
+    UPDATE :h_table2 a
+    FROM   ppi_owner_member b
+    SET    question = b.owner_question
+    WHERE  a.question = b.question
+    AND    (a.period-100)/100 * 100 = b.period;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating from ppi_owner_member',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+   /*-s----------------------------------------------------------------
+   Update question on cqpv data above from ppi_map for the computer
+   mapping file
+   ----------------------------------------------------------------e-*/
+
+    UPDATE :h_table2 a
+    FROM   ppi_map b
+    SET    question = (b.sixdig * 1000) + MOD(a.question,1000)
+    WHERE  b.period = :g_period
+    AND    (a.period-100)/100 * 100 = b.period
+    AND    a.question = b.question
+    AND    b.alloc_type = :g_alloc_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating from ppi_map',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+   /*-s----------------------------------------------------------------
+   Create  a table containing all the sample contributor product pairs
+   with an extra column to hold a marker to show whether there are
+   sales in the future periods.
+   ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table3);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table3;
+
+    CREATE TABLE :h_table3
+    AS SELECT    a.*,
+                 'Z' AS zero_sales
+    FROM         ppi_contribs_found a
+    WHERE        a.period = :g_period
+    AND          a.alloc_type = :g_alloc_type
+    AND          a.sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table3,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+   /*-s----------------------------------------------------------------
+    Create a table to select the question data at sixdigit level
+   ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table4);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table4;
+
+    CREATE TABLE :h_table4
+    AS SELECT    period,
+                 contributor_reference,
+                 question/1000 AS sixdig,
+                 avalue
+    FROM         :h_table2;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table4,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+   /*-s----------------------------------------------------------------
+    Create a table to sum the sixdigits
+   ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table5);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table5;
+
+    CREATE TABLE :h_table5
+    AS SELECT    contributor_reference,
+                 sixdig,
+                 sum(avalue) AS avalue
+    FROM         :h_table4
+    GROUP BY     contributor_reference,
+                 sixdig;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table5,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+   /*-s----------------------------------------------------------------
+    Update the marker in table3 and set it to 'V' where the summed
+    data at sixdigit level is not zero
+   ----------------------------------------------------------------e-*/
+
+    message 'Updating table ...' + :h_table3;
+
+    UPDATE :h_table3 a
+    FROM   :h_table5 b
+    SET     zero_sales = 'V'
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.sixdig = b.sixdig
+    AND    b.avalue <> 0;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating ' + :h_table3,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+   /*-s----------------------------------------------------------------
+    Copy table to flat file in $SCRATCH/prodcom
+   ----------------------------------------------------------------e-*/
+   COPY TABLE :h_table3(
+              period                = c0comma,
+              contributor_reference = c0comma,
+              sixdig                = c0comma,
+              sixdig_sales          = c0comma,
+              prn                   = c0comma,
+              stratum               = c0comma,
+              alloc_type            = c0comma,
+              sample_type           = c0comma,
+              zero_sales            = c0nl)
+   INTO :h_file1;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error copying ' + :h_table3,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+}
+

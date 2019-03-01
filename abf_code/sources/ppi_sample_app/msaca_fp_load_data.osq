@@ -1,0 +1,2170 @@
+/*-s--------------------------------------------------------------------
+
+Procedure msaca_fp_load_data     
+
+Before running this program  data must be transferred from PPI
+statisticians 
+
+1. ALLOCATION FILE
+
+This will now contain a row for each sixdigit within each stratum whether
+or not any allocation is required for that sixdigit. It may be for 
+either 11000 or 12000 quotes.
+(NB: This file is now copied forward by script: ppi_alloc_{alloc}_{period})
+
+2. BOUNDARY OF SALES inflator file 
+
+The boundary of sales are contained in table ppi_bound_params and each
+year the previous years sales must be inflated using a data file
+produced by PPI IS.
+(NB: This file is now copied forward by script: ppi_bndsinflate_{period})
+
+3. COMPUTER PRODUCTS MAPPING FILE
+This is a lookup for the computer products industry as the 8 digit
+Prodcom code is mapped onto different 6 digit indices with no
+correlation to the first 6 digits of the Prodcom code. The table is
+called ppi_map. Ask PPI statisticians if there are any new mappings for
+new period as there may not be any and if not the previous year's file
+can be used. 
+(NB: This file is now copied forward by script: ppi_map_{period}
+     The program prompts for a new mapping file if available.)
+
+4. STEEL DATA 
+This data is needed to update contributor contact names and addresses
+and enterprise data if none is found on Prodcom. The STEEL population 
+needs to be loaded as it must be added to the Prodcom population in process 3. 
+
+(NB: These files are now copied forward by script: ppi_steel_addresses_{period}
+                                                   ppi_steel_ent_sales_{period}
+                                                   ppi_steel_pop_{period})
+
+5. PPI LINKS
+This data must be provided from PPI as they will have been working on 
+collecting the information while doing their recruitment exercise. 
+Make sure this file is in $TEXTFILES: contributor_links_{period}
+
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msaca_fp_load_data () =
+
+DECLARE ret_val               = INTEGER4 NOT NULL,
+        h_table1              = VARCHAR(24) NOT NULL,
+        h_table2              = VARCHAR(24) NOT NULL,
+        h_table3              = VARCHAR(24) NOT NULL,
+        h_table4              = VARCHAR(24) NOT NULL,
+        h_table5              = VARCHAR(24) NOT NULL,
+        h_table6              = VARCHAR(24) NOT NULL,
+        h_table7              = VARCHAR(24) NOT NULL,
+        h_table8              = VARCHAR(24) NOT NULL,
+        h_table9              = VARCHAR(24) NOT NULL,
+        h_table10             = VARCHAR(24) NOT NULL,
+        h_table11             = VARCHAR(24) NOT NULL,
+        h_table12             = VARCHAR(24) NOT NULL,
+        h_table13             = VARCHAR(24) NOT NULL,
+        h_amri_table          = VARCHAR(24) NOT NULL,
+        h_steel_table         = VARCHAR(24) NOT NULL,
+        ppi_file1             = VARCHAR(100) NOT NULL,
+        ppi_file2             = VARCHAR(100) NOT NULL,
+        ppi_file3             = VARCHAR(100) NOT NULL,
+        ppi_file4             = VARCHAR(100) NOT NULL,
+        ppi_file5             = VARCHAR(100) NOT NULL,
+        ppi_file6             = VARCHAR(100) NOT NULL,
+        ppi_file7             = VARCHAR(100) NOT NULL,
+        ppi_file8             = VARCHAR(100) NOT NULL,
+        ppi_file9             = VARCHAR(100) NOT NULL,
+        ppi_file10            = VARCHAR(100) NOT NULL,
+        ppi_file11            = VARCHAR(100) NOT NULL,
+        ppi_file12            = VARCHAR(100) NOT NULL,
+        h_frpr_name           = VARCHAR(24) NOT NULL
+
+{
+    h_frpr_name = 'msaca_fp_load_data';
+    h_table1 = 'ppi_bound';
+    h_table2 = 'ppi_all';
+    h_table3 = 'ppi_bound_params';
+    h_table4 = 'temp_ppi_all_params';
+    h_table5 = 'ppi_all_params';
+    h_table6 = 'temp_ppi_bound_inflator';
+    h_table7 = 'temp_ppi_map';
+    h_table8 = 'temp_ppi_steel_addresses';
+    h_table9 = 'temp_ppi_steel_ent_sales';
+    h_table10 = 'temp_ppi_amri_addresses';
+    h_table11 = 'temp_ppi_amri_contacts';
+    h_table12 = 'temp_ppi_amri_ent_sales';
+    h_table13 = 'temp_ppi_links';
+    h_amri_table = 'temp_ppi_amri_pop';
+    h_steel_table = 'temp_ppi_steel_pop';
+
+    ppi_file2 = :g_path_name1 + '/ppi_alloc_' + VARCHAR(:g_alloc_type) + '_' + VARCHAR(:g_period);
+    ppi_file3 = :g_path_name1 + '/ppi_bndsinflate_' + VARCHAR(:g_period);
+    ppi_file4 = :g_path_name1 + '/ppi_map_' + VARCHAR(:g_period);
+    ppi_file5 = :g_path_name1 + '/ppi_steel_addresses_' + VARCHAR(:g_period);
+    ppi_file6 = :g_path_name1 + '/ppi_steel_ent_sales_' + VARCHAR(:g_period);
+    ppi_file7 = :g_path_name1 + '/ppi_amri_addresses_' + VARCHAR(:g_period);
+    ppi_file8 = :g_path_name1 + '/ppi_amri_contacts_' + VARCHAR(:g_period);
+    ppi_file9 = :g_path_name1 + '/ppi_amri_ent_sales_' + VARCHAR(:g_period);
+    ppi_file10 =:g_path_name1 + '/contributor_links_' + VARCHAR(:g_period);
+    ppi_file11 = :g_path_name1 + '/ppi_amri_pop_' + VARCHAR(:g_period);
+    ppi_file12 = :g_path_name1 + '/ppi_steel_pop_' + VARCHAR(:g_period);
+
+    /*-s----------------------------------------------------------------
+    Create table to hold allocation as calculated by PPI Statisticians
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table2);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table2;
+
+    CREATE TABLE :h_table2(
+		 sixdig    INTEGER4 NOT NULL,
+		 stratum   INTEGER1 NOT NULL,
+		 fourdig   INTEGER4 NOT NULL,
+		 alloc     INTEGER4 NOT NULL,
+		 no_quotes INTEGER4 NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Copy table of allocation
+    ----------------------------------------------------------------e-*/
+
+    message 'Copying table ...' + :h_table2;
+   
+    COPY TABLE :h_table2
+               (sixdig    = c0comma,
+                stratum   = c0comma,
+                fourdig   = c0comma,
+                alloc     = c0comma,
+                no_quotes = c0nl)
+    FROM :ppi_file2;
+
+    
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error copying table ' + :h_table2 + ' from ' + :ppi_file2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s-------------------------------------------------------------
+    Carry forward the previous boundaries and then update them with the
+    file of inflators provided by PPI IS
+    -------------------------------------------------------------e-*/
+
+    message 'Delete existing rows from ...' + :h_table3;
+    
+    DELETE FROM :h_table3
+    WHERE period = :g_period
+    AND   alloc_type = :g_alloc_type
+    AND   sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting existing rows from ' + :h_table3,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+    /*-s-------------------------------------------------------------
+    You must input the previous ppi period ie. the Year that the 
+    boundaries were last set, and the previous alloc_type
+
+    Check this when you run Year 4 PPI with 200000 Prodcom data 
+    to ensure you inflate the 1999 boundaries not the 200000 boundaries
+    used in Phase 3.3 use the Phase 1 parameters of the previous year
+    -------------------------------------------------------------e-*/
+
+    INSERT INTO :h_table3
+    SELECT :g_period as period,
+           fourdig,
+           stratum,
+           lower_bound,
+           upper_bound,
+           :g_alloc_type as alloc_type,
+           :g_sample_type as sample_type
+    FROM   :h_table3
+    WHERE  period = :g_prev_ppi_period
+    AND    alloc_type = :g_prev_alloc_type
+    AND    sample_type = 1;
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error carrying forward boundary of sales from previous period into ' + :h_table3,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Modify table
+    ----------------------------------------------------------------e-*/
+
+    MODIFY :h_table3 
+    TO BTREE UNIQUE ON 
+    period,
+    fourdig,
+    stratum,
+    alloc_type,
+    sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9  
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error modifying ' + :h_table3,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Load table of inflators to be used to calculate the boundary sales 
+    for the new period. 
+    This file will be supplied PPI IS for 1998 onwards
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table6);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table6;
+
+    CREATE TABLE :h_table6(
+		 fourdig  INTEGER4 NOT NULL,
+		 inflator FLOAT8 NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table6,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Copy table of inflators
+    ----------------------------------------------------------------e-*/
+
+    message 'Copying table ...' + :h_table6;
+   
+    COPY TABLE :h_table6
+               (fourdig  = c0comma,
+                inflator = c0nl)
+    FROM :ppi_file3;
+
+    
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error copying table ' + :h_table6 + ' from ' + :ppi_file3,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Delete existing rows from table
+    ----------------------------------------------------------------e-*/
+
+    DELETE FROM ppi_bound_inflator
+    WHERE  period = :g_period
+    AND    alloc_type = :g_alloc_type
+    AND    sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting from ppi_bound_inflator ',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Insert new rows into table
+    ----------------------------------------------------------------e-*/
+
+    INSERT INTO ppi_bound_inflator
+    SELECT :g_period as period,
+           fourdig,
+           inflator,
+	   :g_alloc_type as alloc_type,
+	   :g_sample_type as sample_type
+    FROM   :h_table6;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting into ppi_bound_inflator ',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    UPDATE :h_table3 a
+    FROM   ppi_bound_inflator b
+    SET    lower_bound = lower_bound * b.inflator
+    WHERE  a.period = :g_period
+    AND    a.period = b.period
+    AND    a.fourdig = b.fourdig
+    AND    a.lower_bound <> 999999999
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.sample_type = :g_sample_type
+    AND    a.alloc_type = b.alloc_type
+    AND    a.sample_type = b.sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating lower boundary sales ',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    UPDATE :h_table3 a
+    FROM   ppi_bound_inflator b
+    SET    upper_bound = upper_bound * b.inflator
+    WHERE  a.period = :g_period
+    AND    a.period = b.period
+    AND    a.fourdig = b.fourdig
+    AND    a.upper_bound <> 999999999
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.sample_type = :g_sample_type
+    AND    a.alloc_type = b.alloc_type
+    AND    a.sample_type = b.sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating upper_boundary sales ',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    NB.
+    The following code will work (therefore hasn't been amended) 
+    even though from October 1998 PPI statisticians will provide the 
+    allocation file with a row for each sixdigit within each stratum 
+    even if no allocation is required.
+
+    Create a table to hold all sixdigits within all fourdigits and
+    their allocation needed for the sample. Create empty columns to be 
+    filled with data later after the sample allocation has run.
+
+    Create an empty row for indices where there is not a complete set
+    of 3 stratum as in future years there may be an allocation for 
+    these indices. This creates duplicate rows so create a distinct 
+    table after which should then include 3 stratum for each of the 
+    sixdigits in the allocation.
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table4);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table4;
+
+    CREATE TABLE :h_table4(
+                 period          INTEGER4 NOT NULL,
+                 fourdig         INTEGER4 NOT NULL,
+                 sixdig          INTEGER4 NOT NULL,
+                 stratum         INTEGER1 NOT NULL,
+                 alloc           INTEGER4 NOT NULL,
+		 prodcom_pop     INTEGER4 NOT NULL,
+		 alloc_found     INTEGER4 NOT NULL,
+		 no_quotes       INTEGER4 NOT NULL);
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table4,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    INSERT INTO :h_table4
+    SELECT      :g_period,
+		fourdig,
+		sixdig,
+		INT1(1) AS stratum,
+		INT4(0) AS alloc,
+		INT4(0) AS prodcom_pop,
+		INT4(0) AS alloc_found,
+		INT4(0) AS no_quotes
+    FROM        :h_table2
+    WHERE       stratum = 1;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting stratum1 into ' + :h_table4,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    INSERT INTO :h_table4
+    SELECT      :g_period,
+		fourdig,
+		sixdig,
+		INT1(2) AS stratum,
+		INT4(0) AS alloc,
+		INT4(0) AS prodcom_pop,
+		INT4(0) AS alloc_found,
+		INT4(0) AS no_quotes
+    FROM        :h_table2
+    WHERE       stratum = 1;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting stratum2 into ' + :h_table4,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    INSERT INTO :h_table4
+    SELECT      :g_period,
+		fourdig,
+		sixdig,
+		INT1(3) AS stratum,
+		INT4(0) AS alloc,
+		INT4(0) AS prodcom_pop,
+		INT4(0) AS alloc_found,
+		INT4(0) AS no_quotes
+    FROM        :h_table2
+    WHERE       stratum = 1;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting stratum3 into ' + :h_table4,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    INSERT INTO :h_table4
+    SELECT      :g_period,
+		fourdig,
+		sixdig,
+		INT1(1) AS stratum,
+		INT4(0) AS alloc,
+		INT4(0) AS prodcom_pop,
+		INT4(0) AS alloc_found,
+		INT4(0) AS no_quotes
+    FROM        :h_table2
+    WHERE       stratum = 2;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting stratum1 into ' + :h_table4,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    INSERT INTO :h_table4
+    SELECT      :g_period,
+		fourdig,
+		sixdig,
+		INT1(2) AS stratum,
+		INT4(0) AS alloc,
+		INT4(0) AS prodcom_pop,
+		INT4(0) AS alloc_found,
+		INT4(0) AS no_quotes
+    FROM        :h_table2
+    WHERE       stratum = 2;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting stratum2 into ' + :h_table4,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    INSERT INTO :h_table4
+    SELECT      :g_period,
+		fourdig,
+		sixdig,
+		INT1(3) AS stratum,
+		INT4(0) AS alloc,
+		INT4(0) AS prodcom_pop,
+		INT4(0) AS alloc_found,
+		INT4(0) AS no_quotes
+    FROM        :h_table2
+    WHERE       stratum = 2;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting stratum3 into ' + :h_table4,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    INSERT INTO :h_table4
+    SELECT      :g_period,
+		fourdig,
+		sixdig,
+		INT1(1) AS stratum,
+		INT4(0) AS alloc,
+		INT4(0) AS prodcom_pop,
+		INT4(0) AS alloc_found,
+		INT4(0) AS no_quotes
+    FROM        :h_table2
+    WHERE       stratum = 3;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting stratum1 into ' + :h_table4,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    INSERT INTO :h_table4
+    SELECT      :g_period,
+		fourdig,
+		sixdig,
+		INT1(2) AS stratum,
+		INT4(0) AS alloc,
+		INT4(0) AS prodcom_pop,
+		INT4(0) AS alloc_found,
+		INT4(0) AS no_quotes
+    FROM        :h_table2
+    WHERE       stratum = 3;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting stratum2 into ' + :h_table4,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    INSERT INTO :h_table4
+    SELECT      :g_period,
+		fourdig,
+		sixdig,
+		INT1(3) AS stratum,
+		INT4(0) AS alloc,
+		INT4(0) AS prodcom_pop,
+		INT4(0) AS alloc_found,
+		INT4(0) AS no_quotes
+    FROM        :h_table2
+    WHERE       stratum = 3;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting stratum3 into ' + :h_table4,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+    /*-s----------------------------------------------------------------
+     Insert distinct rows from temporary table above into ppi_all_params
+    ----------------------------------------------------------------e-*/
+
+    message 'Delete existing rows from table ...' + :h_table5;
+
+    DELETE FROM :h_table5
+    WHERE period = :g_period
+    AND   alloc_type = :g_alloc_type
+    AND   sample_type = :g_sample_type;
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting existing rows from ' + :h_table5,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Inserting new period into table ...' + :h_table5;
+
+    INSERT INTO :h_table5  
+    SELECT DISTINCT a.*,
+                   :g_alloc_type as alloc_type,
+                   :g_sample_type as sample_type 
+    FROM :h_table4 a;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting new period into ' + :h_table5,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    UPDATE :h_table5 a
+    FROM   :h_table2 b
+    SET    stratum = b.stratum,
+	   alloc   = b.alloc,
+	   no_quotes = b.no_quotes
+    WHERE  a.sixdig = b.sixdig
+    AND    a.fourdig = b.fourdig
+    AND    a.stratum = b.stratum
+    AND    a.period = :g_period;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating ' + :h_table5,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Modify table
+    ----------------------------------------------------------------e-*/
+
+    MODIFY :h_table5 
+    TO BTREE UNIQUE ON
+    period,
+    sixdig,
+    fourdig,
+    stratum,
+    alloc_type,
+    sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9  
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error modifying ' + :h_table5,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+    /*-s----------------------------------------------------------------
+    Load Mapping file of 8-digit prodcom computer products to 
+    6-digit PPI indices for the new period. 
+    This file will be supplied by PPI statisticians. 
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table7);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table7;
+
+    CREATE TABLE :h_table7(
+		 question  CHAR(9) NOT NULL,
+		 sixdig    INTEGER4 NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table7,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Copy table of Computer products mapping
+    ----------------------------------------------------------------e-*/
+
+    message 'Copying table ...' + :h_table7;
+   
+    COPY TABLE :h_table7
+               (question  = c0comma,
+                sixdig = c0nl)
+    FROM :ppi_file4;
+
+    
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error copying table ' + :h_table7 + ' from ' + :ppi_file4,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update 8 digit Prodcom Code to 9 digit Prodcom value question
+    ----------------------------------------------------------------e-*/
+
+    UPDATE :h_table7
+    SET    question = CONCAT(SQUEEZE(question),'1'); 
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating 8-digit question on ' + :h_table7,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Delete existing rows from table
+    ----------------------------------------------------------------e-*/
+
+    DELETE FROM ppi_map
+    WHERE  period = :g_period
+    AND    alloc_type = :g_alloc_type
+    AND    sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting from ppi_map ',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Insert new rows into table
+    ----------------------------------------------------------------e-*/
+
+    INSERT INTO ppi_map
+    SELECT :g_period as period,
+           INT4(question) AS question,
+           sixdig,
+	   :g_alloc_type as alloc_type,
+	   :g_sample_type as sample_type
+    FROM   :h_table7;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting into ppi_map ',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Load steel address file
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table8);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table8;
+
+    CREATE TABLE :h_table8(
+		 contributor_reference CHAR(11) NOT NULL,
+		 enterprise            CHAR(10) NOT NULL,
+                 add_name1             CHAR(35) NOT NULL,
+                 add_line1             CHAR(30) NOT NULL,
+                 add_line2             CHAR(30) NOT NULL,
+                 add_line3             CHAR(30) NOT NULL,
+                 add_line4             CHAR(30) NOT NULL,
+                 add_line5             CHAR(30) NOT NULL,
+                 add_postcode          CHAR(8) NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table8,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Copy table of steel addresses
+    ----------------------------------------------------------------e-*/
+/* removed Aug 2010 - MJE
+    message 'Copying table ...' + :h_table8;
+   
+    COPY TABLE :h_table8
+               (contributor_reference = c0comma,
+                enterprise            = c0comma,
+                add_name1             = c0comma,
+                add_line1             = c0comma,
+                add_line2             = c0comma,
+                add_line3             = c0comma,
+                add_line4             = c0comma,
+                add_line5             = c0comma,
+                add_postcode          = c0nl)
+    FROM :ppi_file5;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error copying table ' + :h_table8 + ' from ' + :ppi_file5,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+*/
+    /*-s----------------------------------------------------------------
+    Delete existing rows from table
+    ----------------------------------------------------------------e-*/
+
+    DELETE FROM ppi_steel_addresses
+    WHERE  period      = :g_period
+    AND    alloc_type  = :g_alloc_type
+    AND    sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting from ppi_steel_addresses ',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Insert new rows into table
+    ----------------------------------------------------------------e-*/
+
+    INSERT INTO ppi_steel_addresses
+    SELECT  :g_period as period,
+            contributor_reference,
+            enterprise,
+            add_name1,
+            add_line1,
+            add_line2,
+            add_line3,
+            add_line4,
+            add_line5,
+            add_postcode,
+            :g_alloc_type as alloc_type,
+            :g_sample_type as sample_type
+    FROM   :h_table8;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting into ppi_steel_addresses ',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Load steel enterprise sales file
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table9);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table9;
+
+    CREATE TABLE :h_table9(
+		 contributor_reference CHAR(11) NOT NULL,
+		 enterprise            CHAR(10) NOT NULL,
+                 sixdig                INTEGER4 NOT NULL,
+                 ent_sales             INTEGER4 NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table9,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Copy table of steel enterprise sales
+    ----------------------------------------------------------------e-*/
+/* MJE
+    message 'Copying table ...' + :h_table9;
+   
+    COPY TABLE :h_table9
+               (contributor_reference = c0comma,
+                enterprise            = c0comma,
+                sixdig                = c0comma,
+                ent_sales             = c0nl)
+    FROM :ppi_file6;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error copying table ' + :h_table9 + ' from ' + :ppi_file6,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+*/
+    /*-s----------------------------------------------------------------
+    Delete existing rows from table
+    ----------------------------------------------------------------e-*/
+
+    DELETE FROM ppi_steel_ent_sales
+    WHERE  period      = :g_period
+    AND    alloc_type  = :g_alloc_type
+    AND    sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting from ppi_steel_ent_sales ',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Insert new rows into table
+    ----------------------------------------------------------------e-*/
+
+    INSERT INTO ppi_steel_ent_sales
+    SELECT  :g_period as period,
+            contributor_reference,
+            enterprise,
+            sixdig,
+            ent_sales,
+            :g_alloc_type as alloc_type,
+            :g_sample_type as sample_type
+    FROM   :h_table9;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting into ppi_steel_ent_sales ',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Commented out for phase 3.3
+
+    Load amri address file
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table10);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table10;
+
+    CREATE TABLE :h_table10(
+		 contributor_reference CHAR(11) NOT NULL,
+		 enterprise            CHAR(10) NOT NULL,
+                 add_line1             CHAR(30) NOT NULL,
+                 add_line2             CHAR(30) NOT NULL,
+                 add_line3             CHAR(30) NOT NULL,
+                 add_line4             CHAR(30) NOT NULL,
+                 add_line5             CHAR(30) NOT NULL,
+                 add_postcode          CHAR(8) NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table10,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+    ----------------------------------------------------------------e-*/
+
+    /*-s----------------------------------------------------------------
+    Commented out for phase 3.3
+
+    Copy table of amri addresses
+
+    message 'Copying table ...' + :h_table10;
+   
+    COPY TABLE :h_table10
+               (contributor_reference = c0comma,
+                enterprise            = c0comma,
+                add_line1             = c0comma,
+                add_line2             = c0comma,
+                add_line3             = c0comma,
+                add_line4             = c0comma,
+                add_line5             = c0comma,
+                add_postcode          = c0nl)
+    FROM :ppi_file7;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error copying table ' + :h_table10 + ' from ' + :ppi_file7,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+    ----------------------------------------------------------------e-*/
+
+    /*-s----------------------------------------------------------------
+    Delete existing rows from table
+
+    DELETE FROM ppi_amri_addresses
+    WHERE  period      = :g_period
+    AND    alloc_type  = :g_alloc_type
+    AND    sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting from ppi_amri_addresses ',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+    ----------------------------------------------------------------e-*/
+
+    /*-s----------------------------------------------------------------
+    Insert new rows into table
+
+    INSERT INTO ppi_amri_addresses
+    SELECT  :g_period as period,
+            contributor_reference,
+            enterprise,
+            add_line1,
+            add_line2,
+            add_line3,
+            add_line4,
+            add_line5,
+            add_postcode,
+            :g_alloc_type as alloc_type,
+            :g_sample_type as sample_type
+    FROM   :h_table10;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting into ppi_amri_addresses ',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    ----------------------------------------------------------------e-*/
+
+    /*-s----------------------------------------------------------------
+    Load amri contact file
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table11);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table11;
+
+    CREATE TABLE :h_table11(
+		 contributor_reference CHAR(11) NOT NULL,
+                 add_name1             CHAR(35) NOT NULL,
+                 phone_contact         CHAR(30) NOT NULL,
+                 phone                 CHAR(20) NOT NULL,
+                 sixdig              INTEGER4 NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table11,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+    ----------------------------------------------------------------e-*/
+
+    /*-s----------------------------------------------------------------
+    Copy table of amri addresses
+
+    message 'Copying table ...' + :h_table11;
+   
+    COPY TABLE :h_table11
+               (contributor_reference = c0comma,
+                add_name1             = c0comma,
+                phone_contact         = c0comma,
+                phone                 = c0comma,
+                sixdig              = c0nl)
+    FROM :ppi_file8;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error copying table ' + :h_table11 + ' from ' + :ppi_file8,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+    ----------------------------------------------------------------e-*/
+
+    /*-s----------------------------------------------------------------
+    Delete existing rows from table
+
+    DELETE FROM ppi_amri_contacts
+    WHERE  period      = :g_period
+    AND    alloc_type  = :g_alloc_type
+    AND    sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting from ppi_amri_contacts ',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+    ----------------------------------------------------------------e-*/
+
+    /*-s----------------------------------------------------------------
+    Insert new rows into table
+
+    INSERT INTO ppi_amri_contacts
+    SELECT  :g_period as period,
+            contributor_reference,
+            add_name1,
+            phone_contact,
+            phone,
+            sixdig,
+            :g_alloc_type as alloc_type,
+            :g_sample_type as sample_type
+    FROM   :h_table11;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting into ppi_amri_contacts ',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+    ----------------------------------------------------------------e-*/
+
+    /*-s----------------------------------------------------------------
+    Load amri enterprise sales file
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table12);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table12;
+
+    CREATE TABLE :h_table12(
+		 contributor_reference CHAR(11) NOT NULL,
+		 enterprise            CHAR(10) NOT NULL,
+                 sixdig                INTEGER4 NOT NULL,
+                 ent_sales             INTEGER4 NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table12,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+    ----------------------------------------------------------------e-*/
+
+    /*-s----------------------------------------------------------------
+    Copy table of amri enterprise sales
+
+    message 'Copying table ...' + :h_table12;
+   
+    COPY TABLE :h_table12
+               (contributor_reference = c0comma,
+                enterprise            = c0comma,
+                sixdig                = c0comma,
+                ent_sales             = c0nl)
+    FROM :ppi_file9;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error copying table ' + :h_table12 + ' from ' + :ppi_file9,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+    ----------------------------------------------------------------e-*/
+
+    /*-s----------------------------------------------------------------
+    Delete existing rows from table
+
+    DELETE FROM ppi_amri_ent_sales
+    WHERE  period      = :g_period
+    AND    alloc_type  = :g_alloc_type
+    AND    sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting from ppi_amri_ent_sales ',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+    ----------------------------------------------------------------e-*/
+
+    /*-s----------------------------------------------------------------
+    Insert new rows into table
+
+    INSERT INTO ppi_amri_ent_sales
+    SELECT  :g_period as period,
+            contributor_reference,
+            enterprise,
+            sixdig,
+            ent_sales,
+            :g_alloc_type as alloc_type,
+            :g_sample_type as sample_type
+    FROM   :h_table12;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting into ppi_amri_ent_sales ',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    ----------------------------------------------------------------e-*/
+
+    /*-s----------------------------------------------------------------
+    Create two temp tables and load amri and steel data
+    obtained from PPI statisticians.  First added for phase 3b.
+
+   ret_val = CALLPROC batch_fp_drop_table(h_table = :h_amri_table);
+
+   IF ret_val <> 0
+   THEN
+       RETURN ret_val;
+   ENDIF;
+
+   message 'Creating table . . .' + :h_amri_table;
+
+   CREATE TABLE :h_amri_table(
+		period                INTEGER4 NOT NULL,
+		contributor_reference CHAR(11) NOT NULL,
+		sixdig                INTEGER4 NOT NULL,
+		avalue                INTEGER4 NOT NULL,
+		stratum               INTEGER1 NOT NULL);
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_amri_table,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+    ----------------------------------------------------------------e-*/
+
+
+   ret_val = CALLPROC batch_fp_drop_table(h_table = :h_steel_table);
+
+   IF ret_val <> 0
+   THEN
+       RETURN ret_val;
+   ENDIF;
+
+   message 'Creating table . . .' + :h_steel_table;
+
+   CREATE TABLE :h_steel_table(
+		period                INTEGER4 NOT NULL,
+		contributor_reference CHAR(11) NOT NULL,
+		sixdig                INTEGER4 NOT NULL,
+		avalue                INTEGER4 NOT NULL,
+		stratum               INTEGER1 NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_steel_table,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    COPY TABLE :h_amri_table (
+	       period = c0comma,
+	       contributor_reference = c0comma,
+	       sixdig = c0comma,
+	       avalue = c0comma,
+	       stratum = c0nl)
+    FROM :ppi_file11;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error copying ' + :h_amri_table,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+    ----------------------------------------------------------------e-*/
+/* MJE
+
+    COPY TABLE :h_steel_table (
+	       period = c0comma,
+	       contributor_reference = c0comma,
+	       sixdig = c0comma,
+	       avalue = c0comma,
+	       stratum = c0nl)
+    FROM :ppi_file12;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error copying ' + :h_steel_table,
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+*/
+    /*-s----------------------------------------------------------------
+    Delete existing rows from amri and steel populations and insert new
+    period's data
+
+    DELETE FROM ppi_amri_pop
+    WHERE  period/100 = :g_period/100;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting existing rows from ppi_amri_pop ',
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+    ----------------------------------------------------------------e-*/
+
+    DELETE FROM ppi_steel_pop
+    WHERE  period/100 = :g_period/100;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting existing rows from ppi_steel_pop ',
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Insert new amri and steel populations into tables
+
+    INSERT INTO ppi_amri_pop
+    SELECT * FROM :h_amri_table;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting new rows into ppi_amri_pop ',
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+    ----------------------------------------------------------------e-*/
+
+    INSERT INTO ppi_steel_pop
+    SELECT * FROM :h_steel_table;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting new rows into ppi_steel_pop ',
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Delete any amri and steel contributors that have already been 
+    marked as contributor exclusions in table ppi_exclusions.
+
+    DELETE FROM ppi_amri_pop a
+    WHERE  period = :g_period
+    AND    contributor_reference IN
+           (SELECT contributor_reference
+            FROM   ppi_exclusions b
+            WHERE  a.period/100 = b.period/100
+            AND    b.alloc_type = :g_alloc_type
+            AND    b.sample_type = :g_sample_type);
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting contributor exclusions from ppi_amri_pop',
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+    ----------------------------------------------------------------e-*/
+
+    DELETE FROM ppi_steel_pop a
+    WHERE  period = :g_period
+    AND    contributor_reference IN
+           (SELECT contributor_reference
+            FROM   ppi_exclusions b
+            WHERE  a.period/100 = b.period/100
+            AND    b.alloc_type = :g_alloc_type
+            AND    b.sample_type = :g_sample_type);
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting contributor exclusions from ppi_steel_pop',
+                    :h_frpr_name,
+                     9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+    /*-s----------------------------------------------------------------
+     Create table of links
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table13);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table13;
+
+    CREATE TABLE :h_table13(
+		 old_reference CHAR(11) NOT NULL,
+		 new_reference CHAR(11) NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table13,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Copy table of ppi links
+    ----------------------------------------------------------------e-*/
+
+    message 'Copying table ...' + :h_table13;
+   
+    COPY TABLE :h_table13
+               (old_reference = c0comma,
+                new_reference = c0nl)
+    FROM :ppi_file10;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error copying table ' + :h_table13 + ' from ' + :ppi_file10,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Delete existing rows from table
+    ----------------------------------------------------------------e-*/
+
+    DELETE FROM ppi_links
+    WHERE  period      = :g_period
+    AND    alloc_type  = :g_alloc_type
+    AND    sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting existing rows from ppi_links ',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Insert new rows into table
+    ----------------------------------------------------------------e-*/
+
+    INSERT INTO ppi_links
+    SELECT  :g_period as period,
+            old_reference,
+            new_reference,
+            :g_alloc_type as alloc_type,
+            :g_sample_type as sample_type
+    FROM   :h_table13;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting into ppi_links ',
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+   ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table1);
+
+   IF ret_val <> 0
+   THEN
+       RETURN ret_val;
+   ENDIF;
+
+   ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table2);
+
+   IF ret_val <> 0
+   THEN
+       RETURN ret_val;
+   ENDIF;
+
+   ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table4);
+
+   IF ret_val <> 0
+   THEN
+       RETURN ret_val;
+   ENDIF;
+
+   ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table6);
+
+   IF ret_val <> 0
+   THEN
+       RETURN ret_val;
+   ENDIF;
+
+   ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table7);
+
+   IF ret_val <> 0
+   THEN
+       RETURN ret_val;
+   ENDIF;
+
+
+   RETURN 0;
+}
+    

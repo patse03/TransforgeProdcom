@@ -1,0 +1,2121 @@
+/*--------------------------------------------------------------------
+Procedure msaca_fp_categories
+
+Two files are needed in $TEXTFLIES for this process:
+ * contributor_product_pair_exclusions_{period}
+ * ppi_sixdigits_{period}
+
+
+---------------------------------------------------------------------*/
+
+PROCEDURE msaca_fp_categories () =
+
+DECLARE   ret_val               = INTEGER1 NOT NULL,
+          h_frpr_name           = VARCHAR(24) NOT NULL,
+          h_table               = VARCHAR(24) NOT NULL,
+          h_table1              = VARCHAR(24) NOT NULL,
+          h_table2              = VARCHAR(24) NOT NULL,
+          h_table3              = VARCHAR(24) NOT NULL,
+          h_table4              = VARCHAR(24) NOT NULL,
+          h_table5              = VARCHAR(24) NOT NULL,
+          h_table7              = VARCHAR(24) NOT NULL,
+          h_table8              = VARCHAR(24) NOT NULL,
+          h_pop_table           = VARCHAR(24) NOT NULL,
+          h_keep_sample         = VARCHAR(24) NOT NULL,
+          h_miss_table          = VARCHAR(24) NOT NULL,
+          h_file                = VARCHAR(100) NOT NULL,
+          h_file1               = VARCHAR(100) NOT NULL,
+          h_file2               = VARCHAR(100) NOT NULL,
+          h_file3               = VARCHAR(100) NOT NULL,
+          h_found               = INTEGER2 NOT NULL,
+          h_rows                = INTEGER4 NOT NULL,
+          period                = INTEGER4 NOT NULL,
+          fourdig               = INTEGER4 NOT NULL,
+          alloc                 = INTEGER2 NOT NULL,
+          stratum               = INTEGER2 NOT NULL,
+          prn                   = INTEGER4 NOT NULL,
+          avalue                = INTEGER4 NOT NULL,
+          contributor_reference = VARCHAR(11) NOT NULL,
+          sixdig                = INTEGER4 NOT NULL
+
+
+{
+
+   h_frpr_name = 'msaca_fp_categories';
+   h_table =  'temp_ppi_cpp_exclusions';
+   h_table1 = 'temp_ppi_population';
+   h_table2 = 'ppi_categories';
+   h_table3 = 'ppi_possibilities';
+   h_table4 = 'ppi_poss1';
+   h_table5 = 'ppi_poss2';
+   h_table7 = 'temp_ppi_all_counts';
+   h_table8 = 'temp_ppi_sixdig_phase';
+   h_pop_table = 'temp_ppi_population2';
+   h_keep_sample = 'ppi_keep_sample';
+   h_miss_table = 'ppi_missing';
+
+   h_file =   :g_path_name1 + '/contributor_product_pair_exclusions_' 
+          + VARCHAR(:g_period);
+
+   h_file1 = :g_path_name2 + '/prodcom/ppi_population_before_' 
+           + VARCHAR(:g_perpha) + '.txt';
+
+   h_file2 = :g_path_name2 + '/prodcom/ppi_population_after_' 
+           + VARCHAR(:g_perpha) + '.txt';
+
+   h_file3 = :g_path_name1 + '/ppi_sixdigits_' + VARCHAR(:g_period);
+
+  /*--------------------------------------------------------------------
+   Create a temporary ppi_sixdig_ann_sum table (temp_ppi_population) 
+   first to use to delete from
+  --------------------------------------------------------------------*/
+
+   ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table1);
+
+   IF ret_val <> 0
+   THEN
+      RETURN ret_val;
+   ENDIF;
+
+   CREATE TABLE :h_table1
+   AS SELECT * FROM ppi_sixdig_ann_sum
+   WHERE period/100 = :g_period/100
+   AND   alloc_type = :g_alloc_type
+   AND   sample_type = :g_sample_type;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_num_row    = BYREF(:h_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error creating ' + :h_table1,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   INSERT INTO error_log
+   VALUES(   'now',
+             'Number of rows in temp_ppi_population at start = ' + VARCHAR(:h_rows),
+	     :h_frpr_name,
+	     :ret_val, 
+	     :g_user_id);
+   COMMIT;
+
+  /*--------------------------------------------------------------------
+   Copy table temp_ppi_population into first flat file for PPI 
+   statisticians. 
+   Call this 'before' ie. before deleting not selected sixdigits
+  --------------------------------------------------------------------*/
+   COPY TABLE :h_table1(
+               period                = c0comma,
+               contributor_reference = c0comma,
+               sixdig                = c0comma,
+               avalue                = c0comma,
+               stratum               = c0comma,
+               prn                   = c0comma,
+               alloc_type            = c0comma,
+               sample_type           = c0nl)
+   INTO :h_file1;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error copying ' + :h_table1,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+  /*--------------------------------------------------------------------
+   From May 2001 the sample rotation is being run in different phases
+   A file of sixdigits to be selected in each phase will be supplied 
+   by the Recruitment team. This has to be transferred to $TEXTFILES 
+   and be named in the following way :=
+
+   phase31_sixdigits_199900
+
+   where 31 means that it is Year 3 - Phase 1
+
+   At the end of each run, only the boundaries for the sixdigits in 
+   the file supplied will be inserted into the table ppi_boundaries in
+   the next procedure. 
+
+   When the final phase is being run the parameter - final_phase must 
+   be set to 'y'.  Any sixdigits that were not supplied in the 
+   different phase files by the recruitment team by the time of the 
+   final run must have their boundaries carried forward from the 
+   previous run period and inserted into ppi_boundaries.
+   
+   ---------------------------------------------------------------------*/
+
+   ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table8);
+
+   IF ret_val <> 0
+   THEN
+      RETURN ret_val;
+   ENDIF;
+
+   CREATE TABLE :h_table8(
+                sixdig  INTEGER4 NOT NULL,
+                fourdig INTEGER4 NOT NULL,
+	        alloc   INTEGER4 NOT NULL,
+                phase   FLOAT4 NOT NULL);
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+   IF ret_val = 9
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error creating temp sixdig phase ' + :h_table8,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   COPY TABLE :h_table8
+               (sixdig         = c0comma,
+               fourdig         = c0comma,
+               alloc           = c0comma,
+               phase           = c0nl)
+   FROM :h_file3;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+   IF ret_val <> 0 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error copying file ' + :h_file3,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+    
+   /*-------------------------------------------------------------------
+      Convert phase from ppi version to prodcom version.
+      ie: 201101.0 to 15.1, 201201 to 16.1 etc.
+   -------------------------------------------------------------------*/
+
+    UPDATE :h_table8
+    SET    phase =  FLOAT4((:g_phase * 1.0) /10)
+    WHERE  phase =  :g_period + 1
+       OR  phase =  :g_period + 2
+       OR  phase =  :g_period + 3;
+  
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+   IF ret_val <> 0 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'ERROR: Failed to convert ppi phase to prodcom phase.',
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+    
+
+   /*-------------------------------------------------------------------
+   Insert temp phase file into ppi_sixdig_phase. Delete existing rows 
+   first
+   -------------------------------------------------------------------*/
+
+   DELETE FROM ppi_sixdig_phase
+   WHERE  period = :g_period
+   AND    alloc_type = :g_alloc_type
+   AND    sample_type = :g_sample_type
+   AND    phase = FLOAT4(:g_phase * 1.0) / 10;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+   IF ret_val = 9
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error deleting from ppi_sixdig_phase',
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   INSERT INTO ppi_sixdig_phase
+   SELECT :g_period AS period,
+           sixdig,
+           fourdig,
+           alloc,
+           phase,
+          :g_alloc_type,
+          :g_sample_type
+   FROM   :h_table8;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+   IF ret_val <> 0 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error inserting into ppi_sixdig_phase',
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+  /*--------------------------------------------------------------------
+  ADDED September 2001
+  Delete from ppi_sixdig_ann_sum and the temporary table where the 
+  sixdig is not being selected in the phase that is being run. 
+  Copy this table to a file 
+  --------------------------------------------------------------------*/
+
+  DELETE FROM ppi_sixdig_ann_sum
+  WHERE  period/100 = :g_period/100
+  AND    alloc_type = :g_alloc_type
+  AND    sixdig NOT IN(
+		      SELECT sixdig
+		      FROM   ppi_sixdig_phase
+		      WHERE  period = :g_period
+		      AND    alloc_type = :g_alloc_type);
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_num_row    = BYREF(:h_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error deleting sixdigits from ppi_sixdig_ann_sum ',
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   INSERT INTO error_log
+   VALUES(   'now',
+             'Number of rows deleted from ppi_sixdig_ann_sum = ' + VARCHAR(:h_rows),
+	     :h_frpr_name,
+	     :ret_val, 
+	     :g_user_id);
+   COMMIT;
+
+  /*--------------------------------------------------------------------
+  Delete from temporary table as well this is then used for the
+  sampling bit
+  Copy this table to a file again
+  --------------------------------------------------------------------*/
+
+  DELETE FROM :h_table1
+  WHERE  period/100 = :g_period/100
+  AND    alloc_type = :g_alloc_type
+  AND    sixdig NOT IN(
+		      SELECT sixdig
+		      FROM   ppi_sixdig_phase
+		      WHERE  period = :g_period
+		      AND    alloc_type = :g_alloc_type);
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_num_row    = BYREF(:h_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error deleting sixdigits from ' + :h_table1,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   INSERT INTO error_log
+   VALUES(   'now',
+             'Number of rows deleted from temp_ppi_population = ' + VARCHAR(:h_rows),
+	     :h_frpr_name,
+	     :ret_val, 
+	     :g_user_id);
+   COMMIT;
+
+  /*--------------------------------------------------------------------
+   Copy table temp_ppi_population to a flat file for PPI statisticians
+   Call this 'after' ie. after deleting not selected sixdigits
+  --------------------------------------------------------------------*/
+   COPY TABLE :h_table1(
+               period                = c0comma,
+               contributor_reference = c0comma,
+               sixdig                = c0comma,
+               avalue                = c0comma,
+               stratum               = c0comma,
+               prn                   = c0comma,
+               alloc_type            = c0comma,
+               sample_type           = c0nl)
+   INTO :h_file2;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error copying ' + :h_table2,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+  /*--------------------------------------------------------------------
+  Load file of Contributor Product Pair exclusions provided by PPI 
+  statisticians. These must be deleted from the Prodcom population 
+  table before Rotation is run.
+  --------------------------------------------------------------------*/
+
+   ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table);
+
+   IF ret_val <> 0
+   THEN
+      RETURN ret_val;
+   ENDIF;
+
+   CREATE TABLE :h_table
+                (contributor_reference CHAR(11) NOT NULL,
+                sixdig integer4 NOT NULL);
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error creating ' + :h_table,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+ 
+   COPY TABLE :h_table(contributor_reference = c0comma,
+		       sixdig                = c0nl)
+   FROM :h_file;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error copying into ' + :h_table,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+  /*--------------------------------------------------------------------
+    Delete existing rows from table ppi_cpp_exclusions and insert new
+    CPP exclusions
+  --------------------------------------------------------------------*/
+
+   DELETE FROM ppi_cpp_exclusions
+   WHERE period = :g_period;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error deleting existing rows from ppi_cpp_exclusions ',
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   INSERT INTO ppi_cpp_exclusions
+   SELECT      :g_period AS period,
+               sixdig,
+               contributor_reference
+   FROM        :h_table;
+
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error inserting new period into ppi_cpp_exclusions',
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+  /*--------------------------------------------------------------------
+    Delete CPP exclusions from temp_ppi_population
+  --------------------------------------------------------------------*/
+  
+   DELETE FROM :h_table1 a
+   WHERE contributor_reference IN
+         (SELECT contributor_reference 
+          FROM   ppi_cpp_exclusions b
+          WHERE  a.period/100 = b.period/100
+          AND    b.period = :g_period
+          AND    a.sixdig = b.sixdig);
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_num_row    = BYREF(:h_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error deleting cpp exclusions from ' + :h_table1,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   INSERT INTO error_log
+   VALUES(   'now',
+             'Number of CPP exclusions deleted from temp_ppi_population = ' + VARCHAR(:h_rows),
+	     :h_frpr_name,
+	     :ret_val, 
+	     :g_user_id);
+   COMMIT;
+
+  /*--------------------------------------------------------------------
+  Instead of using original counts of prodcom population already held
+  in ppi_all_params, count the population again from table
+  temp_ppi_population and update ppi_all_params with new population
+  counts
+  --------------------------------------------------------------------*/
+
+   /*--------------------------------------------------------------------
+    Create table of counts from temp_ppi_population    
+    ---------------------------------------------------------------------*/
+
+   ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table7);
+
+   IF ret_val <> 0
+   THEN
+      RETURN ret_val;
+   ENDIF;
+
+   message 'Creating table . . .' + :h_table7;
+
+   CREATE TABLE :h_table7
+   AS SELECT :g_period AS period,
+             alloc_type,
+             sample_type,
+             sixdig,
+             stratum,
+             COUNT(contributor_reference) as prodcom_pop
+   FROM      :h_table1
+   WHERE     period/100 = :g_period/100
+   AND       alloc_type = :g_alloc_type
+   AND       sample_type = :g_sample_type
+   GROUP BY  alloc_type,
+             sample_type,
+             sixdig,
+             stratum;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+	      h_num_row    = BYREF(:h_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error creating ' + :h_table7,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+
+   /*--------------------------------------------------------------------
+    Update ppi_all_params with prodcom_population counts
+    from temp_ppi_population.
+    ---------------------------------------------------------------------*/
+
+    UPDATE ppi_all_params a
+    FROM   :h_table7 b
+    SET    prodcom_pop = b.prodcom_pop 
+    WHERE  a.period = b.period
+    AND    a.stratum = b.stratum 
+    AND    a.alloc_type = b.alloc_type
+    AND    a.sample_type = b.sample_type
+    AND    a.sixdig = b.sixdig;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+	      h_num_row    = BYREF(:h_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'System error updating ppi_all_params',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+  /*--------------------------------------------------------------------
+  For some of the sixdigits that Prodcom has data for, there is no
+  allocation needed by PPI and therefore the sixdigits are not held on
+  ppi_all_params. These are referred to as where the allocation is
+  missing. Delete these from the prodcom population table
+  temp_ppi_population
+  --------------------------------------------------------------------*/
+
+  ret_val = CALLPROC batch_fp_drop_table(h_table = :h_miss_table);
+
+  IF ret_val <> 0
+  THEN
+     RETURN ret_val;
+  ENDIF;
+
+
+  CREATE TABLE :h_miss_table
+  AS SELECT * FROM :h_table1 a
+  WHERE sixdig NOT IN
+             (SELECT sixdig
+              FROM   ppi_all_params b
+              WHERE  period = :g_period
+              AND    a.stratum = b.stratum
+              AND    b.alloc_type = :g_alloc_type
+              AND    b.sample_type = :g_sample_type );
+  
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_num_row    = BYREF(:h_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error creating ' + :h_miss_table,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   INSERT INTO error_log
+   VALUES(   'now',
+             'Number of rows created for missing allocation = ' + VARCHAR(:h_rows),
+	     :h_frpr_name,
+	     :ret_val, 
+	     :g_user_id);
+   COMMIT;
+
+  /*--------------------------------------------------------------------
+  Delete the CPPs that have no allocation from the population table
+  --------------------------------------------------------------------*/
+
+  DELETE FROM :h_table1 a
+  WHERE contributor_reference IN
+                    (SELECT contributor_reference
+                     FROM   :h_miss_table b
+                     WHERE  a.sixdig = b.sixdig
+                     AND    a.stratum = b.stratum);
+                     
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_num_row    = BYREF(:h_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error deleting missing allocation from ' + :h_table1,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   INSERT INTO error_log
+   VALUES(   'now',
+             'Number of rows deleted for missing allocation = ' + VARCHAR(:h_rows),
+	     :h_frpr_name,
+	     :ret_val, 
+	     :g_user_id);
+   COMMIT;
+
+
+  /*--------------------------------------------------------------------
+   Strip out all cpps that can not be used in sample rotation
+
+   temp_ppi_population will then contain all the contributor product 
+   pairs that have to be randomly sampled. This means that they :-
+	      1. are NOT completely enumerated
+	      2. have an allocation
+	      3. have an allocation that is not 0
+	      4. have an allocation that is LESS than the prodcom_population
+
+   ppi_boundaries - contains the sample interval boundaries for each
+                    stratum within each sixdigit. Some strata will 
+                    not have boundary values because they may not 
+                    have been calculated for the 1996 data.
+  --------------------------------------------------------------------*/
+
+   /*--------------------------------------------------------------------
+    Delete all completely enumerated cpps, these are stratum 3 
+    generally but for the  following four digits they are stratum 2 
+    1413,1430,1583,1588,1592,1593,1810,2411,2651,2652,3621
+    Before deleting select all of them into a table as these are
+    required later.
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_keep_sample);
+
+    IF ret_val <> 0
+    THEN
+       RETURN ret_val;
+    ENDIF;
+
+    MESSAGE 'Creating table . . . ' + :h_keep_sample;
+
+    CREATE TABLE :h_keep_sample AS
+    SELECT *
+    FROM  :h_table1
+    WHERE stratum = 3
+    AND   sixdig IN
+            (SELECT sixdig
+            FROM    ppi_all_params
+            WHERE   period = :g_period
+            AND     alloc_type = :g_alloc_type
+            AND     sample_type = :g_sample_type)
+    AND   sixdig/100 NOT IN 
+            (SELECT fourdig 
+            FROM    ppi_bound_params
+            WHERE   stratum = 2
+            AND     upper_bound = 999999999
+	    AND     period = :g_period
+	    AND     alloc_type = :g_alloc_type
+	    AND     sample_type= :g_sample_type);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+	      h_num_row    = BYREF(:h_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'System error creating stratum 3 from ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+   INSERT INTO error_log
+   VALUES(   'now',
+             'Number of rows created for stratum 3 =  ' + VARCHAR(:h_rows),
+	     :h_frpr_name,
+	     :ret_val, 
+	     :g_user_id);
+   COMMIT;
+    ---------------------------------------------------------------------*/
+   /*--------------------------------------------------------------------
+
+    MESSAGE 'Deleting stratum 3 from ' + :h_table1;
+
+    DELETE FROM :h_table1
+    WHERE stratum = 3
+    AND   sixdig IN
+            (SELECT sixdig
+            FROM    ppi_all_params
+            WHERE   period = :g_period
+            AND     alloc_type = :g_alloc_type
+            AND     sample_type = :g_sample_type)
+    AND   sixdig/100 NOT IN 
+            (SELECT fourdig 
+            FROM    ppi_bound_params
+            WHERE   stratum = 2
+            AND     upper_bound = 999999999
+	    AND     period = :g_period
+	    AND     alloc_type = :g_alloc_type
+	    AND     sample_type= :g_sample_type);
+
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+	      h_num_row    = BYREF(:h_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'System error deleting stratum 3 from ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+   INSERT INTO error_log
+   VALUES(   'now',
+             'Number of rows deleted for stratum 3 =  ' + VARCHAR(:h_rows),
+	     :h_frpr_name,
+	     :ret_val, 
+	     :g_user_id);
+   COMMIT;
+
+
+    MESSAGE 'Inserting stratum 2 into ' + :h_keep_sample;
+
+    INSERT INTO :h_keep_sample
+    SELECT *
+    FROM  :h_table1
+    WHERE stratum = 2
+    AND   sixdig IN
+            (SELECT sixdig
+            FROM    ppi_all_params
+            WHERE   period = :g_period
+            AND     alloc_type = :g_alloc_type
+            AND     sample_type = :g_sample_type)
+    AND   sixdig/100 IN 
+            (SELECT fourdig 
+            FROM    ppi_bound_params
+            WHERE   stratum = 2
+            AND     upper_bound = 999999999
+	    AND     period = :g_period
+	    AND     alloc_type = :g_alloc_type
+	    AND     sample_type= :g_sample_type);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+	      h_num_row    = BYREF(:h_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'System inserting stratum 2 into ' + :h_keep_sample,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+   INSERT INTO error_log
+   VALUES(   'now',
+             'Number of rows inserted for stratum 2 =  ' + VARCHAR(:h_rows),
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+   COMMIT;
+
+    MESSAGE 'Deleting stratum 2 from ' + :h_table1;
+
+    DELETE FROM :h_table1
+    WHERE stratum = 2
+    AND   sixdig IN
+            (SELECT sixdig
+            FROM    ppi_all_params
+            WHERE   period = :g_period
+            AND     alloc_type = :g_alloc_type
+            AND     sample_type = :g_sample_type)
+    AND   sixdig/100 IN 
+            (SELECT fourdig 
+            FROM    ppi_bound_params
+            WHERE   stratum = 2
+            AND     upper_bound = 999999999
+	    AND     period = :g_period
+	    AND     alloc_type = :g_alloc_type
+	    AND     sample_type= :g_sample_type);
+
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+	      h_num_row    = BYREF(:h_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'System deleting stratum 2 from ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+   INSERT INTO error_log
+   VALUES(   'now',
+             'Number of rows deleted for stratum 2 =  ' + VARCHAR(:h_rows),
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+   COMMIT;
+
+    ---------------------------------------------------------------------*/
+
+    /*--------------------------------------------------------------------
+    For each stratum for each sixdigit, delete where 
+    alloc = prodcom_pop
+    Insert rows into temp_ppi_sample at same time to be used later 
+    ---------------------------------------------------------------------*/
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_keep_sample);
+
+    IF ret_val <> 0
+    THEN
+       RETURN ret_val;
+    ENDIF;
+
+    /**************
+    Create an empty version of ppi_keep_sample to run test of sampling
+    where all stratum are sampled as table will no longer exist if 
+    commented out above
+    ****************/
+
+    CREATE TABLE :h_keep_sample
+    AS SELECT * from :h_table1;
+
+       ret_val = CALLPROC batch_check_inq_ing (
+                 h_num_row_ck = 1,
+	         h_num_row    = BYREF(:h_rows),
+                 h_commit     = 'Y',
+                 h_rollback   = 'N',
+                 h_frpr_name  = :h_frpr_name);
+  
+       IF ret_val = 9 
+       THEN
+           INSERT INTO error_log
+           VALUES (    'now',
+                       'System error creating table ' + (:h_keep_sample),
+                       :h_frpr_name,
+                       :ret_val,
+                       :g_user_id);
+           COMMIT;
+           RETURN ret_val;
+       ENDIF;
+
+    MODIFY :h_keep_sample TO TRUNCATED;
+
+       ret_val = CALLPROC batch_check_inq_ing (
+                 h_num_row_ck = 1,
+	         h_num_row    = BYREF(:h_rows),
+                 h_commit     = 'Y',
+                 h_rollback   = 'N',
+                 h_frpr_name  = :h_frpr_name);
+  
+       IF ret_val = 9 
+       THEN
+           INSERT INTO error_log
+           VALUES (    'now',
+                       'System error modifying table ' + (:h_keep_sample),
+                       :h_frpr_name,
+                       :ret_val,
+                       :g_user_id);
+           COMMIT;
+           RETURN ret_val;
+       ENDIF;
+    
+    SELECT DISTINCT stratum
+    FROM  ppi_all_params 
+
+    {
+      MESSAGE 'Processing Stratum - ' +
+		  VARCHAR(:stratum) + ' . . .';
+
+      INSERT INTO :h_keep_sample
+      SELECT * 
+      FROM   :h_table1
+      WHERE  stratum = :stratum
+      AND    sixdig IN
+             (SELECT sixdig
+              FROM   ppi_all_params
+              WHERE  stratum = :stratum
+              AND    period = :g_period
+              AND    alloc_type = :g_alloc_type
+              AND    sample_type = :g_sample_type
+              AND    alloc = prodcom_pop);
+
+       ret_val = CALLPROC batch_check_inq_ing (
+                 h_num_row_ck = 1,
+	         h_num_row    = BYREF(:h_rows),
+                 h_commit     = 'Y',
+                 h_rollback   = 'N',
+                 h_frpr_name  = :h_frpr_name);
+  
+       IF ret_val = 9 
+       THEN
+           INSERT INTO error_log
+           VALUES (    'now',
+                       'System error inserting ' + VARCHAR(:stratum) + ' from ' + :h_table1,
+                       :h_frpr_name,
+                       :ret_val,
+                       :g_user_id);
+           COMMIT;
+           RETURN ret_val;
+       ENDIF;
+
+   INSERT INTO error_log
+   VALUES(   'now',
+             '1st loop number of rows inserted for stratum ' + VARCHAR(:stratum) + ' = ' + VARCHAR(:h_rows) ,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+   COMMIT;
+
+      DELETE FROM :h_table1
+      WHERE  stratum = :stratum
+      AND    sixdig IN
+             (SELECT sixdig
+              FROM   ppi_all_params
+              WHERE  stratum = :stratum
+              AND    period = :g_period
+              AND    alloc_type = :g_alloc_type
+              AND    sample_type = :g_sample_type
+              AND    alloc = prodcom_pop);
+
+       ret_val = CALLPROC batch_check_inq_ing (
+                 h_num_row_ck = 1,
+	         h_num_row    = BYREF(:h_rows),
+                 h_commit     = 'Y',
+                 h_rollback   = 'N',
+                 h_frpr_name  = :h_frpr_name);
+  
+       IF ret_val = 9 
+       THEN
+           INSERT INTO error_log
+           VALUES (    'now',
+                       'System error deleting ' + VARCHAR(:stratum) + ' from ' + :h_table1,
+                       :h_frpr_name,
+                       :ret_val,
+                       :g_user_id);
+           COMMIT;
+           RETURN ret_val;
+       ENDIF;
+
+   INSERT INTO error_log
+   VALUES(   'now',
+             '1st loop number of rows deleted for stratum ' + VARCHAR(:stratum) + ' = ' + VARCHAR(:h_rows) ,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+   COMMIT;
+
+    };
+       ret_val = CALLPROC batch_check_inq_ing (
+                 h_num_row_ck = 1,
+                 h_commit     = 'Y',
+                 h_rollback   = 'N',
+                 h_frpr_name  = :h_frpr_name);
+  
+       IF ret_val = 9 
+       THEN
+           INSERT INTO error_log
+           VALUES (    'now',
+                       'System error in first select loop - alloc = prodcom_pop',
+                       :h_frpr_name,
+                       :ret_val,
+                       :g_user_id);
+           COMMIT;
+           RETURN ret_val;
+       ENDIF;
+
+    /*--------------------------------------------------------------------
+    For each stratum for each sixdigit, delete where 
+    prodcom_pop < alloc
+    Insert rows into temp_ppi_sample at same time to be used later 
+    ---------------------------------------------------------------------*/
+    SELECT DISTINCT stratum
+    FROM ppi_all_params 
+
+    {
+      MESSAGE 'Processing Stratum - ' +
+		  VARCHAR(:stratum) + ' . . .';
+
+      INSERT INTO :h_keep_sample
+      SELECT *
+      FROM   :h_table1
+      WHERE  stratum = :stratum
+      AND    sixdig IN
+             (SELECT sixdig
+              FROM   ppi_all_params
+              WHERE  stratum = :stratum
+              AND    period = :g_period
+              AND    alloc_type = :g_alloc_type
+              AND    sample_type = :g_sample_type
+              AND    prodcom_pop < alloc);
+
+       ret_val = CALLPROC batch_check_inq_ing (
+                 h_num_row_ck = 1,
+	         h_num_row    = BYREF(:h_rows),
+                 h_commit     = 'Y',
+                 h_rollback   = 'N',
+                 h_frpr_name  = :h_frpr_name);
+  
+       IF ret_val = 9 
+       THEN
+           INSERT INTO error_log
+           VALUES (    'now',
+                       'System error inserting ' + VARCHAR(:stratum) + ' from ' + :h_table1,
+                       :h_frpr_name,
+                       :ret_val,
+                       :g_user_id);
+           COMMIT;
+           RETURN ret_val;
+       ENDIF;
+
+   INSERT INTO error_log
+   VALUES(   'now',
+             '2nd loop number of rows inserted for stratum ' + VARCHAR(:stratum) + ' = ' + VARCHAR(:h_rows) ,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+   COMMIT;
+
+      DELETE FROM :h_table1
+      WHERE  stratum = :stratum
+      AND    sixdig IN
+             (SELECT sixdig
+              FROM   ppi_all_params
+              WHERE  stratum = :stratum
+              AND    period = :g_period
+              AND    alloc_type = :g_alloc_type
+              AND    sample_type = :g_sample_type
+              AND    prodcom_pop < alloc);
+
+       ret_val = CALLPROC batch_check_inq_ing (
+                 h_num_row_ck = 1,
+	         h_num_row    = BYREF(:h_rows),
+                 h_commit     = 'Y',
+                 h_rollback   = 'N',
+                 h_frpr_name  = :h_frpr_name);
+  
+       IF ret_val = 9 
+       THEN
+           INSERT INTO error_log
+           VALUES (    'now',
+                       'System error deleting ' + VARCHAR(:stratum) + ' from ' + :h_table1,
+                       :h_frpr_name,
+                       :ret_val,
+                       :g_user_id);
+           COMMIT;
+           RETURN ret_val;
+       ENDIF;
+
+   INSERT INTO error_log
+   VALUES(   'now',
+             '2nd loop number of rows deleted for stratum ' + VARCHAR(:stratum) + ' = ' + VARCHAR(:h_rows) ,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+   COMMIT;
+
+    };
+       ret_val = CALLPROC batch_check_inq_ing (
+                 h_num_row_ck = 1,
+                 h_commit     = 'Y',
+                 h_rollback   = 'N',
+                 h_frpr_name  = :h_frpr_name);
+  
+       IF ret_val = 9 
+       THEN
+           INSERT INTO error_log
+           VALUES (    'now',
+                       'System error in second select loop - prodcom_pop < alloc',
+                       :h_frpr_name,
+                       :ret_val,
+                       :g_user_id);
+           COMMIT;
+           RETURN ret_val;
+       ENDIF;
+
+   /*--------------------------------------------------------------------
+    Insert everything from table temp_ppi_population into another 
+    table with the same structure. Then delete any sixdigits that 
+    have not got an allocation 
+    ie. 
+    they are in table ppi_all_params with alloc = 0          
+   ---------------------------------------------------------------------*/
+   ret_val = CALLPROC batch_fp_drop_table(h_table = :h_pop_table);
+
+   IF ret_val <> 0
+   THEN
+      RETURN ret_val;
+   ENDIF;
+
+   CREATE TABLE :h_pop_table
+   AS SELECT *
+   FROM   :h_table1
+   WHERE  sixdig IN
+	     (SELECT sixdig
+   	      FROM   ppi_all_params
+              WHERE  alloc_type = :g_alloc_type
+              AND    sample_type = :g_sample_type
+              AND    period = :g_period);
+
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+	      h_num_row    = BYREF(:h_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'System error inserting new periods data into ' + :h_pop_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+   INSERT INTO error_log
+   VALUES(   'now',
+             'Total rows temp_ppi_population2 before deleting alloc_sel = 0  ' + VARCHAR(:h_rows) ,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+   COMMIT;
+
+
+    /*--------------------------------------------------------------------
+    Select loop to delete for each stratum for each sixdigit where 
+    alloc = 0
+    ---------------------------------------------------------------------*/
+
+    SELECT DISTINCT stratum
+    FROM ppi_all_params 
+
+    {
+      MESSAGE 'Processing Stratum - ' +
+		  VARCHAR(:stratum) + ' . . .';
+
+      DELETE FROM :h_pop_table
+      WHERE  stratum = :stratum
+      AND    sixdig IN
+             (SELECT sixdig
+              FROM   ppi_all_params
+              WHERE  stratum = :stratum
+              AND    period = :g_period
+              AND    alloc_type = :g_alloc_type
+              AND    sample_type = :g_sample_type
+              AND    alloc = 0);
+
+       ret_val = CALLPROC batch_check_inq_ing (
+                 h_num_row_ck = 1,
+	         h_num_row    = BYREF(:h_rows),
+                 h_commit     = 'Y',
+                 h_rollback   = 'N',
+                 h_frpr_name  = :h_frpr_name);
+  
+       IF ret_val = 9 
+       THEN
+           INSERT INTO error_log
+           VALUES (    'now',
+                       'System error deleting alloc = 0 ' + VARCHAR(:stratum) + ' from ' + :h_pop_table,
+                       :h_frpr_name,
+                       :ret_val,
+                       :g_user_id);
+           COMMIT;
+           RETURN ret_val;
+       ENDIF;
+
+   INSERT INTO error_log
+   VALUES(   'now',
+             '3rd loop number of rows deleted where alloc = 0 for stratum ' + VARCHAR(:stratum) + ' = ' + VARCHAR(:h_rows) ,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+   COMMIT;
+
+    };
+       ret_val = CALLPROC batch_check_inq_ing (
+                 h_num_row_ck = 1,
+                 h_commit     = 'Y',
+                 h_rollback   = 'N',
+                 h_frpr_name  = :h_frpr_name);
+  
+       IF ret_val = 9 
+       THEN
+           INSERT INTO error_log
+           VALUES (    'now',
+                       'System error in third select loop - alloc = 0',
+                       :h_frpr_name,
+                       :ret_val,
+                       :g_user_id);
+           COMMIT;
+           RETURN ret_val;
+       ENDIF;
+
+
+    /*--------------------------------------------------------------------
+    Modify table :h_pop_table
+    ---------------------------------------------------------------------*/
+
+   MESSAGE 'Modifying table ' + :h_pop_table;
+
+   MODIFY :h_pop_table
+   TO BTREE UNIQUE ON period,
+                      sixdig,
+                      stratum,
+                      contributor_reference,
+		      alloc_type,
+		      sample_type;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error modifying ' + :h_pop_table,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+    /*--------------------------------------------------------------------
+    Update :h_pop_table to make all periods annual periods
+    ---------------------------------------------------------------------*/
+   UPDATE :h_pop_table
+   SET period = :g_period;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error updating ' + :h_pop_table,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+  /*--------------------------------------------------------------------
+  Look back for boundaries. Start with previous_period1 and if none
+  found go back to previous_period2 if none found go back to
+  previous_period3 etc. 
+  This code may need changing each year
+  --------------------------------------------------------------------*/
+
+   ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table2);
+
+   IF ret_val <> 0
+   THEN
+      RETURN ret_val;
+   ENDIF;
+
+   message 'Creating table . . .' + :h_table2;
+
+   CREATE TABLE :h_table2
+   AS SELECT a.*,
+             INT4(0) as lh_bound,
+             INT4(0) as rh_bound,
+             INT1(9) as position,
+             INT2(0) as alloc,
+             INT2(0) as within,
+             INT1(0) as category
+   FROM      :h_pop_table a;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+	      h_num_row    = BYREF(:h_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error creating ' + :h_table2,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   INSERT INTO error_log
+   VALUES(   'now',
+             'Number of rows in ppi_categories =  ' + VARCHAR(:h_rows) ,
+	     :h_frpr_name,
+	     :ret_val,
+	     :g_user_id);
+   COMMIT;
+  /*--------------------------------------------------------------------
+   Amended June 2001 -
+
+   With the staging of recruitment PPI may in future select the first 2
+   stages from the previous years Prodcom data but at the 3rd stage
+   they will select from the latest Prodcom data. This means that the 
+   boundaries being used must still come from the previous PPI run year
+   eg.
+   PPI YEAR             PERIOD         BOUNDARY PERIOD
+
+   Year1                199700           199600
+			199700           199700
+			199700           199600
+
+   Year2                199800           199800
+
+   Year3                199900           199900
+			199900           199900
+			200000(possibly) 199900
+   
+   Year4                200000           200000
+			200000           200000
+			200100           200000
+
+  therefore in the update below the boundaries used must come from the
+  table ppi_boundaries but boundary_period must be used rather that
+  period and the period will the period of the Prodcom data rather
+  than period that the boundaries relate too
+  --------------------------------------------------------------------*/
+
+   UPDATE :h_table2 a
+   FROM   ppi_boundaries b
+   SET    lh_bound = b.lh_bound,
+	  rh_bound = b.rh_bound
+   WHERE  a.sixdig = b.sixdig
+   AND    a.stratum = b.stratum
+   AND    a.period = :g_period
+   AND    b.boundary_period = :g_prev_ppi_period 
+   AND    a.alloc_type = :g_alloc_type;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+	      h_num_row    = BYREF(:h_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error updating ' + :h_table2,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+  /*--------------------------------------------------------------------
+   For the following updates use period instead of boundary_period as
+   this works for the boundaries before phasing was introduced
+   These only update where the update above has not found any
+   boundaries. You have to go back to see you can find a boundary in
+   any previous PPI year
+  --------------------------------------------------------------------*/
+   UPDATE :h_table2 a
+   FROM   ppi_boundaries b
+   SET    lh_bound = b.lh_bound,
+	  rh_bound = b.rh_bound
+   WHERE  a.sixdig = b.sixdig
+   AND    a.stratum = b.stratum
+   AND    a.period = :g_period
+   AND    b.boundary_period = :g_period - 200
+   /*AND    b.period = :g_period - 200*/
+   AND    a.lh_bound = 0;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+	      h_num_row    = BYREF(:h_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error 2nd update ' + :h_table2,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   UPDATE :h_table2 a
+   FROM   ppi_boundaries b
+   SET    lh_bound = b.lh_bound,
+	  rh_bound = b.rh_bound
+   WHERE  a.sixdig = b.sixdig
+   AND    a.stratum = b.stratum
+   AND    a.period = :g_period
+   AND    b.boundary_period = :g_period - 300
+   /*AND    b.period = :g_period - 300*/
+   AND    a.lh_bound = 0;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+	      h_num_row    = BYREF(:h_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error 3rd update ' + :h_table2,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   UPDATE :h_table2 a
+   FROM   ppi_boundaries b
+   SET    lh_bound = b.lh_bound,
+	  rh_bound = b.rh_bound
+   WHERE  a.sixdig = b.sixdig
+   AND    a.stratum = b.stratum
+   AND    a.period = :g_period
+   AND    b.boundary_period = :g_period - 400
+   AND    a.lh_bound = 0;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+	      h_num_row    = BYREF(:h_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error 4th update ' + :h_table2,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   UPDATE :h_table2 a
+   FROM   ppi_boundaries b
+   SET    lh_bound = b.lh_bound,
+	  rh_bound = b.rh_bound
+   WHERE  a.sixdig = b.sixdig
+   AND    a.stratum = b.stratum
+   AND    a.period = :g_period
+   AND    b.boundary_period = :g_period - 500
+   AND    a.lh_bound = 0;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+	      h_num_row    = BYREF(:h_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error 4th update ' + :h_table2,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+
+  /*--------------------------------------------------------------------
+   Now allocate a position to all cases with boundary values
+
+   IF PRN >= LHB SET postion = 0 otherwise SET postion = 1
+  --------------------------------------------------------------------*/
+
+   MESSAGE 'Updating table ' + :h_table2;
+
+   UPDATE :h_table2
+   SET    position = 0       
+   WHERE  (prn >= lh_bound);
+
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error updating pos = 0 ' + :h_table2,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   UPDATE :h_table2
+   SET    position = 1       
+   WHERE  position = 9;     
+
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error updating pos = 1 ' + :h_table2,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   /*-------------------------------------------------------------------
+     Modify table again this time sorting on position as well. This
+     ensures the first case in each strata is at the Left boundary
+   --------------------------------------------------------------------*/
+   MESSAGE 'Modifying table ' + :h_table2;
+
+   MODIFY :h_table2
+   TO BTREE UNIQUE ON sixdig,
+                      stratum,
+                      position,
+                      prn;  
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error modifying (2)' + :h_table2,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+  /*--------------------------------------------------------------------
+   There are now 2 possibilities:-
+
+   1. The RHB is > the LHB
+   2. The RHB is < the LHB 
+      NB. for the first year the RHB will always be greater than the 
+      LHB but in future years the RHB may be smaller than the LHB
+   
+ Create a table to hold both types of counts
+  --------------------------------------------------------------------*/
+
+   ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table3);
+
+   IF ret_val <> 0
+   THEN
+      RETURN ret_val;
+   ENDIF;
+
+   message 'Creating table . . .' + :h_table3;
+
+   CREATE TABLE :h_table3
+   AS SELECT sixdig,
+             stratum,
+             count(contributor_reference) as within,
+             INT2(0) as count_refs
+   FROM      :h_table2
+   GROUP BY  sixdig,
+	     stratum;
+ 
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+	      h_num_row    = BYREF(:h_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error creating ' + :h_table3,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   /*--------------------------------------------------------------------
+    Possibility 1 - 
+    ---------------------------------------------------------------------*/
+
+   ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table4);
+
+   IF ret_val <> 0
+   THEN
+      RETURN ret_val;
+   ENDIF;
+
+   message 'Creating table . . .' + :h_table4;
+
+   CREATE TABLE :h_table4
+   AS SELECT sixdig,
+             stratum,
+             COUNT(contributor_reference) as no_refs
+   FROM      :h_table2
+   WHERE     rh_bound > lh_bound
+   AND       (prn >= lh_bound)
+   AND       prn < rh_bound
+   GROUP BY  sixdig,
+	     stratum;
+ 
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error creating ' + :h_table4,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   /*--------------------------------------------------------------------
+    Possibility 2 -
+    ---------------------------------------------------------------------*/
+
+   ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table5);
+
+   IF ret_val <> 0
+   THEN
+      RETURN ret_val;
+   ENDIF;
+
+   message 'Creating table . . .' + :h_table5;
+
+   CREATE TABLE :h_table5
+   AS SELECT sixdig,
+             stratum,
+             COUNT(contributor_reference) as no_refs
+   FROM      :h_table2
+   WHERE     rh_bound < lh_bound
+   AND       (prn >= lh_bound
+   OR         prn < rh_bound)
+   GROUP BY  sixdig,
+	     stratum;
+ 
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error creating ' + :h_table5,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+    /*--------------------------------------------------------------------
+    Insert all from table of possibility 2 into table of possibility 1
+    ---------------------------------------------------------------------*/
+
+   INSERT INTO :h_table4
+   SELECT * FROM :h_table5;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error inserting rows into ' + :h_table4,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+    /*--------------------------------------------------------------------
+    Update table ppi_possibilities with counts
+    ---------------------------------------------------------------------*/
+
+   message 'Updating table . . .' + :h_table3;
+
+   UPDATE :h_table3 a
+   FROM   :h_table4 b
+   SET    count_refs = b.no_refs
+   WHERE  a.sixdig = b.sixdig
+   AND    a.stratum = b.stratum;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error updating(2) ' + :h_table2,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+    /*--------------------------------------------------------------------
+    Update table ppi_categories with alloc
+    ---------------------------------------------------------------------*/
+
+   message 'Updating table . . .' + :h_table2;
+
+   UPDATE :h_table2 a
+   FROM   ppi_all_params b
+   SET    alloc = b.alloc
+   WHERE  a.sixdig = b.sixdig
+   AND    a.period = b.period
+   AND    b.alloc_type = :g_alloc_type
+   AND    b.sample_type = :g_sample_type
+   AND    a.stratum = b.stratum;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error updating alloc' + :h_table2,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+
+    /*--------------------------------------------------------------------
+    Update table ppi_categories with counts of cases within boundaries
+    ---------------------------------------------------------------------*/
+
+   message 'Updating table . . .' + :h_table2;
+
+   UPDATE :h_table2 a
+   FROM   :h_table3 b
+   SET    within  = b.count_refs
+   WHERE  a.sixdig = b.sixdig
+   AND    a.stratum = b.stratum;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error updating within' + :h_table2,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+    /*--------------------------------------------------------------------
+    Update table ppi_categories allocating each a category            
+    
+    Category 1:-  where LHB = 0 OR RHB = 0
+    Category 2:-  where ALLOCATION EQUALS the number of cases between 
+                  the LHB and RHB (alloc = within)
+    Category 3:-  where ALLOCATION is GREATER THAN the number of cases
+                  between the LHB and RHB (alloc > within)
+    Category 4:-  where ALLOCATION is LESS THAN the number of cases 
+                  between the LHB and RHB (alloc < within)
+    ---------------------------------------------------------------------*/
+
+   message 'Updating with category 1 table . . .' + :h_table2;
+
+   UPDATE :h_table2 
+   SET    category = 1
+   WHERE  (lh_bound = 0 OR rh_bound = 0);
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error updating category 1' + :h_table2,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+
+   message 'Updating with category 2 table . . .' + :h_table2;
+
+   UPDATE :h_table2 
+   SET    category = 2
+   WHERE  alloc = within    
+   AND    category = 0;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error updating category 2' + :h_table2,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   message 'Updating with category 3 table . . .' + :h_table2;
+
+   UPDATE :h_table2 
+   SET    category = 3
+   WHERE  alloc > within    
+   AND    category = 0;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error updating category 3' + :h_table1,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   message 'Updating with category 4 table . . .' + :h_table2;
+
+   UPDATE :h_table2 
+   SET    category = 4
+   WHERE  alloc < within    
+   AND    category = 0;
+
+   ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              H_frpr_name  = :h_frpr_name);
+  
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'System error updating category 3' + :h_table2,
+                   :h_frpr_name,
+                   :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+
+   RETURN 0;
+
+}

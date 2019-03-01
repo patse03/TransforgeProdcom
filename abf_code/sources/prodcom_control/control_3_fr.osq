@@ -1,0 +1,357 @@
+/*****************************************************************************
+  DESCRIPTION: Frame to check application back in from the development area.
+
+               Version and point release numbers are assigned automatically
+               at this stage. See the form trim for explanations of the
+               choices available.
+
+  CREATED: Dom Ford - April 2012
+
+  CHANGES: May 2012 - DF - Added header info now program functional.
+
+*****************************************************************************/
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_return          = INTEGER1 NOT NULL,
+        h_version         = INTEGER1 NOT NULL WITH DEFAULT,
+        h_point           = INTEGER1 NOT NULL WITH DEFAULT,
+        h_exit            = CHAR(1) NOT NULL,
+        h_prompt          = CHAR(1) NOT NULL,
+        h_who             = CHAR(3) NOT NULL,
+        h_fullname        = VARCHAR(40) NOT NULL,
+        h_dummy           = INTEGER4 NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_message         = VARCHAR(70) NOT NULL,
+        h_command         = VARCHAR(1000) NOT NULL,
+
+        lp_drop_table           = PROCEDURE RETURNING INTEGER,
+        lp_pop_table            = PROCEDURE RETURNING INTEGER,
+        lp_error_check          = PROCEDURE RETURNING INTEGER,
+        lp_full_error_check     = PROCEDURE RETURNING INTEGER
+{
+
+SELECT DBMSINFO('username') AS g_user_id;
+SELECT DBMSINFO('database') AS g_database;
+
+h_frpr_name = 'control_3_fr';
+msa_date = 'now';
+
+h_retry_or_not      = 'RETRY';
+h_retries           = 0;
+h_retries_allowed   = 3;
+
+h_return = CALLPROC lp_pop_table;
+IF h_return = 1 THEN RETURN; ENDIF;
+IF h_return > 1 THEN EXIT; ENDIF;
+
+RESUME FIELD tf;
+
+END
+
+/*=======================================================================
+   FRSKEY4: Go - Check application in.
+======================================================================*/
+
+'Go', KEY FRSKEY4 =
+BEGIN
+
+g_application = :tf.application;
+h_who         = :tf.who;
+h_fullname    = :tf.fullname;
+h_version     = :tf.version;
+h_point       = :tf.point;
+
+IF h_who != g_who
+THEN
+
+  h_message = 'This application is being worked on by ';
+  h_prompt = '';
+
+  WHILE h_prompt != 'Y'
+    AND h_prompt != 'N'
+  DO
+    h_prompt = PROMPT 'CAUTION: ' + :h_message
+             + SQUEEZE(VARCHAR(:h_fullname)) +'.' +X'0D'
+             + '         Do you want to continue? [Y/N]'
+    WITH STYLE = POPUP;
+    h_prompt = UPPER(h_prompt);
+  ENDWHILE;
+
+  IF h_prompt != 'Y'
+  THEN
+    RESUME FIELD tf;
+  ENDIF;
+
+ENDIF;
+
+h_return = CALLFRAME control_3a_fr(p_who     = :h_who,
+                                   p_version = :h_version,
+                                   p_point   = :h_point);
+
+IF h_return = 1
+THEN
+  REDISPLAY;
+  RESUME FIELD tf;
+ELSEIF h_return > 1
+THEN
+  /* Error messages handled in control_3a_fr */
+  EXIT;
+ENDIF;
+
+/*...........................................................................
+     Deleting test record from pvc_application_testing
+..........................................................................*/
+
+MESSAGE 'Deleting test record...';
+
+h_retry_or_not      = 'RETRY';
+h_retries           = 0;
+h_retries_allowed   = 3;
+
+WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+DO
+
+  h_retries = :h_retries + 1;
+
+  DELETE FROM   pvc_application_testing
+  WHERE         application = :g_application;
+
+  h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF h_return <> 7
+  THEN
+    h_retry_or_not = '';
+  ENDIF;
+
+ENDWHILE;
+
+IF h_return = 7
+THEN
+  EXIT;
+
+ ELSEIF h_return > 1
+ THEN
+  MESSAGE 'ERROR: Failed to delete test record from pvc_application_testing. '
+        + 'Error code ' +VARCHAR(:h_return)+'. Please delete the row manually.'
+  WITH STYLE = POPUP;
+ENDIF;
+
+/*...........................................................................
+     Deleting application folder from proddevdb.
+..........................................................................*/
+
+MESSAGE 'Deleting application folder...';
+
+h_command = '$SCRIPTS/proddev_remove_app.script ' +:g_application;
+
+h_return = CALLPROC callsys_cp(:h_command);
+
+IF h_return != 0
+THEN
+  MESSAGE 'ERROR: Failed to delete application folder on proddevdb. '
+        + 'Error code ' +VARCHAR(:h_return) +'. You will need to do '
+        + 'this manually before the application can be moved back '
+        + 'onto the development server'
+  WITH STYLE = POPUP;
+  RETURN;
+ENDIF;
+
+RETURN;
+
+END
+
+/*=======================================================================
+   FRSKEY6: (F12) Back - Returns to the val gate menu.                    
+======================================================================*/
+
+'Back', KEY FRSKEY12 = 
+BEGIN
+  RETURN;
+END
+
+
+/****************************************************************************/
+/*********************** LOCAL PROCEDURES ***********************************/
+/****************************************************************************/
+
+/*===========================================================================
+	      Local procedure for error checking within retry loop.
+============================================================================*/
+
+PROCEDURE lp_full_error_check
+	  (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT)=
+
+DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+
+BEGIN
+
+lp_return = CALLPROC check_inq_ing ( h_num_row_ck      = :p_num_row_ck,
+ 				    h_commit          = 'Y',
+				    h_rollback        = 'N',
+				    h_retries         = :h_retries,
+                                    h_retries_allowed = :h_retries_allowed,
+                                    h_frpr_name       = 'val_gates_1.fr');
+RETURN :lp_return;
+
+END
+
+/*===========================================================================
+	      Local procedure for basic error checking.
+============================================================================*/
+
+PROCEDURE lp_error_check
+	  (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT)=
+
+DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+
+BEGIN
+
+lp_return = CALLPROC check_inq_ing ( h_num_row_ck      = :p_num_row_ck,
+ 				    h_commit          = 'Y',
+				    h_rollback        = 'N',
+				    h_retries         = 1,
+                                    h_retries_allowed = 1,
+                                    h_frpr_name       = 'val_gates_1.fr');
+RETURN :lp_return;
+
+END
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = VARCHAR(36) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = VARCHAR(36) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+
+/*===========================================================================
+	      Local procedure for populating the table field.   
+============================================================================*/
+
+PROCEDURE lp_pop_table() = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+BEGIN
+
+lp_return = CALLPROC lp_drop_table (p_table_name = 'tt_control3');
+IF lp_return != 0 THEN RETURN 9; ENDIF;
+
+MESSAGE '                   Collecting data, please wait...';
+
+CREATE TABLE tt_control3 AS
+SELECT b.status AS status,
+       a.object_name AS application,
+       b.version AS version, 
+       b.point AS point, 
+       b.who AS who,
+       'someone                                 ' AS fullname 
+FROM   ii_objects a,
+       pvc_application_status b 
+WHERE  a.object_name = b.application
+  AND  a.object_class = 2001
+  AND  b.status = 'D'; 
+
+lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+IF lp_return = 1
+THEN
+  MESSAGE 'NOTE: There are no applications currently marked as in development.'
+  WITH STYLE = POPUP;
+  RETURN 1;
+ELSEIF lp_return >1
+THEN
+  MESSAGE 'SYSTEM ERROR: Failed to create tt_control3. Error code '
+	+ VARCHAR(:lp_return) +'.' +X'0D'
+  WITH STYLE = POPUP;
+  RETURN 9;
+ENDIF;
+
+UPDATE tt_control3 a
+  FROM pvc_developers b
+   SET fullname = SQUEEZE(b.first_name) + ' ' +SQUEEZE(b.second_name)
+ WHERE a.who = b.initials;
+
+lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+IF lp_return > 1
+THEN
+  MESSAGE 'ERROR: Failed to update tt_control3 with developer info.'+X'0D'
+	+ '       Error code ' +VARCHAR(:lp_return) +'.' 
+	   WITH STYLE = POPUP;
+  RETURN 9;
+ENDIF;
+
+INITTABLE tf READ;
+
+tf = SELECT status,
+	    application, 
+            version, 
+            point, 
+            who,
+            fullname 
+       FROM tt_control3
+   ORDER BY application;
+
+lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+IF lp_return != 0
+THEN
+  MESSAGE 'SYSTEM ERROR: Failed to initiate table field. Error code '
+	+ VARCHAR(:lp_return) +'.' +X'0D'
+	WITH STYLE = POPUP;
+  RETURN 9;
+ENDIF;
+
+REDISPLAY;
+
+END
+

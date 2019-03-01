@@ -1,0 +1,452 @@
+/*-S--------------------------------------------------------------------
+
+Procedure msaca_fp_detr_extras     
+
+This process must be run after the sample has been selected and
+analysed by PPI statisticians. They will provide a file of detr
+contributors that were not in the sample. This list must be checked
+against the population - ppi_sixdig_ann_sum and if they were selected
+in the population then they must be added to the sample and all other
+relevant files and added to the counts before being sent to PPI IS
+
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msaca_fp_detr_extras  () =
+
+DECLARE ret_val               = INTEGER4 NOT NULL,
+        h_table1              = VARCHAR(24) NOT NULL,
+        h_table2              = VARCHAR(24) NOT NULL,
+        h_table3              = VARCHAR(24) NOT NULL,
+        h_table4              = VARCHAR(24) NOT NULL,
+	h_rows                = INTEGER4 NOT NULL,
+        ppi_file1             = VARCHAR(100) NOT NULL,
+        h_frpr_name           = VARCHAR(24) NOT NULL
+
+{
+    h_frpr_name = 'msaca_fp_detr_extras';
+    h_table1 = 'temp_ppi_detr_extras';
+    h_table2 = 'ppi_detr_extras';
+    h_table3 = 'temp_ppi_detr_selected';
+    h_table4 = 'temp_ppi_detr_count';
+
+
+    ppi_file1 = :g_path_name1 + '/ppi_detr_extras_' + VARCHAR(:g_period);
+
+    /*-s----------------------------------------------------------------
+    Create temporary table to hold detr extras provided by PPI 
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table1);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table1;
+
+    CREATE TABLE :h_table1(
+		 sixdig                INTEGER4 NOT NULL,
+                 contributor_reference CHAR(11) NOT NULL,
+		 stratum               INTEGER1 NOT NULL,
+		 alloc                 INTEGER4 NOT NULL,
+		 no_quotes             INTEGER4 NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Copy table of detr extras  
+    ----------------------------------------------------------------e-*/
+
+    message 'Copying table ...' + :h_table1;
+
+    COPY TABLE :h_table1(
+               sixdig                = c0comma,
+               contributor_reference = c0comma,
+               stratum               = c0comma,
+               alloc                 = c0comma,
+               no_quotes             = c0nl)
+    FROM :ppi_file1;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error copying ' + :h_table1 + ' from ' + :ppi_file1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Insert detr extras into periodic table delete existing rows first
+    ----------------------------------------------------------------e-*/
+
+    message 'Delete existing rows from ...' + :h_table2;
+    
+    DELETE FROM :h_table2
+    WHERE period = :g_period
+    AND   alloc_type = :g_alloc_type
+    AND   sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting existing rows from ' + :h_table2,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Insert new period's data
+    ----------------------------------------------------------------e-*/
+
+    message 'Inserting new period into ...' + :h_table2;
+
+    INSERT INTO :h_table2
+    SELECT      :g_period AS period,
+		sixdig,
+                contributor_reference,
+		stratum,
+                alloc,
+                no_quotes,
+                :g_alloc_type as alloc_type,
+                :g_sample_type as sample_type 
+    FROM        :h_table1;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting into ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Compare table of detr extras with the Prodcom Population - table
+    ppi_sixdig_ann_sum. If any records are found add them to 
+    the sample - table ppi_contribs_found. They also need to be added
+    to ppi_all_params
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table3);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table3;
+
+    CREATE TABLE :h_table3
+    AS SELECT :g_period as period,
+	      a.contributor_reference,
+	      a.sixdig,
+	      a.avalue,
+	      a.stratum,
+	      a.prn,
+	      a.alloc_type,
+	      a.sample_type
+    FROM      ppi_sixdig_ann_sum a
+    WHERE     period/100 = :g_period/100
+    AND       alloc_type = :g_alloc_type
+    AND       sample_type = :g_sample_type
+    AND       contributor_reference IN
+	      (SELECT contributor_reference
+	       FROM   ppi_detr_extras b
+	       WHERE  a.period/100 = b.period/100
+	       AND    a.alloc_type = b.alloc_type
+	       AND    a.sample_type = b.sample_type
+	       AND    a.sixdig = b.sixdig);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+	      h_num_row    = BYREF(:h_rows),
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN 
+	IF ret_val = 9
+	THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error creating ' + :h_table3,
+                        :h_frpr_name,
+                        9,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ELSEIF ret_val = 1
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'No of rows of DETR extras created: ' + ascii(:h_rows),
+                        :h_frpr_name,
+                        9,
+                        :g_user_id);
+            COMMIT;
+       ENDIF;
+    ENDIF; 
+
+    IF h_rows > 0
+    THEN
+
+       /*-s----------------------------------------------------------------
+       Update the stratum of the detr extras found on the Prodcom
+       population to equal the arbitrary stratum it was sent over on the
+       ppi_detr_extra file ie. these should be > 3
+       ----------------------------------------------------------------e-*/
+
+       UPDATE :h_table3 a
+       FROM   :h_table2 b
+       SET    stratum = b.stratum
+       WHERE  a.contributor_reference = b.contributor_reference
+       AND    a.sixdig = b.sixdig
+       AND    a.period = b.period
+       AND    a.alloc_type = b.alloc_type
+       AND    a.sample_type = b.sample_type;
+
+        ret_val = CALLPROC batch_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9 
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error updating stratum on ' + :h_table3,
+                        :h_frpr_name,
+                        9,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+
+       /*-s----------------------------------------------------------------
+       Add the contributor product pairs found on the Prodcom population
+       to the sample - table ppi_contribs_found
+       ----------------------------------------------------------------e-*/
+
+       INSERT INTO ppi_contribs_found
+       SELECT period,
+	      contributor_reference,
+	      sixdig,
+	      avalue,
+              prn,
+	      stratum,
+              alloc_type,
+              sample_type
+       FROM   :h_table3;
+
+        ret_val = CALLPROC batch_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error inserting detr extras into ppi_contribs_found',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+       /*-s-------------------------------------------------------------
+       Count by stratum the number of detr extras found
+       -------------------------------------------------------------e-*/
+
+       ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table4);
+
+       IF ret_val <> 0
+       THEN
+           RETURN ret_val;
+       ENDIF;
+
+       message 'Creating table ...' + :h_table4;
+	
+       CREATE TABLE :h_table4
+       AS SELECT period,
+		 COUNT(contributor_reference) AS prodcom_pop,
+		 sixdig,
+                 stratum
+       FROM     :h_table3
+       GROUP BY  period,
+                 sixdig,
+                 stratum;
+    
+
+        ret_val = CALLPROC batch_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error creating ' + :h_table4,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+       /*-s-------------------------------------------------------------
+       Insert a row into ppi_all_params of the count of each sixdigit 
+       within each stratum of DETR extras found. Make the prodcom 
+       population column and alloc_found column arbitrarily equal to 
+       the number of contributors selected
+
+       Delete existing rows first
+       --------------------------------------------------------------e*/
+
+       DELETE FROM ppi_all_params a
+       WHERE  sixdig IN
+              (SELECT sixdig
+               FROM   :h_table4 b
+               WHERE  a.period = b.period
+               AND    a.stratum = b.stratum);
+               
+        ret_val = CALLPROC batch_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error deleting existing rows from ppi_all_params ' ,
+                        :h_frpr_name,
+                        9,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+      
+        INSERT INTO ppi_all_params
+        SELECT period,
+               sixdig/100 AS fourdig,
+               sixdig,
+               stratum,
+               0 AS alloc,
+               prodcom_pop AS prodcom_pop,
+               prodcom_pop AS alloc_found,
+               0 AS no_quotes,
+               :g_alloc_type,
+               :g_sample_type
+        FROM   :h_table4; 
+
+        ret_val = CALLPROC batch_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error inserting new rows into ppi_all_params ' ,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+       /*-s-------------------------------------------------------------
+       Update the alloc and no_quotes columns with information passed on
+       file of detr extras from PPI statisticians
+       --------------------------------------------------------------e*/
+
+       UPDATE ppi_all_params a 
+       FROM   ppi_detr_extras b
+       SET    alloc = b.alloc,
+              no_quotes = b.no_quotes
+       WHERE  a.period = :g_period
+       AND    a.period = b.period
+       AND    a.sixdig = b.sixdig
+       AND    a.stratum = b.stratum
+       AND    a.alloc_type = b.alloc_type
+       AND    a.sample_type = b.sample_type;
+
+
+        ret_val = CALLPROC batch_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val <> 0
+        tHEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error updating alloc and no_quotes columns on ippi_all_params',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+   ENDIF;
+
+   RETURN 0;
+}
+    

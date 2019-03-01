@@ -1,0 +1,688 @@
+/*--------------------------------------------------------------------
+Procedure msaca_fp_create_weight_11n
+
+Adapted from msaca_fp_create_weight 
+An adhoc job for Andrew Carey. Dec 2009. MJE.
+---------------------------------------------------------------------*/
+
+PROCEDURE msaca_fp_create_weight_11n () =
+
+DECLARE   ret_val               = INTEGER1 NOT NULL,
+          h_frpr_name           = VARCHAR(24) NOT NULL,
+          h_table               = VARCHAR(24) NOT NULL,
+          h_table1              = VARCHAR(24) NOT NULL,
+          h_table2              = VARCHAR(24) NOT NULL,
+          h_table3              = VARCHAR(24) NOT NULL,
+          h_check_table         = VARCHAR(24) NOT NULL,
+          period                = INTEGER4 NOT NULL,
+          contributor_reference = VARCHAR(11) NOT NULL
+
+
+{
+    g_user_id    = 'produser'; 
+
+    h_frpr_name   = 'msaca_fp_create_weight_11n';
+    h_table       = 'ppi_total_pop';
+    h_table1      = 'ppi_prodcom_weight';
+    h_table2      = 'ppi_sixdig_ann_sum';
+    h_table3      = 'ppi_w1_distinct';
+    h_check_table = 'ppi_w1_errors';
+
+    /*--------------------------------------------------------------------
+    Added August 2000
+    Create a table of all contributors in the sample (this includes
+    amri and steel) with a blank column for W1. Update this table at
+    the end with the W1s calculated using Prodcom data. Also update the
+    amri and steel CPPs W1 to equal 1 as they are a census of
+    population
+    ---------------------------------------------------------------------*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+       RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table;
+    
+    CREATE TABLE :h_table
+AS select period,contributor_reference,sixdig,avalue,stratum,prn,
+max(alloc_type) as alloc_type,sample_type,float8(0) as prodcom_weight
+/*    AS SELECT    a.*,
+		 FLOAT8(0) as prodcom_weight */
+    FROM         ppi_sixdig_ann_sum a
+    WHERE	alloc_type in (12111,12112,12113)
+/*    WHERE        period/100 = :g_period/100
+    AND          alloc_type = :g_alloc_type
+    AND          sample_type = :g_sample_type ;
+*/
+group by period,contributor_reference,sixdig,avalue,stratum,prn,
+sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating table ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*--------------------------------------------------------------------
+    Create a table selecting all the references that are in the
+    population - ppi_sixdig_ann_sum with their registered employment.
+
+    Update this table with the totals of the Prodcom universe and 
+    number selected using tables avg_prodcom_universe 
+    and avg_prodcom_selected (quarterly figures have been averaged 
+    over the four quarters), created in Process 1.
+
+    Use this to calculate a Prodcom weight and pass this to PPI on 
+    the ppi_recruitment table which is created in Process 10
+
+    ---------------------------------------------------------------------*/
+    MESSAGE 'Deleting from . . . ' + :h_table1;
+
+    DELETE FROM :h_table1
+    WHERE	alloc_type in (12111,12112,12113);
+/*    WHERE  period/100  = :g_period/100
+    AND    alloc_type  = :g_alloc_type
+    AND    sample_type = :g_sample_type;
+*/
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error Deleting existing data from ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    MESSAGE 'Inserting into. . . ' + :h_table1;
+  
+    INSERT INTO :h_table1 
+    SELECT a.period,
+           a.contributor_industry,
+           a.contributor_reference,
+           a.register_emp,
+           INT4(0) as prodcom_universe,  
+           INT4(0) as prodcom_selected,
+           FLOAT8(0) as prodcom_weight,
+	   b.alloc_type,
+	   b.sample_type
+/*	   :g_alloc_type,
+	   :g_sample_type  */
+    FROM   contributor_period a,
+           :h_table2 b          
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND	   alloc_type in (12111,12112,12113);
+/*    AND    a.period IN (:g_period,:g_q2)
+    AND    b.period/100 = :g_period/100
+    AND    b.alloc_type = :g_alloc_type
+    AND    b.sample_type = :g_sample_type;
+*/
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error Inserting data for new period into ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*--------------------------------------------------------------------
+    Update with average universe for 10-19 employment
+    ---------------------------------------------------------------------*/
+
+    UPDATE :h_table1 a
+    FROM    avg_prodcom_universe b
+    SET     prodcom_universe = b.avg_u10_19
+    WHERE   a.contributor_industry = b.industry
+    AND	   alloc_type in (12111,12112,12113)
+    /* AND     a.period IN (:g_period,:g_q2)
+    AND     a.alloc_type = :g_alloc_type  */
+    AND     a.register_emp >= 10
+    AND     a.register_emp < 20;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating avg_u10_19 on ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+    /*--------------------------------------------------------------------
+    Update with average universe for 20-49 employment
+    ---------------------------------------------------------------------*/
+
+    UPDATE :h_table1 a
+    FROM    avg_prodcom_universe b
+    SET     prodcom_universe = b.avg_u20_49
+    WHERE   a.contributor_industry = b.industry
+    AND	   alloc_type in (12111,12112,12113)
+/*    AND     a.period IN (:g_period,:g_q2)
+    AND     a.alloc_type = :g_alloc_type  */
+    AND     a.register_emp >= 20
+    AND     a.register_emp < 50;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating avg_u20_49 on ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+    /*--------------------------------------------------------------------
+    Update with average universe for 50-99 employment
+    ---------------------------------------------------------------------*/
+
+    UPDATE :h_table1 a
+    FROM    avg_prodcom_universe b
+    SET     prodcom_universe = b.avg_u50_99
+    WHERE   a.contributor_industry = b.industry
+    AND	   alloc_type in (12111,12112,12113)
+/*    AND     a.period IN (:g_period,:g_q2)
+    AND     a.alloc_type = :g_alloc_type */ 
+    AND     a.register_emp >= 50
+    AND     a.register_emp < 100;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating avg_u50_99 on ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*--------------------------------------------------------------------
+    Update with average universe for 100+ employment
+    ---------------------------------------------------------------------*/
+
+    UPDATE :h_table1 a
+    FROM    avg_prodcom_universe b
+    SET     prodcom_universe = b.avg_u100_plus
+    WHERE   a.contributor_industry = b.industry
+    AND	   alloc_type in (12111,12112,12113)
+/*    AND     a.period IN (:g_period,:g_q2)
+    AND     a.alloc_type = :g_alloc_type */ 
+    AND     a.register_emp >= 100;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating avg_u100_plus on ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+    /*--------------------------------------------------------------------
+    Update with average number selected for 10_19 employment
+    ---------------------------------------------------------------------*/
+
+    UPDATE :h_table1 a
+    FROM    avg_prodcom_selected b
+    SET     prodcom_selected = b.avg_s10_19
+    WHERE   a.contributor_industry = b.industry
+    AND	   alloc_type in (12111,12112,12113)
+/*    AND     a.period IN (:g_period,:g_q2)
+    AND     a.alloc_type = :g_alloc_type  */
+    AND     a.register_emp >= 10  
+    AND     a.register_emp < 20;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating avg_s10_19 on ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+    /*--------------------------------------------------------------------
+    Update with average number selected for 20_49 employment
+    ---------------------------------------------------------------------*/
+
+    UPDATE :h_table1 a
+    FROM    avg_prodcom_selected b
+    SET     prodcom_selected = b.avg_s20_49
+    WHERE   a.contributor_industry = b.industry
+    AND	   alloc_type in (12111,12112,12113)
+/*    AND     a.period IN (:g_period,:g_q2)
+    AND     a.alloc_type = :g_alloc_type */ 
+    AND     a.register_emp >= 20  
+    AND     a.register_emp < 50;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating avg_s20_49 on ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+    /*--------------------------------------------------------------------
+    Update with average number selected for 50_99 employment
+    ---------------------------------------------------------------------*/
+
+    UPDATE :h_table1 a
+    FROM    avg_prodcom_selected b
+    SET     prodcom_selected = b.avg_s50_99
+    WHERE   a.contributor_industry = b.industry
+    AND	   alloc_type in (12111,12112,12113)
+/*    AND     a.period IN (:g_period,:g_q2)
+    AND     a.alloc_type = :g_alloc_type */ 
+    AND     a.register_emp >= 50  
+    AND     a.register_emp < 100;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating avg_s50_99 on ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*--------------------------------------------------------------------
+    Update with average number selected for 100+ employment
+    ---------------------------------------------------------------------*/
+
+    UPDATE :h_table1 a
+    FROM    avg_prodcom_selected b
+    SET     prodcom_selected = b.avg_s100_plus
+    WHERE   a.contributor_industry = b.industry
+    AND	   alloc_type in (12111,12112,12113)
+/*    AND     a.period IN (:g_period,:g_q2)
+    AND     a.alloc_type = :g_alloc_type */ 
+    AND     a.register_emp >= 100;  
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating avg_s100_plus on ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*--------------------------------------------------------------------
+    Amended November 1999
+    Update the completely enumerated Prodcom strata (ie over cutoffs, 1
+    in 1s) with a prodcom_weight of 1 as asked for by PPI statisticians
+    ---------------------------------------------------------------------*/
+    UPDATE :h_table1 a
+    FROM   industry_period b
+    SET    prodcom_weight = 1                          
+    WHERE   alloc_type in (12111,12112,12113)
+/*    WHERE  a.period IN  (:g_period,:g_q2)
+    AND    a.alloc_type = :g_alloc_type */ 
+    AND    a.period = b.period
+    AND    a.register_emp >= b.emp_cutoff
+    AND    a.contributor_industry = b.industry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating prodcom weight for Prodcom 1 in 1s ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*--------------------------------------------------------------------
+    Update prodcom weight using prodcom_universe/prodcom_selected for 
+    all those not already set to = 1 above
+    ---------------------------------------------------------------------*/
+
+    UPDATE :h_table1
+    SET    prodcom_weight = float8(prodcom_universe * 1.0 /prodcom_selected)
+    WHERE   alloc_type in (12111,12112,12113)
+    AND prodcom_selected <> 0
+/*    WHERE  period IN  (:g_period,:g_q2)
+    AND    alloc_type = :g_alloc_type  */
+    AND    prodcom_weight <> 1;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val  = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating prodcom_weight on ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+    
+    /*--------------------------------------------------------------------
+    Amended November 1999
+    Update any W1s that are less than 1  to equal 1 as this means that 
+    the number selected for Prodcom is greater than the universe and 
+    this should not happen and is incorrect on Prodcom. This should 
+    be corrected from 1999 Prodcom data onwards.
+    ---------------------------------------------------------------------*/
+
+    UPDATE :h_table1 a
+    SET    prodcom_weight = 1                          
+    WHERE  prodcom_weight < 1
+    AND   alloc_type in (12111,12112,12113);
+/*    AND    period IN  (:g_period,:g_q2)
+    AND    alloc_type = :g_alloc_type ; */
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating prodcom weight where W1 < 1 ' + :h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*--------------------------------------------------------------------
+    Added August 2000     
+    Update table ppi_total_pop with W1s calculated from Prodcom data 
+    above. Update amri and steel CPPs W1 to equal 1.
+
+    Create a distinct table from ppi_prodcom_weight first as it
+    contains duplicates and causes ambiguous replace when updating
+    ---------------------------------------------------------------------*/
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table3);
+
+    IF ret_val <> 0
+    THEN
+       RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table3;
+    
+    CREATE TABLE :h_table3
+    AS SELECT 
+    DISTINCT * FROM :h_table1
+    WHERE   alloc_type in (12111,12112,12113);
+/*    WHERE period/100 = :g_period/100 
+    AND   alloc_type = :g_alloc_type; */
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating table ' + :h_table3,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    UPDATE :h_table a
+    FROM   :h_table3 b
+    SET    prodcom_weight          = b.prodcom_weight
+    WHERE  a.alloc_type in (12111,12112,12113)
+/*    WHERE  a.period/100            = :g_period/100
+    AND    a.alloc_type            = :g_alloc_type
+    AND    a.sample_type           = :g_sample_type */
+    AND    a.contributor_reference = b.contributor_reference
+    AND    a.period/100            = b.period/100
+    AND    a.alloc_type            = b.alloc_type
+    AND    a.sample_type           = b.sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating prodcom weight for prodcom pop on ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+/********************************
+    UPDATE :h_table a 
+    SET    prodcom_weight = 1
+    WHERE  alloc_type in (12111,12112,12113)
+    AND    contributor_reference IN
+           (SELECT contributor_reference
+            FROM   ppi_amri_pop b
+            WHERE  a.period/100 = b.period/100);
+            
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating prodcom weight for amri pop on ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+*********************************/
+    UPDATE :h_table a 
+    SET    prodcom_weight = 1
+    WHERE  alloc_type in (12111,12112,12113)
+/*    WHERE  period/100 = :g_period/100
+    AND    alloc_type = :g_alloc_type
+    AND    sample_type = :g_sample_type */
+    AND    contributor_reference IN
+           (SELECT contributor_reference
+            FROM   ppi_steel_pop b
+            WHERE  a.period/100 = b.period/100);
+            
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating prodcom weight for steel pop on ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*--------------------------------------------------------------------
+    Select any CPPs from ppi_total_pop that have no W1 and output to a 
+    table ppi_w1_errors
+    ---------------------------------------------------------------------*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_check_table);
+
+    IF ret_val <> 0
+    THEN
+       RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_check_table;
+
+    CREATE TABLE :h_check_table
+    AS SELECT    *
+    FROM         :h_table
+    WHERE        prodcom_weight < 1
+    AND  alloc_type in (12111,12112,12113); 
+/*    AND          period/100 = :g_period/100
+    AND          alloc_type = :g_alloc_type; */
+
+     
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+  
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating table ' + :h_check_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+
+    ELSEIF ret_val = 0 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'CPPs found with no W1 please check table ' + :h_check_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    RETURN 0;
+  
+  }       

@@ -1,0 +1,1729 @@
+/*-s--------------------------------------------------------------------
+
+Procedure msaca_fp_create_reflist     
+
+For any type of run the alloc_type and sample_type need to be 
+identified as there can be two types of each for each period of data.
+
+eg. In 199700 an allocation file of 11000 quotes was used first with 
+a sample type sampling from PRN0. Later a new allocation file of 12000 
+quotes was used with the same sample type. In 199800 the 12000 
+allocation file was used to run a sample type of PRN0 and also pilot 
+rotation which has a sample type of PRN1. A new allocation of 11000 
+quotes may also be run for 199800 data in May 2000.
+
+THIS PROCEDURE NEEDS INPUT FROM OTHER SECTIONS:
+Ensure the files required are all in $TEXTFILES. The Scripts in ProdCom
+Production Control App do all the renaming and copying that used to be a 
+manual chore.
+
+PPI STATISTICIANS:
+prodcom_pop_against_idbr_{period}.csv
+contributor_exclusions_{period}.csv
+
+PRODCOM SAS 
+pp{period}u.csv
+
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msaca_fp_create_reflist () =
+
+DECLARE ret_val        = INTEGER4 NOT NULL,
+        h_table        = VARCHAR(24) NOT NULL,
+        h_table1       = VARCHAR(24) NOT NULL,
+        h_table2       = VARCHAR(24) NOT NULL,
+        h_table3       = VARCHAR(24) NOT NULL,
+        h_table4       = VARCHAR(24) NOT NULL,
+        h_table5       = VARCHAR(24) NOT NULL,
+        h_table6       = VARCHAR(24) NOT NULL,
+        h_table7       = VARCHAR(24) NOT NULL,
+        h_table8       = VARCHAR(24) NOT NULL,
+        h_table9       = VARCHAR(24) NOT NULL,
+        h_table10      = VARCHAR(24) NOT NULL,
+        h_table11      = VARCHAR(24) NOT NULL,
+        h_table12      = VARCHAR(24) NOT NULL,
+        h_table13      = VARCHAR(24) NOT NULL,
+        h_table14      = VARCHAR(24) NOT NULL,
+        h_table15      = VARCHAR(24) NOT NULL,
+        h_table16      = VARCHAR(24) NOT NULL,
+        h_table17      = VARCHAR(24) NOT NULL,
+        h_check_table1 = VARCHAR(24) NOT NULL,
+        h_check_table2 = VARCHAR(24) NOT NULL,
+        h_command      = VARCHAR(200) NOT NULL,
+        h_idbr_file1   = VARCHAR(100) NOT NULL,
+        h_file2        = VARCHAR(100) NOT NULL,
+        h_file3        = VARCHAR(100) NOT NULL,
+        h_period       = INTEGER4 NOT NULL,
+        h_frpr_name    = VARCHAR(24) NOT NULL
+
+{
+    h_frpr_name = 'msaca_fp_create_reflist';
+    h_table = 'temp_prodcom_live';
+    h_table1 = 'temp_ppi_exclusions';
+    h_table2 = 'temp_ppi_refs_annual';
+    h_table3 = 'temp_ppi_refs_qtrly';
+    h_table4 = 'temp_ppi_refs_count';
+    h_table5 = 'ppi_refs';
+    h_table6 = 'ppi_prodcom_universe';
+    h_table7 = 'temp_ppi_universe';
+    h_table8 = 'ppi_prodcom_selected';
+    h_table9 = 'temp_prodcom_selected1';
+    h_table10 = 'temp_prodcom_selected2';
+    h_table11 = 'temp_prodcom_selected3';
+    h_table12 = 'temp_prodcom_selected4';
+    h_table13 = 'temp_prodcom_selected5';
+    h_table14 = 'avg_prodcom_universe';
+    h_table15 = 'avg_prodcom_selected';
+    h_table17 = 'temp_ppi_contprod';
+    h_check_table1 = 'ppi_cutoff_errors';
+    h_check_table2 = 'ppi_size_errors';
+
+    h_idbr_file1 = :g_path_name1 + '/prodcom_pop_against_idbr_' 
+                 + VARCHAR(:g_period);
+    h_file2      = :g_path_name1 + '/contributor_exclusions_' 
+                 + VARCHAR(:g_period);
+    h_file3      = :g_path_name1 + '/pp' + VARCHAR(:g_period) + 'u.csv';
+
+    /*-s----------------------------------------------------------------
+     Create the reference table and copy IDBR data into it
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table;
+
+    CREATE TABLE :h_table (
+                 entref                 CHAR (10) NOT NULL,
+                 contributor_reference  CHAR (11) NOT NULL,
+                 sel_marker             CHAR (1) NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Unable to create ' + :h_table,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    message 'Copying table ...' + :h_table;
+
+    COPY TABLE :h_table (
+                         entref                 =   c0comma,
+                         contributor_reference  =   c0comma,
+                         sel_marker             =   c0nl)
+    FROM :h_idbr_file1;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              H_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error copying live refs from IDBR file',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Insert file of contributors into table ppi_prodcom_live. Delete
+     existing rows first
+    ----------------------------------------------------------------e-*/
+
+    message 'Deleting existing rows from table ppi_prodcom_live . . .';
+
+    DELETE FROM ppi_prodcom_live
+    WHERE period = :g_period
+    AND   alloc_type = :g_alloc_type
+    AND   sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting existing rows from ppi_prodcom_live' ,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    message 'Inserting new rows into ppi_prodcom_live . . .';
+
+    INSERT INTO ppi_prodcom_live
+    SELECT :g_period AS period,
+            contributor_reference,
+            entref,
+            sel_marker,
+           :g_alloc_type as alloc_type,
+           :g_sample_type as sample_type
+    FROM    :h_table;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting new selection from IDBR into ppi_prodcom_live ',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Delete any contributors marked with a 'C' by IDBR. This means that
+     they are a Company Death on IDBR
+    ----------------------------------------------------------------e-*/
+
+    DELETE FROM ppi_prodcom_live
+    WHERE sel_marker = 'C'
+    AND   period = :g_period
+    AND   alloc_type = :g_alloc_type
+    AND   sample_type = :g_sample_type;  
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting company deaths from ' + :h_table,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Create the exclusion table and copy PPI data into it
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table1);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table1;
+
+    CREATE TABLE :h_table1 (
+                 contributor_reference  CHAR (11) NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Unable to create ' + :h_table1,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    message 'Copying table ...' + :h_table1;
+
+    COPY TABLE :h_table1 (
+                         contributor_reference  = c0nl)
+    FROM :h_file2;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              H_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error copying exclusion refs from PPI file',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Delete existing rows from ppi_exclusions
+    ----------------------------------------------------------------e-*/
+
+    DELETE FROM ppi_exclusions
+    WHERE period = :g_period
+    AND   alloc_type = :g_alloc_type
+    AND   sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting existing rows from ppi_exclusions' ,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    INSERT INTO ppi_exclusions
+    SELECT :g_period AS period,
+            contributor_reference,
+           :g_alloc_type as alloc_type,
+           :g_sample_type as sample_type
+    FROM    :h_table1;
+
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              H_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting exclusion refs into ppi_exclusions ',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Delete any references that have been marked as exclusions by PPI as
+    they have been rejected due to now being dead or in osmotherly
+    ----------------------------------------------------------------e-*/
+
+    DELETE FROM ppi_prodcom_live
+    WHERE period = :g_period
+    AND   alloc_type = :g_alloc_type
+    AND   sample_type = :g_sample_type
+    AND   contributor_reference IN
+          (SELECT contributor_reference
+           FROM   :h_table1);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting exclusions from ' + :h_table,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create a table containing all live refs from annual Prodcom that
+    are >= 10 employment
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table2);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table . . . ' + :h_table2;
+
+    CREATE TABLE :h_table2
+    AS SELECT    contributor_reference,
+                 entref,
+                 period,
+		 alloc_type,
+		 sample_type
+    FROM         ppi_prodcom_live
+    WHERE        period = :g_period
+    AND          alloc_type = :g_alloc_type
+    AND          sample_type = :g_sample_type
+    AND          contributor_reference IN
+                 (SELECT contributor_reference
+                  FROM   contributor_period
+                  WHERE  period = :g_period
+                  AND    register_emp >=10);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Unable to create ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Modify table
+    ----------------------------------------------------------------e-*/
+
+    MODIFY :h_table2
+    TO BTREE UNIQUE ON contributor_reference,
+                       entref,
+                       period,
+		       alloc_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+                 h_num_row_ck = 1,
+                 h_commit     = 'Y',
+                 h_rollback   = 'N',
+                 h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error modifying ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create a table containing all refs that are live on the fourth 
+    quarter of quarterly Prodcom that are >= 10 employment. 
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table3);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table3;
+
+    CREATE TABLE :h_table3
+    AS SELECT    contributor_reference,
+                 entref,
+                 :g_q4 as period
+    FROM         ppi_prodcom_live
+    WHERE        period = :g_period
+    AND          alloc_type = :g_alloc_type
+    AND          sample_type = :g_sample_type
+    AND          contributor_reference IN
+                 (SELECT contributor_reference
+                  FROM   contributor_period
+                  WHERE  period = :g_q4
+                  AND    register_emp >= 10);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Unable to create ' + :h_table3,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create a table to select the live references for the annual span 
+    Delete those that have not been selected for all 4 qtrs. 
+    ----------------------------------------------------------------e-*/
+
+   ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table4);
+
+   IF ret_val <> 0
+   THEN
+       RETURN ret_val;
+   ENDIF;
+
+   message 'Creating table ...' + :h_table4;
+
+    CREATE TABLE :h_table4
+    AS SELECT    contributor_reference,
+                 count(period) as h_count
+    FROM         contributor_period
+    WHERE        period IN (:g_q1,:g_q2,:g_q3,:g_q4)
+    AND          contributor_reference IN
+                 (SELECT contributor_reference
+                  FROM   :h_table3)
+    GROUP BY contributor_reference;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Unable to create ' + :h_table4,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+   DELETE FROM :h_table4
+   WHERE h_count <> 4; 
+
+   ret_val = CALLPROC batch_check_inq_ing(
+             h_num_row_ck = 1,
+             h_commit     = 'Y',
+             h_rollback   = 'N',
+             h_frpr_name  = :h_frpr_name);
+
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'Error deleting from ' + :h_table4,
+                   :h_frpr_name,
+                    :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Insert references for new period into table ppi_refs 
+    to be used as the panel for PPI to sample from
+    ----------------------------------------------------------------e-*/
+
+   message 'Deleting existing rows from table ppi_refs ...';
+
+   DELETE FROM :h_table5
+   WHERE  period/100 = :g_period/100
+   AND    alloc_type = :g_alloc_type
+   AND    sample_type = :g_sample_type;
+
+   ret_val = CALLPROC batch_check_inq_ing(
+             h_num_row_ck = 1,
+             h_commit     = 'Y',
+             h_rollback   = 'N',
+             h_frpr_name  = :h_frpr_name);
+
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'Error deleting existing rows from ' + :h_table5,
+                   :h_frpr_name,
+                    9,
+                   :g_user_id);
+       COMMIT;
+       RETURN 9;
+   ENDIF;
+
+   message 'Inserting into table . . .' + :h_table5;
+
+   INSERT INTO :h_table5
+   SELECT * 
+   FROM :h_table2;
+
+   ret_val = CALLPROC batch_check_inq_ing(
+             h_num_row_ck = 1,
+             h_commit     = 'Y',
+             h_rollback   = 'N',
+             h_frpr_name  = :h_frpr_name);
+
+   IF ret_val <> 0
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'Error inserting new annual references into ' + :h_table5,
+                   :h_frpr_name,
+                    :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+   INSERT INTO :h_table5
+   SELECT      contributor_reference,
+	       '' as entref,
+	       INT4(0) as period,
+	       :g_alloc_type,
+	       :g_sample_type
+   FROM        :h_table4;
+
+   ret_val = CALLPROC batch_check_inq_ing(
+             h_num_row_ck = 1,
+             h_commit     = 'Y',
+             h_rollback   = 'N',
+             h_frpr_name  = :h_frpr_name);
+
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'Error inserting new quarterly refs into ' + :h_table5,
+                   :h_frpr_name,
+                    :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update the quarterly refs with their entref and quarter 4 as 
+    period
+    ----------------------------------------------------------------e-*/
+
+   message 'Updating table . . . ' + :h_table5;
+
+   UPDATE :h_table5 a
+   FROM   :h_table3 b
+   SET    entref = b.entref,
+          period = b.period
+   WHERE  a.contributor_reference = b.contributor_reference
+   AND    a.alloc_type = :g_alloc_type
+   AND    a.sample_type = :g_sample_type
+   AND    a.period = 0;
+
+   ret_val = CALLPROC batch_check_inq_ing(
+             h_num_row_ck = 1,
+             h_commit     = 'Y',
+             h_rollback   = 'N',
+             h_frpr_name  = :h_frpr_name);
+
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'Error updating ' + :h_table5 + 'from ' + :h_table3,
+                   :h_frpr_name,
+                    :ret_val,
+                   :g_user_id);
+       COMMIT;
+       RETURN ret_val;
+   ENDIF;
+
+/* -s----------------------------------------------------------------
+     Create temp universe table to copy csv files into
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table7);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table7;
+
+    CREATE TABLE :h_table7 (
+                 industry     INTEGER4 NOT NULL,
+                 u0_9         INTEGER4 NOT NULL,
+                 u10_19       INTEGER4 NOT NULL,
+                 u20_49       INTEGER4 NOT NULL,
+                 u50_99       INTEGER4 NOT NULL,
+                 u100_plus    INTEGER4 NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Unable to create ' + :h_table7,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+  /*-s----------------------------------------------------------------
+     Delete existing rows from ppi_prodcom_universe for current period
+    ----------------------------------------------------------------e-*/
+
+    message 'Deleting existing rows from ppi_prodcom_universe ...';
+
+    DELETE FROM :h_table6
+    WHERE  period/100 = :g_period/100
+    AND    alloc_type = :g_alloc_type
+    AND    sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting existing rows from ' + :h_table6,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+  /*-s----------------------------------------------------------------
+     Select loop to copy data into table from csv files
+    ----------------------------------------------------------------e-*/
+   
+    SELECT period as h_period
+    FROM   inquiry_period
+    WHERE  period/100 * 100 = :g_period
+    AND    inquiry = 14
+    ORDER BY h_period
+
+    {
+    message 'Copying table ...' + :h_table7 + VARCHAR(:h_period);
+
+    COPY TABLE :h_table7 (
+                         industry  =   c0comma,
+                         u0_9      =   c0comma,
+                         u10_19    =   c0comma,
+                         u20_49    =   c0comma,
+                         u50_99    =   c0comma,
+                         u100_plus =   c0nl)
+
+    FROM :h_file3; 
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error copying population from RAP ' + varchar(:h_period),
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+ /* -s----------------------------------------------------------------
+     Insert data into universe table
+    ----------------------------------------------------------------e-*/
+
+    INSERT INTO :h_table6
+    SELECT :h_period,          
+           industry,
+           0 as cutoff,
+           u0_9,
+           u10_19,
+           u20_49,
+           u50_99,
+           u100_plus,
+           0 as total,
+           :g_alloc_type as alloc_type, 
+           :g_sample_type as sample_type  
+    FROM   :h_table7;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting population from RAP ',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+  /*-s----------------------------------------------------------------
+     Modify temp table to use again for next period's data
+    ----------------------------------------------------------------e-*/
+
+    MODIFY :h_table7 TO TRUNCATED;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error modifying population from RAP',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    };
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error in select loop for population table',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update table with cut-offs and totals
+    ----------------------------------------------------------------e-*/
+
+    UPDATE :h_table6
+    SET    total = u0_9+u10_19+u20_49+u50_99+u100_plus
+    WHERE  period/100 = :g_period/100
+    AND    alloc_type = :g_alloc_type
+    AND    sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating totals ' + :h_table6,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+
+    UPDATE :h_table6 a
+    FROM   industry_period b
+    SET    cutoff = b.emp_cutoff
+    WHERE  a.industry = b.industry
+    AND    a.period/100 = :g_period/100
+    AND    a.period = b.period 
+    AND    a.alloc_type = :g_alloc_type
+    AND    a.sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating totals ' + :h_table6,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Added August 2000:
+    Check that all cutoffs are valid ie. they should be either 
+    20, 50 or 100. 
+    If any are different, program is halted and error message written 
+    to error_log. Print contents of table to investigate
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_check_table1);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_check_table1
+    AS SELECT 
+    DISTINCT  period,
+              industry,
+              cutoff
+    FROM      :h_table6 
+    WHERE     cutoff > 0
+    AND       cutoff NOT IN (20,50,100)
+    AND       period/100 = :g_period/100
+    AND       alloc_type = :g_alloc_type
+    AND       sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error checking cutoffs in '  + :h_table6,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+
+    ELSEIF ret_val = 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Incorrect Cutoffs found. Check table: '  + :h_check_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create a table to get the average of the 4 qtrs. This is needed to 
+    work out the Prodcom weight 
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table14);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table14;
+
+    CREATE TABLE :h_table14 
+    AS SELECT    industry,
+                 cutoff,
+                 avg(u0_9) as avg_u0_9,
+                 avg(u10_19) as avg_u10_19,
+                 avg(u20_49) as avg_u20_49,
+                 avg(u50_99) as avg_u50_99,
+                 avg(u100_plus) as avg_u100_plus
+    FROM         :h_table6
+    WHERE        period/100 = :g_period/100
+    AND          alloc_type = :g_alloc_type
+    AND          sample_type = :g_sample_type
+    GROUP BY     industry,
+                 cutoff;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Unable to create ' + :h_table14,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Insert new periods data into ppi_prodcom_selected
+    ----------------------------------------------------------------e-*/
+
+    /*-s----------------------------------------------------------------
+     Select loop to select counts of number of forms despatched by 
+     Prodcom by Prodcom strata
+    ----------------------------------------------------------------e-*/
+
+   message 'Deleting existing rows from table ppi_prodcom_selected ...';
+
+   DELETE FROM :h_table8
+   WHERE  period/100 = :g_period/100
+   AND    alloc_type = :g_alloc_type
+   AND    sample_type = :g_sample_type;
+
+   ret_val = CALLPROC batch_check_inq_ing(
+             h_num_row_ck = 1,
+             h_commit     = 'Y',
+             h_rollback   = 'N',
+             h_frpr_name  = :h_frpr_name);
+
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'Error deleting existing rows from ' + :h_table8,
+                   :h_frpr_name,
+                    9,
+                   :g_user_id);
+       COMMIT;
+       RETURN 9;
+   ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Insert new periods data into ppi_prodcom_selected. Insert a blank 
+    row for each employment stratum and then update from the temp
+    tables created below in select loop
+    ----------------------------------------------------------------e-*/
+
+    message 'Inserting new periods data into ...' + :h_table8 + VARCHAR(:g_period);
+    INSERT INTO :h_table8
+    SELECT      period,
+                industry,
+                emp_cutoff,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0, 
+               :g_alloc_type as alloc_type, 
+               :g_sample_type as sample_type  
+    FROM  industry_period
+    WHERE period/100 = :g_period/100
+    AND   inquiry = 14;
+
+   ret_val = CALLPROC batch_check_inq_ing(
+             h_num_row_ck = 1,
+             h_commit     = 'Y',
+             h_rollback   = 'N',
+             h_frpr_name  = :h_frpr_name);
+
+   IF ret_val = 9 
+   THEN
+       INSERT INTO error_log
+       VALUES (    'now',
+                   'Error inserting new periods data into ' + :h_table8,
+                   :h_frpr_name,
+                    9,
+                   :g_user_id);
+       COMMIT;
+       RETURN 9;
+   ENDIF;
+
+    SELECT period as h_period
+    FROM   inquiry_period
+    WHERE  period/100 * 100 = :g_period
+    AND    inquiry = 14
+    ORDER BY h_period
+
+    {
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table9);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table9 + VARCHAR(:h_period);
+  
+    CREATE TABLE :h_table9
+    AS SELECT    a.period,
+                 a.contributor_industry,
+                 b.emp_cutoff,
+                 count(a.contributor_reference) as s0_9
+    FROM         fpr_despatch_history a,
+                 industry_period b
+    WHERE        a.period = :h_period
+    AND          a.period = b.period
+    AND          a.contributor_industry = b.industry
+    AND          a.register_emp < 10
+    GROUP BY     a.period,
+                 a.contributor_industry,
+                 b.emp_cutoff;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Unable to create ' + :h_table9,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table10);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table10 + VARCHAR(:h_period);
+  
+    CREATE TABLE :h_table10
+    AS SELECT    a.period,
+                 a.contributor_industry,
+                 b.emp_cutoff,
+                 count(a.contributor_reference) as s10_19
+    FROM         fpr_despatch_history a,
+                 industry_period b
+    WHERE        a.period = :h_period
+    AND          a.period = b.period
+    AND          a.contributor_industry = b.industry
+    AND          a.register_emp >= 10
+    AND          a.register_emp < 20
+    GROUP BY     a.period,
+                 a.contributor_industry,
+                 b.emp_cutoff;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Unable to create ' + :h_table10,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table11);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table11 + VARCHAR(:h_period);
+
+    CREATE TABLE :h_table11
+    AS SELECT    a.period,
+                 a.contributor_industry,
+                 b.emp_cutoff,
+                 count(a.contributor_reference) as s20_49
+    FROM         fpr_despatch_history a,
+                 industry_period b
+    WHERE        a.period = :h_period
+    AND          a.period = b.period
+    AND          a.contributor_industry = b.industry
+    AND          a.register_emp >= 20
+    AND          a.register_emp < 50
+    GROUP BY     a.period,
+                 a.contributor_industry,
+                 b.emp_cutoff;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Unable to create ' + :h_table11,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table12);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table12 + VARCHAR(:h_period);
+
+    CREATE TABLE :h_table12
+    AS SELECT    a.period,
+                 a.contributor_industry,
+                 b.emp_cutoff,
+                 count(a.contributor_reference) as s50_99
+    FROM         fpr_despatch_history a,
+                 industry_period b
+    WHERE        a.period = :h_period
+    AND          a.period = b.period
+    AND          a.contributor_industry = b.industry
+    AND          a.register_emp >= 50
+    AND          a.register_emp < 100
+    GROUP BY     a.period,
+                 a.contributor_industry,
+                 b.emp_cutoff;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Unable to create ' + :h_table12,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table13);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table13 + VARCHAR(:h_period);
+
+    CREATE TABLE :h_table13
+    AS SELECT    a.period,
+                 a.contributor_industry,
+                 b.emp_cutoff,
+                 count(a.contributor_reference) as s100_plus
+    FROM         fpr_despatch_history a,
+                 industry_period b
+    WHERE        a.period = :h_period
+    AND          a.period = b.period
+    AND          a.contributor_industry = b.industry
+    AND          a.register_emp >= 100
+    GROUP BY     a.period,
+                 a.contributor_industry,
+                 b.emp_cutoff;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Unable to create ' + :h_table13,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update ppi_prodcom_selected with counts from each employment
+    stratum
+    ----------------------------------------------------------------e-*/
+
+    message 'Updating table ...' + :h_table8 + VARCHAR(:g_period);
+
+    UPDATE :h_table8 a
+    FROM   :h_table9 b
+    SET     s0_9 = b.s0_9
+    WHERE   a.period = b.period
+    AND     a.industry = b.contributor_industry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating s0_9 ' + :h_table8,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    UPDATE :h_table8 a
+    FROM   :h_table10 b
+    SET     s10_19 = b.s10_19
+    WHERE   a.period = b.period
+    AND     a.industry = b.contributor_industry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating s10_19 ' + :h_table8,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    UPDATE :h_table8 a
+    FROM   :h_table11 b
+    SET     s20_49 = b.s20_49
+    WHERE   a.period = b.period
+    AND     a.industry = b.contributor_industry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating s20_49 ' + :h_table8,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    UPDATE :h_table8 a
+    FROM   :h_table12 b
+    SET     s50_99 = b.s50_99
+    WHERE   a.period = b.period
+    AND     a.industry = b.contributor_industry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating s50_99 ' + :h_table8,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    UPDATE :h_table8 a
+    FROM   :h_table13 b
+    SET     s100_plus = b.s100_plus
+    WHERE   a.period = b.period
+    AND     a.industry = b.contributor_industry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating s100_plus ' + :h_table8,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    };
+
+    UPDATE :h_table8 a
+    SET     total = s0_9 + s10_19 + s20_49 + s50_99 + s100_plus
+    WHERE  period/100 = :g_period/100
+    AND    alloc_type = :g_alloc_type
+    AND    sample_type = :g_sample_type;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating total ' + :h_table8,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+    /*-s----------------------------------------------------------------
+    Create a table to get the average of the 4 qtrs. This is needed to 
+    work out the Prodcom weight 
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table15);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table ...' + :h_table15;
+
+    CREATE TABLE :h_table15 
+    AS SELECT    industry,
+                 cutoff,
+                 avg(s0_9) as avg_s0_9,
+                 avg(s10_19) as avg_s10_19,
+                 avg(s20_49) as avg_s20_49,
+                 avg(s50_99) as avg_s50_99,
+                 avg(s100_plus) as avg_s100_plus
+    FROM         :h_table8
+    WHERE        period/100 = :g_period/100
+    AND          alloc_type = :g_alloc_type
+    AND          sample_type = :g_sample_type
+    GROUP BY     industry,
+                 cutoff;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Unable to create ' + :h_table15,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table1);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    
+    /*-s----------------------------------------------------------------
+    Added August 2000:
+    Check that the numbers selected in Prodcom are not greater than
+    the numbers in the Universe. This is possible as Prodcom can
+    add and deselect contributors after IDBR selection has taken place.
+    Create a table of Prodcom selected figures first and then insert
+    the universe figures.
+    If any are different, program is halted and error message written 
+    to error_log. Print contents of table to investigate
+    NB
+    This could also be due to the fact that AMRI contributors are not
+    in these universes - it has been suggested that amri provide
+    universe figures and these should be added to the Prodcom universes
+    but PPI haven't actioned this as yet
+    JW December 2000
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_check_table2);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_check_table2
+    AS SELECT a.*,
+              INT4(0) as u0_9,
+              INT4(0) as u10_19,
+              INT4(0) as u20_49,
+              INT4(0) as u50_99,
+              INT4(0) as u100_plus
+    FROM      :h_table8 a,
+              :h_table6 b
+    WHERE     a.period = b.period
+    AND       a.period/100 = :g_period/100
+    AND       a.alloc_type = :g_alloc_type
+    AND       a.sample_type = :g_sample_type
+    AND       a.alloc_type = b.alloc_type
+    AND       a.sample_type = b.sample_type
+    AND       a.industry = b.industry
+    AND       (a.s0_9      > b.u0_9
+    OR         a.s10_19    > b.u10_19
+    OR         a.s20_49    > b.u20_49
+    OR         a.s50_99    > b.u50_99
+    OR         a.s100_plus > b.u100_plus);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error checking sample sizes in '  + :h_table8,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ELSEIF ret_val = 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Mismatched sample/universe sizes. Check table: '  + :h_check_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+
+        UPDATE :h_check_table2 a
+        FROM   :h_table8 b,
+               :h_table6 c
+        SET    u0_9      = c.u0_9,
+               u10_19    = c.u10_19,
+               u20_49    = c.u20_49,
+               u50_99    = c.u50_99,
+               u100_plus = c.u100_plus
+        WHERE  a.period = b.period
+        AND    a.period = c.period
+        AND    a.period/100 = :g_period/100
+        AND    a.alloc_type = :g_alloc_type
+        AND    a.sample_type = :g_sample_type
+        AND    a.alloc_type = b.alloc_type
+        AND    a.sample_type = b.sample_type
+        AND    a.industry = b.industry
+        AND    a.alloc_type = c.alloc_type
+        AND    a.sample_type = c.sample_type
+        AND    a.industry = c.industry
+        AND    (b.s0_9      > c.u0_9
+        OR      b.s10_19    > c.u10_19
+        OR      b.s20_49    > c.u20_49
+        OR      b.s50_99    > c.u50_99
+        OR      b.s100_plus > c.u100_plus);
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error updating universe figures on '+ :h_check_table2,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Modify table
+    ----------------------------------------------------------------e-*/
+
+    MODIFY :h_check_table2
+    TO BTREE ON period,
+                industry;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+                 h_num_row_ck = 1,
+                 h_commit     = 'Y',
+                 h_rollback   = 'N',
+                 h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error modifying ' + :h_check_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table2);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table3);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table4);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table7);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table9);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table10);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table11);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table12);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table13);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table16);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+   RETURN 0;
+}
+    
