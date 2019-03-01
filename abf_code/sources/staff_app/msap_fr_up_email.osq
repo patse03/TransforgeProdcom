@@ -1,0 +1,223 @@
+
+/*------------------------------------------------------------------
+ Allows Control to amend own email address on the passwords table
+------------------------------------------------------------------*/
+
+INITIALIZE (
+        h_email                    = VARCHAR(35) NOT NULL ) =
+
+DECLARE h_yesno                    = CHAR(1)  NOT NULL,
+        h_frpr_name                = VARCHAR(25) NOT NULL,
+        ret_val                    = INTEGER1 NOT NULL,
+        h_retries_allowed          = INTEGER1 NOT NULL,
+        h_retries                  = INTEGER1 NOT NULL,
+        h_retry_or_not             = CHAR(5)  NOT NULL,
+        h_original_email           = CHAR(35) NOT NULL,
+        lp_load_details            = PROCEDURE RETURNING INTEGER
+{
+
+    h_frpr_name = 'msap_fr_up_email';
+    h_retries_allowed = 3;
+    msa_date = 'now';
+
+    ret_val = CALLPROC lp_load_details ();
+
+    IF ret_val <> 0
+    THEN
+        MESSAGE 'Error calling initial load_details'
+        WITH STYLE = POPUP;
+        RETURN ret_val;
+    ENDIF;
+
+    RESUME FIELD email;
+}
+
+FIELD email =
+{
+    msa_date = 'now';
+    IF :email = ''
+    THEN
+        MESSAGE 'Email is a mandatory field'
+        WITH STYLE = POPUP;
+        RESUME FIELD email;
+    ENDIF;
+    RESUME FIELD email;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'help',
+               FILE    = :g_help + '/' + :h_frpr_name + '.hlp');
+    msa_date = 'now';
+}
+
+/*------------------------------------------------------------------
+ Save updated entry
+------------------------------------------------------------------*/
+
+'Save' =
+{
+    msa_date = 'now';
+
+    IF :email = ''
+    THEN
+        MESSAGE 'Email is a mandatory field'
+        WITH STYLE = POPUP;
+        RESUME FIELD email;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE  passwords
+        SET     email           = :email   
+        WHERE   user_id         = :user_id;
+
+        ret_val = CALLPROC check_inq_ing (
+                   h_num_row_ck      = 1,
+                   h_commit          = 'Y',
+                   h_rollback        = 'N',
+                   h_retries         = :h_retries,
+                   h_retries_allowed = :h_retries_allowed,
+                   h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating email details'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Error, no rows updated'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    h_email = :email;
+
+    MESSAGE 'Details saved OK'
+    WITH STYLE = POPUP;
+
+    ret_val = CALLPROC lp_load_details ();
+
+    IF ret_val <> 0
+    THEN
+        MESSAGE 'Error calling initial load_details'
+        WITH STYLE = POPUP;
+        RETURN ret_val;
+    ENDIF;
+
+}
+
+/*------------------------------------------------------------------
+  End
+------------------------------------------------------------------*/
+
+'End', KEY FRSKEY6 =
+{
+    msa_date = 'now';
+
+    IF :email = ''
+    THEN
+        MESSAGE 'Email is a mandatory field'
+        WITH STYLE = POPUP;
+        RESUME FIELD email;
+    ENDIF;
+
+    IF :email            <> :h_original_email    
+    THEN
+
+        h_yesno = '';
+        WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+        DO
+            h_yesno = PROMPT 'Do you really wish to end without saving'+
+                             ' your changes? Type Y/N and press <return>'
+                      WITH STYLE = POPUP;
+            h_yesno = LOWERCASE(:h_yesno);
+        ENDWHILE;
+        IF h_yesno = 'n'
+        THEN
+            RESUME;
+        ENDIF;
+    ENDIF;
+
+    IF :email = ''
+    THEN
+        MESSAGE 'Email is a mandatory field'
+        WITH STYLE = POPUP;
+        RESUME FIELD email;
+    ENDIF;
+
+    RETURN 0;
+}
+
+/*------------------------------------------------------------------
+                L O C A L   P R O C E D U R E
+------------------------------------------------------------------*/
+
+PROCEDURE lp_load_details () =
+{
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT email,
+               email            AS h_original_email
+        FROM   passwords
+        WHERE  user_id = :user_id;
+
+        ret_val = CALLPROC check_inq_ing (
+                   h_num_row_ck      = 1,
+                   h_commit          = 'Y',
+                   h_rollback        = 'N',
+                   h_retries         = :h_retries,
+                   h_retries_allowed = :h_retries_allowed,
+                   h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in initial loading of data'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows retrieved in initial loading of data'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+}

@@ -1,0 +1,426 @@
+/*------------------------------------------------------------------
+ Allows control team to set line management chain for user.
+------------------------------------------------------------------*/
+
+INITIALIZE (p_user_id     = VARCHAR(8)  NOT NULL WITH DEFAULT,
+            p_user_name   = VARCHAR(24) NOT NULL WITH DEFAULT,
+            p_access_code = VARCHAR(2)  NOT NULL WITH DEFAULT)=
+
+DECLARE h_frpr_name       = VARCHAR(25) NOT NULL WITH DEFAULT,
+        h_return          = INTEGER1    NOT NULL WITH DEFAULT,
+        h_alloc_count     = INTEGER2    NOT NULL WITH DEFAULT,
+        h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+        h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+        h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+        h_user_name       = CHAR(24)    NOT NULL WITH DEFAULT,
+        h_m_name          = CHAR(24)    NOT NULL WITH DEFAULT,
+        h_c_name          = CHAR(24)    NOT NULL WITH DEFAULT,
+        h_mode            = CHAR(1)     NOT NULL WITH DEFAULT,
+
+        lp_error_check          = PROCEDURE RETURNING INTEGER,
+        lp_full_error_check     = PROCEDURE RETURNING INTEGER,
+        lp_correct_caps         = PROCEDURE,
+
+{
+
+  h_frpr_name = 'msap_fr_up_management';
+  h_retries_allowed = 3;
+  msa_date = 'now';
+
+  IF p_access_code != 'I3'
+  THEN
+    MESSAGE 'NOTE: Line management data is only required for Data Analysts.'
+    WITH STYLE = POPUP;
+    RETURN 0; 
+  ENDIF;
+
+  s_user_id       = :p_user_id;
+
+  IF p_user_name = ''
+  THEN
+     p_user_name =  'Unknown User';
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+        Determines whether running in Insert or Update mode.
+  ------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT analyst_id       AS p_user_id,
+           coordinator_name AS h_c_name,
+           coordinator_id   AS s_coordinator_id,
+           manager_name     AS h_m_name,
+           manager_id       AS s_manager_id
+    FROM   analyst_coordinator_manager
+    WHERE  analyst_id = :p_user_id;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return <> 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 9;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to determine mode of operation. Error code '
+          + VARCHAR(:h_return) +'. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN 
+    h_mode = 'I';
+
+  ELSE   
+    h_mode = 'U';
+    
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+        Creates correctly capitalised names
+  ------------------------------------------------------------------------*/
+
+  CALLPROC lp_correct_caps (p_text = BYREF(:p_user_name));
+  CALLPROC lp_correct_caps (p_text = BYREF(:h_c_name));
+  CALLPROC lp_correct_caps (p_text = BYREF(:h_m_name));
+
+  s_user_name        = SHIFT(:p_user_name, (((24-LENGTH(p_user_name))/2)*1));
+  s_coordinator_name = SHIFT(:h_c_name, (((24-LENGTH(h_c_name))/2)*1));
+  s_manager_name     = SHIFT(:h_m_name, (((24-LENGTH(h_m_name))/2)*1));
+
+
+  /*------------------------------------------------------------------------
+        Loads Ccoordinator Table Field.
+  ------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    tf1 =
+
+    SELECT user_id AS coordinator_id,
+           user_name AS coordinator_name
+    FROM   passwords_new
+    WHERE  access_code = 'I4';
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return <> 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 9;
+
+  ELSEIF h_return = 9
+  THEN
+    MESSAGE 'ERROR: Failed to load Data Coordinators. Error code '
+          + VARCHAR(:h_return) +'. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'WARNING: No Data Coordinators found on system. ' 
+          + 'Please contact the control team immediately to report this.'
+    WITH STYLE = POPUP;
+    RETURN 1;
+
+  ENDIF;
+
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'Select', KEY FRSKEY4 =
+{
+
+  /*------------------------------------------------------------------------
+     Creates correctly capitalised user name from tf.coordinator_name
+     for use in s_coordinator_name and thus analyst_coordinator_manager. 
+  ------------------------------------------------------------------------*/
+
+  h_c_name = :tf1.coordinator_name;
+    
+  CALLPROC lp_correct_caps (p_text = BYREF(:h_c_name));
+
+  s_coordinator_name = SHIFT(:h_c_name, (((24-LENGTH(h_c_name))/2)*1));
+  s_coordinator_id   = :tf1.coordinator_id;
+
+  REDISPLAY;
+
+  /*------------------------------------------------------------------------
+   Selects coordinators manager to s_manager.
+  ------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT manager_id AS s_manager_id,
+           manager_name AS h_m_name
+    FROM   analyst_coordinator_manager
+    WHERE  coordinator_id = :s_coordinator_id;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return <> 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 9;
+
+  ELSEIF h_return = 9
+  THEN
+    MESSAGE 'ERROR: Failed to select Manager from A.C.M. structure table. '
+          + 'Error code ' + VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'WARNING: Failed to locate Manager for selected Data Coordinator. '
+          + 'The program will take its best guess, but you may need to alter '
+          + 'it at a later time.'
+    WITH STYLE = POPUP;
+
+    SELECT DISTINCT manager_id   AS s_manager_id,
+                    manager_name AS h_m_name
+    FROM            analyst_coordinator_manager;
+
+  ENDIF;
+
+  h_m_name = SQUEEZE(:h_m_name);
+  s_manager_name = SHIFT(:h_m_name, (((24-LENGTH(h_m_name))/2)*1));
+
+  REDISPLAY;
+
+  RESUME;
+
+}
+
+
+'Save', KEY FRSKEY12 =
+{
+
+  IF h_mode = 'I'
+  THEN
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+    
+      INSERT INTO analyst_coordinator_manager
+      VALUES    ( SQUEEZE(:s_user_name),
+                  SQUEEZE(:s_user_id),
+                  SQUEEZE(:s_coordinator_name),
+                  SQUEEZE(:s_coordinator_id),
+                  SQUEEZE(:s_manager_name),
+                  SQUEEZE(:s_manager_id) ); 
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return <> 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+      RETURN 9;
+
+    ELSEIF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to insert into prodcom structure table. '
+            + 'Error code ' + VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+
+    ENDIF;
+
+  ELSEIF h_mode = 'U'
+  THEN
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+    
+      UPDATE analyst_coordinator_manager
+      SET    analyst_name     = SQUEEZE(:s_user_name),
+             coordinator_name = SQUEEZE(:s_coordinator_name),
+             coordinator_id   = SQUEEZE(:s_coordinator_id),
+             manager_name     = SQUEEZE(:s_manager_name),
+             manager_id       = SQUEEZE(:s_manager_id) 
+      WHERE  analyst_id       = :s_user_id;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return <> 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+      RETURN 9;
+
+    ELSEIF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to update prodcom structure table. '
+            + 'Error code ' + VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+
+    ENDIF;
+
+  ELSE
+    MESSAGE 'ERROR: No valid run mode detected. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+                  h_num_row_ck = :p_num_row_ck,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+/*=======================================================================
+    Local procedure to correctly capitalise a user name.
+=======================================================================*/
+
+PROCEDURE lp_correct_caps (p_text = VARCHAR(24) NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_text            = VARCHAR(24) NOT NULL WITH DEFAULT,
+          lp_length          = INTEGER1    NOT NULL WITH DEFAULT,
+          lp_cap_next        = INTEGER1    NOT NULL WITH DEFAULT,
+          lp_count           = INTEGER1    NOT NULL WITH DEFAULT,
+          lp_character       = CHAR(1)     NOT NULL WITH DEFAULT,
+
+{
+  lp_length = LENGTH(SQUEEZE(:p_text));
+  lp_cap_next = 1;
+  lp_count    = 1;
+
+  WHILE :lp_count <= :lp_length
+  DO
+    lp_character = CHAREXTRACT(:p_text,:lp_count);
+
+    IF lp_character = ''
+    OR lp_character = ' '
+    THEN
+      lp_text = :lp_text + ' '; 
+    ELSE
+      IF lp_cap_next = 1
+      THEN 
+        lp_text = :lp_text + UPPER(:lp_character);
+      ELSE
+        lp_text = :lp_text + LOWER(:lp_character);
+      ENDIF;
+    ENDIF;
+
+    IF lp_character = ' '
+    OR lp_character = '-'
+    THEN
+      lp_cap_next = 1;
+    ELSE
+      lp_cap_next = 0;
+    ENDIF; 
+
+    lp_count = lp_count +1;
+     
+  ENDWHILE;
+
+  p_text = :lp_text;
+
+}

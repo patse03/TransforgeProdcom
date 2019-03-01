@@ -1,0 +1,205 @@
+/***********************************************************************
+   Standard procedure to check if user can access frame/procedure
+***********************************************************************/
+
+PROCEDURE check_access_frames
+          (p_frpr_name = VARCHAR(36) NOT NULL WITH DEFAULT )=
+
+DECLARE   h_return          = INTEGER1    NOT NULL WITH DEFAULT,
+          h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+          h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+          h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+          h_min_level       = INTEGER1    NOT NULL WITH DEFAULT,
+          h_frpr_name       = VARCHAR(24) NOT NULL WITH DEFAULT,
+
+          lp_error_check      = PROCEDURE RETURNING INTEGER,
+          lp_full_error_check = PROCEDURE RETURNING INTEGER
+
+{
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  h_frpr_name = 'check_access_frames';
+  h_retries_allowed = 100;
+
+  IF :g_access_code =''
+  THEN
+
+    SELECT access_code AS g_access_code
+    FROM   passwords_new
+    WHERE  user_id = :g_user_id;
+
+    h_return = CALLPROC lp_error_check(p_num_row_ck = 1);
+
+    IF h_return > 1
+    THEN
+      MESSAGE 'ERROR: Access check failed at stage one. ' 
+            + 'Error code ' + VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+
+    ELSEIF h_return = 1
+    THEN
+      MESSAGE 'ERROR: Access check failed at stage one. ' 
+            + 'You do not seem to have an access code set '
+            + 'on the new passwords table.'
+            + 'Please contact the Control Team immediately.'
+      WITH STYLE = POPUP;
+      RETURN 1;
+
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+     Determine user class and and user level from access code.
+  ------------------------------------------------------------------------*/
+
+  g_user_class = UPPER(LEFT(:g_access_code,1));
+  g_user_level = INT(RIGHT(:g_access_code,1));
+
+  /*------------------------------------------------------------------------
+     Full access for Devs and Level 5 access.
+  ------------------------------------------------------------------------*/
+
+  IF g_user_class = 'D'
+  OR g_user_level = 5
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+     No access for Vacant ids. (Let access 0's fall through)
+  ------------------------------------------------------------------------*/
+
+  IF g_user_class = 'V'
+  THEN
+    MESSAGE 'ACCESS DENIED: User ID marked as VACANT. ' +X'0D' 
+          + '               Please contact the Control Team immediately.'
+    WITH STYLE = POPUP;
+    RETURN 1;
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+     Select min access level for users class on given frame or process.
+     If no match on frame and class, deny access.
+  ------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT min_level AS h_min_level
+    FROM   access_settings
+    WHERE  frpr_name = :p_frpr_name
+      AND  class     = :g_user_class; 
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return <> 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    MESSAGE 'SYSTEM ERROR: Deadlock detected. Error code 7. '
+          + 'Please contact IM immediately. Exiting.'
+    WITH STYLE = POPUP;  
+    RETURN 9;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed whilst checking access settings table. Error code '
+          + VARCHAR(:h_return) +'. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'ACCESS DENIED: Your Access Code class does not have '
+          + 'access this screen. If you believe this to be incorrect '
+          + 'then please contact the Control Team.'
+    WITH STYLE = POPUP;
+    RETURN 1;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+     Compare users access level with h_min_access to determine if
+     they have sufficent access code level to access the frame or
+     procedure. If not, deny access.
+  ------------------------------------------------------------------------*/
+
+  IF h_min_level > g_user_level
+  THEN
+    MESSAGE 'ACCESS DENIED: Your Access Code level is not sufficient to '
+          + 'access this screen. If you believe this to be incorrect '
+          + 'then please contact the Control Team.'
+    WITH STYLE = POPUP;
+    RETURN 1;
+  ENDIF;
+  
+  /*------------------------------------------------------------------------
+     Not denied yet? Must be OK.
+  ------------------------------------------------------------------------*/
+
+  RETURN 0;
+  
+}
+
+/************************** LOCAL PROCEDURES ******************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+                  h_num_row_ck = :p_num_row_ck,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

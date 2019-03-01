@@ -1,0 +1,539 @@
+/*------------------------------------------------------------------
+ Allows control to pick a name whose details they wish to see
+------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE 
+  h_frpr_name         = VARCHAR(25) NOT NULL WITH DEFAULT,
+  h_return            = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries_allowed   = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries           = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not      = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_rowcount          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_record            = INTEGER4    NOT NULL WITH DEFAULT,
+  h_records_loaded    = INTEGER4    NOT NULL WITH DEFAULT,
+  h_sort	      = VARCHAR(20) NOT NULL WITH DEFAULT,
+  h_next_id           = VARCHAR(20) NOT NULL WITH DEFAULT,
+  h_gap_date          = DATE        NOT NULL WITH DEFAULT,
+
+  lp_load_table       = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT, 
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT, 
+
+{
+  msa_date          = 'now';
+
+  h_retries_allowed = 3;
+  h_frpr_name       = 'msap_fr_up_select';
+  h_gap_date        = date('today') - '180 days';
+  h_sort            = 'user_name';
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+  /*----------------------------------------------------------------------
+      Load screen data.
+  ----------------------------------------------------------------------*/
+  
+  SET_FORMS FORM (MODE = 'read'); 
+
+  h_return = CALLPROC lp_load_table (p_sort='user_name');
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Initial loading of user data to Table Field failed. '
+          + 'Error code ' +VARCHAR(:h_return) +' .'
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN h_return;
+  ENDIF;
+
+}
+/**************************** KEY ACTIVATIONS *****************************/
+
+'NextID', KEY FRSKEY1 = 
+{
+  /*--------------------------------------------------------------------
+     Select the next id for control team to utilise.
+  --------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT user_id AS h_next_id
+    FROM   passwords_new
+    WHERE  user_name = 'VACANT'
+      AND  LEFT(user_id,4) = 'prod'
+      AND  LENGTH(user_id) = 7
+      AND  date_changed < :h_gap_date
+    ORDER BY user_id ;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1 
+  THEN 
+    MESSAGE 'WARNING: There are no remaining IDs that meet the criteria. '
+          + 'You will have to either use a vacant ID that has not fully '
+          + '"cooled down" or increase the pool by creating new IDs.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select next USER ID from passwords table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*--------------------------------------------------------------------
+     Select the count of all eligable vacant IDs.
+  --------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT COUNT(user_id) AS h_rowcount
+    FROM   passwords_new
+    WHERE  user_name = 'VACANT'
+      AND  LEFT(user_id,4) = 'prod'
+      AND  LENGTH(user_id) = 7
+      AND  date_changed < :h_gap_date;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to count vacant IDs from passwords table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  IF h_rowcount > 2
+  THEN
+    MESSAGE 'NOTE: The next ID to use is : ' +:h_next_id +'.' +X'0D'
+          + '      There are ' +VARCHAR((h_rowcount -1)) +' IDs remaining.' 
+    WITH STYLE = POPUP;
+  ELSEIF h_rowcount = 2
+  THEN
+    MESSAGE 'NOTE: The next ID to use is : ' +:h_next_id +'.' +X'0D'
+          + '      There is 1 vacant ID remaining.' 
+    WITH STYLE = POPUP;
+  ELSE /* rowcount = 1 */
+    MESSAGE 'NOTE: The next ID to use is : ' +:h_next_id +'.' +X'0D'
+          + '      There are no further vacant IDs remaining at this time.'
+    WITH STYLE = POPUP;
+  ENDIF;
+
+  UNLOADTABLE tf (h_record = _record)
+  BEGIN
+    IF tf.user_id = h_next_id 
+    THEN
+      SCROLL tf TO h_record;
+      RESUME;
+    ENDIF;
+  END;  
+
+}
+ 
+
+'Mgmt', KEY FRSKEY3 =
+{
+
+ IF :tf.access_code = 'I3'
+ THEN
+
+   h_return = CALLFRAME msap_fr_up_management
+                      ( p_user_id = :tf.user_id,
+                        p_user_name = :tf.user_name,
+                        p_access_code = :tf.access_code);
+
+    IF h_return != 0
+    THEN
+      /* Error message handled locally */
+      RETURN :h_return;
+    ENDIF;
+
+  ELSE
+
+    MESSAGE 'NOTE: Staff with this access code cannot be included '
+          + 'in the structure table.'
+    WITH STYLE = POPUP;
+
+  ENDIF;
+
+  RESUME;
+
+}
+
+'Amend', KEY FRSKEY4 =
+{
+  IF :tf.user_name = ''
+  THEN
+    MESSAGE 'WARNING: You have not selected a user from the list.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  h_record = :tf._record;
+
+  h_return = CALLFRAME msap_fr_up_details (p_user_id   = :tf.user_id);
+
+  msa_date = 'now';
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failure reported during msap_fr_up_details. '
+          + 'Error code ' +VARCHAR(:h_return) +' .'
+          + 'Please contact IM immediately.'
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Reloads table with staff names in case some have been deleted
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC lp_load_table (p_sort = h_sort);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Reloading of user data to Table Field failed. '
+          + 'Error code ' +VARCHAR(:h_return) +' .'
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Just in case the very last user_name was deleted 
+  ------------------------------------------------------------------*/
+
+  IF :h_record > :h_records_loaded
+  THEN
+    h_record = :h_record - 1; 
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Remain on the user_name previously selected
+  ------------------------------------------------------------------*/
+
+  SCROLL tf TO :h_record;
+
+}
+
+
+'Name Sort', KEY FRSKEY5 =
+{
+  h_sort = 'user_name';
+  SET_FORMS FORM (MODE = 'read'); 
+
+  h_return = CALLPROC lp_load_table (p_sort='user_name');
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to sort table data by user name. '
+          + 'Error code ' +VARCHAR(:h_return) +' .'
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN h_return;
+  ENDIF;
+}
+
+'Id Sort', KEY FRSKEY6 =
+{
+  h_sort = 'user_id';
+  SET_FORMS FORM (MODE = 'read'); 
+
+  h_return = CALLPROC lp_load_table (p_sort='user_id');
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to sort table data by user id. '
+          + 'Error code ' +VARCHAR(:h_return) +' .'
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN h_return;
+  ENDIF;
+}
+
+'Access Sort', KEY FRSKEY7 =
+{
+  h_sort = 'access_code';
+  SET_FORMS FORM (MODE = 'read'); 
+
+  h_return = CALLPROC lp_load_table (p_sort='access_code');
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to sort table data by access code. '
+          + 'Error code ' +VARCHAR(:h_return) +' .'
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN h_return;
+  ENDIF;
+}
+
+'Room Sort', KEY FRSKEY8 =
+{
+  h_sort = 'room_number';
+  SET_FORMS FORM (MODE = 'read'); 
+
+  h_return = CALLPROC lp_load_table (p_sort='room_number');
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to sort table data by room number. '
+          + 'Error code ' +VARCHAR(:h_return) +' .'
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN h_return;
+  ENDIF;
+}
+
+'Print', KEY FRSKEY9 =
+{
+  IF  :g_user_class != 'C' 
+  AND :g_user_class != 'I' 
+  AND :g_user_class != 'D' 
+
+  THEN
+    MESSAGE 'WARNING: This option is not available to your user class.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;	
+
+  h_return = CALLPROC msa_cp_callsys (
+             'report ' +
+	     :g_database +
+	     ' ''(w_order = "' + :h_sort + '"' +
+	     ')'' -i$REPORTS/msap_rw_up_select.rw' +
+	     ' > report.output 2> report.output');
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to create report as requested. '
+          + 'Error code ' +VARCHAR(:h_return) +' .'
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+  ELSE
+    h_return = CALLPROC msa_cp_callsys (
+		'lp -o12p -d' + :g_printer +
+		' msap_rw_up_select.rpt '+
+		' >> report.output 2>> report.output');
+
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to print the report that was just created '
+            + 'on printer ' +:g_printer +'. '
+            + 'Error code ' +VARCHAR(:h_return) +' .'
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+    ELSE
+      MESSAGE 'NOTE: Report successfully created and sent to printer ' 
+            + :g_printer +'.'
+      WITH STYLE = POPUP;
+    ENDIF;
+
+  ENDIF;
+
+}
+
+'End', KEY FRSKEY14 =
+{
+  RETURN 0;
+}
+
+/*************************** LOCAL PROCEDURES ***************************/
+
+/*=======================================================================
+   Local procedure to load table field data to specified sort order.
+=======================================================================*/
+
+PROCEDURE lp_load_table (
+			p_sort = VARCHAR(20) NOT NULL
+			) =
+
+{
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+	IF p_sort = 'user_name' THEN
+
+        tf = 
+
+        SELECT   user_name,
+                 user_id,
+		 access_code,
+		 room_number
+        FROM     passwords_new
+        WHERE    (user_id LIKE 'prodd%' OR
+                  user_id LIKE 'prod1%' OR
+		  user_id LIKE 'produ%' OR
+                  user_id LIKE 'prod0%' OR
+                  user_id LIKE 'acprod%' OR
+		  user_id LIKE 'piprod%')
+        AND	  user_id != 'produser'
+        ORDER BY user_name; 
+
+	ELSEIF p_sort = 'user_id' THEN
+
+        tf = 
+
+        SELECT   user_name,
+                 user_id,
+		 access_code,
+		 room_number
+        FROM     passwords_new
+        WHERE    (user_id LIKE 'prodd%' OR
+                  user_id LIKE 'prod1%' OR
+		  user_id LIKE 'produ%' OR
+                  user_id LIKE 'prod0%' OR
+                  user_id LIKE 'acprod%' OR
+		  user_id LIKE 'piprod%')
+        AND	  user_id != 'produser'
+        ORDER BY user_id; 
+
+	ELSEIF p_sort = 'access_code' THEN
+
+        tf = 
+
+        SELECT   user_name,
+                 user_id,
+		 access_code,
+		 room_number
+        FROM     passwords_new
+        WHERE    (user_id LIKE 'prodd%' OR
+                  user_id LIKE 'prod1%' OR
+		  user_id LIKE 'produ%' OR
+                  user_id LIKE 'prod0%' OR
+                  user_id LIKE 'acprod%' OR
+		  user_id LIKE 'piprod%')
+        AND	  user_id != 'produser'
+        ORDER BY access_code; 
+
+	ELSEIF p_sort = 'room_number' THEN
+
+        tf = 
+
+        SELECT   user_name,
+                 user_id,
+		 access_code,
+		 room_number
+        FROM     passwords_new
+        WHERE    (user_id LIKE 'prodd%' OR
+                  user_id LIKE 'prod1%' OR
+		  user_id LIKE 'produ%' OR
+                  user_id LIKE 'prod0%' OR
+                  user_id LIKE 'acprod%' OR
+		  user_id LIKE 'piprod%')
+        AND	  user_id != 'produser'
+        ORDER BY room_number; 
+
+        ELSE
+        MESSAGE 'Invalid sort: No rows loaded into table'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+
+        h_return = CALLPROC check_inq_ing (
+                   h_num_row         = BYREF(:h_records_loaded),
+                   h_num_row_ck      = 1,
+                   h_commit          = 'Y',
+                   h_rollback        = 'N',
+                   h_retries         = :h_retries,
+                   h_retries_allowed = :h_retries_allowed,
+                   h_frpr_name       = :h_frpr_name);
+
+        IF h_return != 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF h_return = 9
+    THEN
+        MESSAGE 'System error in loading table with users'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF h_return = 1
+    THEN
+        MESSAGE 'No rows loaded into table'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+}
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

@@ -1,0 +1,208 @@
+/**************************************************************************
+  Displays a Data Coordinator's assigned staff.
+  VIEW ONLY: Changes made by changing analysts management chains. 
+**************************************************************************/
+
+INITIALIZE (p_user_id = VARCHAR(8) NOT NULL WITH DEFAULT) =
+
+DECLARE 
+  h_frpr_name       = VARCHAR(25) NOT NULL,
+  h_return          = INTEGER1    NOT NULL,
+  h_title           = VARCHAR(80) NOT NULL,
+  h_user_name       = VARCHAR(24) NOT NULL,
+  h_retries_allowed = INTEGER1    NOT NULL,
+  h_retries         = INTEGER1    NOT NULL,
+  h_retry_or_not    = CHAR(5)     NOT NULL,
+
+  lp_correct_caps     = PROCEDURE, 
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name = 'msap_fr_view_staff';
+  h_retries_allowed = 3;
+  msa_date = 'now';
+  s_user_id = :p_user_id;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT user_name AS h_user_name
+    FROM   passwords_new
+    WHERE  user_id = :p_user_id;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    eNDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select user name from password table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  CALLPROC lp_correct_caps (p_text = BYREF(:h_user_name));
+
+  h_title = 'Staff assigned to ' +:h_user_name +'.'; 
+  s_title = SHIFT(:h_title, (((80-LENGTH(h_title))/2)*1));
+
+  SET_FORMS FORM (MODE = 'read');
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    tf =
+
+    SELECT analyst_name,
+           analyst_id
+    FROM   analyst_coordinator_manager
+    WHERE  coordinator_id = :p_user_id
+    ORDER BY analyst_id;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+  IF h_return = 1
+  THEN
+    MESSAGE 'NOTE: ' +:h_user_name +' has no analysts assigned to them.'
+    WITH STYLE = POPUP;
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select analsyts from ACM table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  REDISPLAY;
+
+  RESUME MENU;
+
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'Relink Staff', KEY FRSKEY4 =
+{
+  h_return = CALLFRAME msap_fr_up_staff (p_user_id   = :p_user_id,
+                                         p_user_name = :h_user_name);
+
+  IF h_return = 1 
+  THEN
+    /* If successful, theres nothing left to see here. */
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN 
+    /* Error message handled in external prodcedure */
+    RETURN 9;
+  ENDIF;
+
+  RESUME MENU;
+}
+
+'End', KEY FRSKEY14 =
+{
+  RETURN 0;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+
+/*=======================================================================
+    Local procedure to correctly capitalise a user name.
+=======================================================================*/
+
+PROCEDURE lp_correct_caps (p_text = VARCHAR(24) NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_text            = VARCHAR(24) NOT NULL WITH DEFAULT,
+          lp_length          = INTEGER1    NOT NULL WITH DEFAULT,
+          lp_cap_next        = INTEGER1    NOT NULL WITH DEFAULT,
+          lp_count           = INTEGER1    NOT NULL WITH DEFAULT,
+          lp_character       = CHAR(1)     NOT NULL WITH DEFAULT,
+
+{
+  lp_length = LENGTH(SQUEEZE(:p_text));
+  lp_cap_next = 1;
+  lp_count    = 1;
+
+  WHILE :lp_count <= :lp_length
+  DO
+    lp_character = CHAREXTRACT(:p_text,:lp_count);
+
+    IF lp_character = ''
+    OR lp_character = ' '
+    THEN
+      lp_text = :lp_text + ' '; 
+    ELSE
+      IF lp_cap_next = 1
+      THEN 
+        lp_text = :lp_text + UPPER(:lp_character);
+      ELSE
+        lp_text = :lp_text + LOWER(:lp_character);
+      ENDIF;
+    ENDIF;
+
+    IF lp_character = ' '
+    OR lp_character = '-'
+    THEN
+      lp_cap_next = 1;
+    ELSE
+      lp_cap_next = 0;
+    ENDIF; 
+
+    lp_count = lp_count +1;
+     
+  ENDWHILE;
+
+  p_text = :lp_text;
+
+  RETURN;
+
+}

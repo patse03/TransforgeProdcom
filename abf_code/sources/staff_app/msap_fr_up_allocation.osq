@@ -1,0 +1,2919 @@
+
+INITIALIZE () =
+
+DECLARE h_retries_max        = INTEGER1 NOT NULL,
+        h_retries            = INTEGER1 NOT NULL,
+        h_retry_or_not       = CHAR(5) NOT NULL,
+        h_return             = INTEGER1 NOT NULL,
+        h_return2            = INTEGER1 NOT NULL,
+        h_exit               = CHAR(1) NOT NULL,
+        h_first_time         = CHAR(1) NOT NULL,
+        h_confirm            = CHAR(1) NOT NULL,
+        h_dummy              = INTEGER4 NOT NULL,
+        h_count              = INTEGER4 NOT NULL,
+        h_prompt             = CHAR(5) NOT NULL,
+        h_industry           = INTEGER4 NOT NULL,
+        h_ind_id             = INTEGER4 NOT NULL,
+        h_max_id             = INTEGER4 NOT NULL,
+        h_title              = VARCHAR(80) NOT NULL,
+        h_message            = VARCHAR(80) NOT NULL,
+        h_resume_field       = VARCHAR(24) NOT NULL,
+        h_frpr_name          = VARCHAR(24) NOT NULL,
+        h_alloc_table        = VARCHAR(24) NOT NULL,
+
+        lp_goto_industry        = PROCEDURE RETURNING INTEGER,
+        lp_load_industry        = PROCEDURE RETURNING INTEGER,
+        lp_save_industry        = PROCEDURE RETURNING INTEGER,
+        lp_prev_industry        = PROCEDURE RETURNING INTEGER,
+        lp_next_industry        = PROCEDURE RETURNING INTEGER,
+        lp_drop_table           = PROCEDURE RETURNING INTEGER,
+        lp_insert_allocation    = PROCEDURE RETURNING INTEGER,
+        lp_error_check          = PROCEDURE RETURNING INTEGER,
+        lp_full_error_check     = PROCEDURE RETURNING INTEGER,
+        lp_continuity_check     = PROCEDURE RETURNING INTEGER,
+        lp_duplication_check    = PROCEDURE RETURNING INTEGER,
+        lp_details_check        = PROCEDURE RETURNING INTEGER,
+        lp_clear_allocation     = PROCEDURE
+{
+
+SELECT DBMSINFO('username') AS g_user_id;
+SELECT DBMSINFO('database') AS g_database;
+
+SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+h_frpr_name = 'msap_fr_up_allocation';
+h_title = '';
+s_title = SHIFT(:h_title, (((80-LENGTH(h_title))/2)*1));
+msa_date = 'now';
+h_first_time = 'Y';
+
+
+/*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+----------------------------------------------------------------------*/
+  
+h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+IF h_return = 1 
+THEN
+  RETURN 0;
+ELSEIF h_return > 1
+THEN
+  RETURN 9;
+ENDIF;
+  
+
+/*----------------------------------------------------------------------
+     Drop temp tables. 
+----------------------------------------------------------------------*/
+
+MESSAGE'Dropping temp industry table. . .';
+
+h_return = CALLPROC lp_drop_table (p_table_name = 'tt_industry_id');
+
+IF h_return > 1
+  THEN
+  MESSAGE 'SYSTEM ERROR: Failed to drop table tt_industry_id. '
+	+ 'Error code '+VARCHAR(:h_return)+'.' +X'0D'
+	+ 'Please contact I.M. immediately. Program cannot continue.'
+  WITH STYLE = POPUP;
+  RETURN 9;
+ENDIF;
+
+/*----------------------------------------------------------------------
+     Create temp table of industries with id numbers.
+----------------------------------------------------------------------*/
+
+MESSAGE'Creating temp industry table. . .';
+
+h_retry_or_not      = 'RETRY';
+h_retries           = 0;
+h_retries_max       = 3;
+
+WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+DO
+
+  h_retries = :h_retries + 1;
+
+  CREATE TABLE tt_industry_id
+  AS
+    SELECT DISTINCT industry AS industry,
+                    industry_text as description,
+                    0        AS ind_id
+    FROM   industry;
+
+  h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF h_return != 7
+  THEN
+    h_retry_or_not = '';
+  ENDIF;
+
+ENDWHILE;
+
+IF h_return = 7
+THEN
+  RETURN 7;
+
+ ELSEIF h_return != 0
+ THEN
+  MESSAGE 'SYSTEM ERROR: Failed to create table tt_industry_id. '
+	+ 'Error code '+VARCHAR(:h_return)+'.' +X'0D'
+	+ 'Please contact I.M. immediately. Program cannot continue.'
+  WITH STYLE = POPUP;
+  RETURN 9;
+
+ENDIF;
+
+MODIFY tt_industry_id TO btree ON industry;
+
+h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+IF h_return != 0
+  THEN
+  MESSAGE 'SYSTEM ERROR: Failed to modify table tt_industry_id. '
+	+ 'Error code '+VARCHAR(:h_return)+'.' +X'0D'
+	+ 'Please contact I.M. immediately. Program cannot continue.'
+  WITH STYLE = POPUP;
+  RETURN 9;
+ENDIF;
+
+h_count = 0;
+
+SELECT industry AS h_industry 
+FROM   tt_industry_id
+BEGIN
+  h_count = h_count +1;
+  
+  UPDATE tt_industry_id
+  SET    ind_id   = :h_count
+  WHERE  industry = :h_industry; 
+
+  h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return2 != 0
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed to update industry ' +VARCHAR(:h_industry)
+          + ' with id number ' +VARCHAR(:h_count) +' on table tt_industry_id.'
+	  + ' Error code '+VARCHAR(:h_return)+'.' +X'0D'
+	  + 'Please contact I.M. immediately. Program cannot continue.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+END;
+
+/*----------------------------------------------------------------------
+     Select max id from the table for future use.
+----------------------------------------------------------------------*/
+
+SELECT MAX(ind_id) AS h_max_id
+FROM   tt_industry_id;
+
+h_return = CALLPROC lp_error_check(p_num_row_ck  = 1);
+
+IF h_return != 0
+THEN
+  MESSAGE 'SYSTEM ERROR: Failed to select max ind_id from tt_industry_id. '
+        + 'Error code ' + VARCHAR(:h_return) + '. '
+        + 'Process cannot continue so exiting.';
+ 
+  RETURN 9;
+ENDIF;
+
+/*----------------------------------------------------------------------
+     Prompt for starting industry and display.
+----------------------------------------------------------------------*/
+
+h_return = CALLPROC lp_goto_industry();
+
+IF h_return > 1
+  THEN
+  /* Error message handled locally */
+  RETURN 9;
+ENDIF;
+
+REDISPLAY;
+
+h_return = CALLPROC lp_load_industry();
+
+IF h_return = 1
+THEN
+  IF h_resume_field != ''
+  THEN 
+    RESUME FIELD :h_resume_field;
+  ELSE 
+    RESUME;
+  ENDIF;
+
+ELSEIF h_return > 1
+  THEN
+  /* Error message handled locally */
+  RETURN 9;
+
+ENDIF;
+
+REDISPLAY;
+
+}
+
+/*************************** FIELD ACTIVATIONS ****************************/
+
+/*=======================================================================
+   ROW 1A: Validate name, insert user_id and extension, resume low.
+======================================================================*/
+
+FIELD s_name_1 = 
+
+{
+
+  IF SQUEEZE(:s_name_1) = ''
+  THEN
+    s_ext_1 = '';
+    s_low_1 = '';
+    s_high_1 = '';
+    s_user_id_1 = '';
+    REDISPLAY;
+    RESUME;
+  ENDIF;
+  
+  MESSAGE'Validating Analyst. . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_max       = 3;
+
+  WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT user_id   AS s_user_id_1,
+           extension AS s_ext_1
+    FROM   passwords_new
+    WHERE  user_name = UPPER(:s_name_1) 
+      AND  access_code = 'I3';
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'ERROR: That data analyst cannot be found. Please correct. '
+  WITH STYLE = POPUP;
+  RESUME FIELD s_name_1;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed to select from new passwords table. '
+	+ 'Error code '+VARCHAR(:h_return)+'.' +X'0D'
+	+ 'Please contact I.M. immediately. Program cannot continue.'
+  WITH STYLE = POPUP;
+  RETURN 9;
+
+  ENDIF;
+
+  REDISPLAY;
+
+  RESUME FIELD s_low_1; 
+
+}
+
+/*=======================================================================
+   ROW 1B: Validate low and high.
+======================================================================*/
+
+
+FIELD s_high_1 = 
+
+{
+
+  h_return = CALLPROC lp_continuity_check;
+
+  REDISPLAY;
+
+  IF h_return = 1
+  THEN
+    RESUME FIELD s_low_1 
+  ELSE 
+    RESUME FIELD s_name_2;
+  ENDIF;
+
+}
+  
+/*=======================================================================
+   ROW 2A: Validate name, insert user_id and extension, resume low.
+======================================================================*/
+
+FIELD s_name_2 = 
+
+{
+
+  IF SQUEEZE(:s_name_2) = ''
+  THEN
+    s_ext_2 = '';
+    s_low_2 = '';
+    s_high_2 = '';
+    s_user_id_2 = '';
+    REDISPLAY;
+    RESUME;
+  ENDIF;
+  
+  MESSAGE'Validating Analyst. . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_max       = 3;
+
+  WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT user_id   AS s_user_id_2,
+           extension AS s_ext_2
+    FROM   passwords_new
+    WHERE  user_name = UPPER(:s_name_2);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'ERROR: That data analyst cannot be found. Please correct. '
+  WITH STYLE = POPUP;
+  RESUME FIELD s_name_2;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed to select from new passwords table. '
+	+ 'Error code '+VARCHAR(:h_return)+'.' +X'0D'
+	+ 'Please contact I.M. immediately. Program cannot continue.'
+  WITH STYLE = POPUP;
+  RETURN 9;
+
+  ENDIF;
+
+  REDISPLAY;
+
+  h_return = CALLPROC lp_duplication_check (p_check = 2);
+
+  REDISPLAY;
+
+  IF h_return = 1
+  THEN
+    RESUME FIELD :h_resume_field; 
+  ENDIF;
+  
+  RESUME FIELD s_low_2; 
+
+}
+
+/*=======================================================================
+   ROW 2B: Validate low and high.
+======================================================================*/
+
+FIELD s_high_2 = 
+
+{
+
+  h_return = CALLPROC lp_continuity_check;
+
+  REDISPLAY;
+
+  IF h_return = 1
+  THEN
+    RESUME FIELD s_low_2 
+  ELSE 
+    RESUME FIELD s_name_3;
+  ENDIF;
+
+}
+  
+/*=======================================================================
+   ROW 3A: Validate name, insert user_id and extension, resume low.
+======================================================================*/
+
+FIELD s_name_3 = 
+
+{
+  
+  IF SQUEEZE(:s_name_3) = ''
+  THEN
+    s_ext_3 = '';
+    s_low_3 = '';
+    s_high_3 = '';
+    s_user_id_3 = '';
+    REDISPLAY;
+    RESUME;
+  ENDIF;
+
+  MESSAGE'Validating Analyst. . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_max       = 3;
+
+  WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT user_id   AS s_user_id_3,
+           extension AS s_ext_3
+    FROM   passwords_new
+    WHERE  user_name = UPPER(:s_name_3);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'ERROR: That data analyst cannot be found. Please correct. '
+  WITH STYLE = POPUP;
+  RESUME FIELD s_name_3;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed to select from new passwords table. '
+	+ 'Error code '+VARCHAR(:h_return)+'.' +X'0D'
+	+ 'Please contact I.M. immediately. Program cannot continue.'
+  WITH STYLE = POPUP;
+  RETURN 9;
+
+  ENDIF;
+
+  REDISPLAY;
+
+  h_return = CALLPROC lp_duplication_check (p_check = 3);
+
+  REDISPLAY;
+
+  IF h_return = 1
+  THEN
+    RESUME FIELD :h_resume_field; 
+  ENDIF;
+  
+  RESUME FIELD s_low_3; 
+
+}
+
+/*=======================================================================
+   ROW 3B: Validate low and high.
+======================================================================*/
+
+FIELD s_high_3 = 
+
+{
+
+  h_return = CALLPROC lp_continuity_check;
+
+  REDISPLAY;
+
+  IF h_return = 1
+  THEN
+    RESUME FIELD s_low_3 
+  ELSE 
+    RESUME FIELD s_name_4;
+  ENDIF;
+
+}
+  
+/*=======================================================================
+   ROW 4A: Validate name, insert user_id and extension, resume low.
+======================================================================*/
+
+FIELD s_name_4 = 
+
+{
+  
+  IF SQUEEZE(:s_name_4) = ''
+  THEN
+    s_ext_4 = '';
+    s_low_4 = '';
+    s_high_4 = '';
+    s_user_id_4 = '';
+    REDISPLAY;
+    RESUME;
+  ENDIF;
+
+  MESSAGE'Validating Analyst. . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_max       = 3;
+
+  WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT user_id   AS s_user_id_4,
+           extension AS s_ext_4
+    FROM   passwords_new
+    WHERE  user_name = UPPER(:s_name_4);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'ERROR: That data analyst cannot be found. Please correct. '
+  WITH STYLE = POPUP;
+  RESUME FIELD s_name_4;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed to select from new passwords table. '
+	+ 'Error code '+VARCHAR(:h_return)+'.' +X'0D'
+	+ 'Please contact I.M. immediately. Program cannot continue.'
+  WITH STYLE = POPUP;
+  RETURN 9;
+
+  ENDIF;
+
+  REDISPLAY;
+
+  h_return = CALLPROC lp_duplication_check (p_check = 4);
+
+  REDISPLAY;
+
+  IF h_return = 1
+  THEN
+    RESUME FIELD :h_resume_field; 
+  ENDIF;
+  
+  RESUME FIELD s_low_4; 
+
+}
+
+/*=======================================================================
+   ROW 4B: Validate low and high.
+======================================================================*/
+
+FIELD s_high_4 = 
+
+{
+
+  h_return = CALLPROC lp_continuity_check;
+
+  REDISPLAY;
+
+  IF h_return = 1
+  THEN
+    RESUME FIELD s_low_4 
+  ELSE 
+    RESUME FIELD s_name_5;
+  ENDIF;
+
+}
+
+/*=======================================================================
+   ROW 5A: Validate name, insert user_id and extension, resume low.
+======================================================================*/
+
+FIELD s_name_5 = 
+
+{
+  
+  IF SQUEEZE(:s_name_5) = ''
+  THEN
+    s_ext_5 = '';
+    s_low_5 = '';
+    s_high_5 = '';
+    s_user_id_5 = '';
+    REDISPLAY;
+    RESUME;
+  ENDIF;
+
+  MESSAGE'Validating Analyst. . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_max       = 3;
+
+  WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT user_id   AS s_user_id_5,
+           extension AS s_ext_5
+    FROM   passwords_new
+    WHERE  user_name = UPPER(:s_name_5);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'ERROR: That data analyst cannot be found. Please correct. '
+  WITH STYLE = POPUP;
+  RESUME FIELD s_name_5;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed to select from new passwords table. '
+	+ 'Error code '+VARCHAR(:h_return)+'.' +X'0D'
+	+ 'Please contact I.M. immediately. Program cannot continue.'
+  WITH STYLE = POPUP;
+  RETURN 9;
+
+  ENDIF;
+
+  REDISPLAY;
+
+  h_return = CALLPROC lp_duplication_check (p_check = 5);
+
+  REDISPLAY;
+
+  IF h_return = 1
+  THEN
+    RESUME FIELD :h_resume_field; 
+  ENDIF;
+  
+  RESUME FIELD s_low_5; 
+
+}
+
+/*=======================================================================
+   ROW 5B: Validate low and high.
+======================================================================*/
+
+FIELD s_high_5 = 
+
+{
+
+  h_return = CALLPROC lp_continuity_check;
+
+  REDISPLAY;
+
+  IF h_return = 1
+  THEN
+    RESUME FIELD s_low_5 
+  ELSE 
+    RESUME FIELD s_name_6;
+  ENDIF;
+
+}
+
+/*=======================================================================
+   ROW 6A: Validate name, insert user_id and extension, resume low.
+======================================================================*/
+
+FIELD s_name_6 = 
+
+{
+  
+  IF SQUEEZE(:s_name_6) = ''
+  THEN
+    s_ext_6 = '';
+    s_low_6 = '';
+    s_high_6 = '';
+    s_user_id_6 = '';
+    REDISPLAY;
+    RESUME;
+  ENDIF;
+
+  MESSAGE'Validating Analyst. . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_max       = 3;
+
+  WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT user_id   AS s_user_id_6,
+           extension AS s_ext_6
+    FROM   passwords_new
+    WHERE  user_name = UPPER(:s_name_6);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'ERROR: That data analyst cannot be found. Please correct. '
+  WITH STYLE = POPUP;
+  RESUME FIELD s_name_6;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed to select from new passwords table. '
+	+ 'Error code '+VARCHAR(:h_return)+'.' +X'0D'
+	+ 'Please contact I.M. immediately. Program cannot continue.'
+  WITH STYLE = POPUP;
+  RETURN 9;
+
+  ENDIF;
+
+  REDISPLAY;
+
+  h_return = CALLPROC lp_duplication_check (p_check = 6);
+
+  REDISPLAY;
+
+  IF h_return = 1
+  THEN
+    RESUME FIELD :h_resume_field; 
+  ENDIF;
+  
+  RESUME FIELD s_low_6; 
+
+}
+
+/*=======================================================================
+   ROW 6B: Validate low and high.
+======================================================================*/
+
+FIELD s_high_6 = 
+
+{
+
+  h_return = CALLPROC lp_continuity_check;
+
+  REDISPLAY;
+
+  IF h_return = 1
+  THEN
+    RESUME FIELD s_low_6 
+  ELSE 
+    RESUME FIELD s_name_7;
+  ENDIF;
+
+}
+
+/*=======================================================================
+   ROW 7A: Validate name, insert user_id and extension, resume low.
+======================================================================*/
+
+FIELD s_name_7 = 
+
+{
+  
+  IF SQUEEZE(:s_name_7) = ''
+  THEN
+    s_ext_7 = '';
+    s_low_7 = '';
+    s_high_7 = '';
+    s_user_id_7 = '';
+    REDISPLAY;
+    RESUME;
+  ENDIF;
+
+  MESSAGE'Validating Analyst. . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_max       = 3;
+
+  WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT user_id   AS s_user_id_7,
+           extension AS s_ext_7
+    FROM   passwords_new
+    WHERE  user_name = UPPER(:s_name_7);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'ERROR: That data analyst cannot be found. Please correct. '
+  WITH STYLE = POPUP;
+  RESUME FIELD s_name_7;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed to select from new passwords table. '
+	+ 'Error code '+VARCHAR(:h_return)+'.' +X'0D'
+	+ 'Please contact I.M. immediately. Program cannot continue.'
+  WITH STYLE = POPUP;
+  RETURN 9;
+
+  ENDIF;
+
+  REDISPLAY;
+
+  h_return = CALLPROC lp_duplication_check (p_check = 6);
+
+  REDISPLAY;
+
+  IF h_return = 1
+  THEN
+    RESUME FIELD :h_resume_field; 
+  ENDIF;
+  
+  RESUME FIELD s_low_7; 
+
+}
+
+/*=======================================================================
+   ROW 7B: Validate low and high.
+======================================================================*/
+
+FIELD s_high_7 = 
+
+{
+
+  h_return = CALLPROC lp_continuity_check;
+
+  REDISPLAY;
+
+  IF h_return = 1
+  THEN
+    RESUME FIELD s_low_7 
+  ELSE 
+    RESUME FIELD s_name_1;
+  ENDIF;
+
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+/*=======================================================================
+   FRSKEY1: [HIDDEN] Clear allocation fields on screen.
+======================================================================*/
+
+KEY FRSKEY1 = 
+
+{
+
+CALLPROC lp_clear_allocation (p_count = 0);
+
+RESUME FIELD s_name_1;
+
+}
+
+/*=======================================================================
+   FRSKEY3: Save then go to previous industry.
+======================================================================*/
+
+'Prev', KEY FRSKEY3 = 
+
+{
+
+h_return = CALLPROC lp_save_industry();
+
+IF h_return = 1 
+THEN
+  IF :h_resume_field != ''
+  THEN
+    RESUME FIELD :h_resume_field;
+  ELSE
+    RESUME;
+  ENDIF;
+ENDIF;
+
+IF h_return > 1
+THEN
+  RETURN :h_return;
+ENDIF;
+
+h_return = CALLPROC lp_prev_industry();
+
+IF h_return > 1
+THEN
+  RETURN :h_return;
+ENDIF;
+
+h_return = CALLPROC lp_load_industry();
+
+IF h_return > 1
+THEN
+  RETURN :h_return;
+ENDIF;
+
+REDISPLAY;
+
+RESUME FIELD s_name_1;
+
+}
+
+/*=======================================================================
+   FRSKEY4: Save then go to next industry.
+======================================================================*/
+
+'Next', KEY FRSKEY4 = 
+
+{
+
+h_return = CALLPROC lp_save_industry();
+
+IF h_return = 1 
+THEN
+  IF :h_resume_field != ''
+  THEN
+    RESUME FIELD :h_resume_field;
+  ELSE
+    RESUME;
+  ENDIF;
+ENDIF;
+
+IF h_return > 1
+THEN
+  RETURN :h_return;
+ENDIF;
+
+h_return = CALLPROC lp_next_industry();
+
+IF h_return > 1
+THEN
+  RETURN :h_return;
+ENDIF;
+
+h_return = CALLPROC lp_load_industry();
+
+IF h_return > 1
+THEN
+  RETURN :h_return;
+ENDIF;
+
+REDISPLAY;
+
+RESUME FIELD s_name_1;
+
+}
+
+/*=======================================================================
+   FRSKEY5: Save then go to previous industry.
+======================================================================*/
+
+'Goto', KEY FRSKEY5 = 
+
+{
+
+h_return = CALLPROC lp_save_industry();
+
+IF h_return = 1 
+THEN
+  IF :h_resume_field != ''
+  THEN
+    RESUME FIELD :h_resume_field;
+  ELSE
+    RESUME;
+  ENDIF;
+ENDIF;
+
+IF h_return > 1
+THEN
+  RETURN :h_return;
+ENDIF;
+
+h_return = CALLPROC lp_goto_industry();
+
+IF h_return > 1
+THEN
+  RETURN :h_return;
+ENDIF;
+
+h_return = CALLPROC lp_load_industry();
+
+IF h_return > 1
+THEN
+  RETURN :h_return;
+ENDIF;
+
+REDISPLAY;
+
+RESUME FIELD s_name_1;
+
+}
+
+/*=======================================================================
+   FRSKEY6: Save current industry's allocation.
+======================================================================*/
+
+'Save', KEY FRSKEY6 = 
+
+{
+
+h_return = CALLPROC lp_save_industry();
+
+IF h_return = 1 
+THEN
+  IF :h_resume_field != ''
+  THEN
+    RESUME FIELD :h_resume_field;
+  ELSE
+    RESUME;
+  ENDIF;
+ENDIF;
+
+IF h_return > 1
+THEN
+  RETURN :h_return;
+ENDIF;
+
+REDISPLAY;
+
+RESUME FIELD s_name_1;
+
+}
+
+/*=======================================================================
+   FRSKEY8: Save current industry's allocation.
+======================================================================*/
+
+'Test', KEY FRSKEY8 = 
+
+{
+
+h_return = CALLPROC lp_details_check();
+
+IF h_return = 1 
+THEN
+  IF :h_resume_field != ''
+  THEN
+    RESUME FIELD :h_resume_field;
+  ELSE
+    RESUME;
+  ENDIF;
+ENDIF;
+
+IF h_return > 1
+THEN
+  RETURN :h_return;
+ENDIF;
+
+h_return = CALLPROC lp_duplication_check(p_check = 0);
+
+IF h_return = 1 
+THEN
+  RESUME FIELD :h_resume_field;
+ENDIF;
+
+h_return = CALLPROC lp_continuity_check();
+
+IF h_return > 1
+THEN
+  RETURN :h_return;
+ENDIF;
+
+REDISPLAY;
+
+RESUME;
+
+}
+
+/*=======================================================================
+   FRSKEY9: Reset current industry's allocation.
+======================================================================*/
+
+'Load', KEY FRSKEY9 = 
+
+{
+
+h_return = CALLPROC lp_load_industry();
+
+IF h_return > 1
+THEN
+  RETURN :h_return;
+ENDIF;
+
+REDISPLAY;
+
+h_return = CALLPROC lp_duplication_check(p_check = 0);
+
+IF h_return = 1
+THEN
+  RESUME FIELD :h_resume_field;
+ENDIF;
+
+h_return = CALLPROC lp_continuity_check();
+
+RESUME FIELD s_name_1;
+
+}
+
+/*=======================================================================
+   FRSKEY12: Save current industry's allocation and exit.
+======================================================================*/
+
+'End', KEY FRSKEY14 = 
+
+{
+
+h_return = CALLPROC lp_save_industry();
+
+IF h_return = 1 
+THEN
+  IF :h_resume_field != ''
+  THEN
+    RESUME FIELD :h_resume_field;
+  ELSE
+    RESUME;
+  ENDIF;
+ENDIF;
+
+IF h_return > 1
+THEN
+  RETURN :h_return;
+ENDIF;
+
+RETURN 0;
+
+}
+
+/*********************** LOCAL PROCEDURES ***********************************/
+
+/*===========================================================================
+	      Local procedure for error checking within retry loop.
+============================================================================*/
+
+PROCEDURE lp_full_error_check
+	  (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT)=
+
+DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+
+{
+
+lp_return = CALLPROC check_inq_ing (h_num_row_ck      = :p_num_row_ck,
+ 				    h_commit          = 'Y',
+				    h_rollback        = 'N',
+				    h_retries         = :h_retries,
+                                    h_retries_allowed = :h_retries_max,
+                                    h_frpr_name       = ':h_frpr_name');
+RETURN :lp_return;
+
+}
+
+/*===========================================================================
+	      Local procedure for basic error checking.
+============================================================================*/
+
+PROCEDURE lp_error_check
+	  (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT)=
+
+DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT
+
+
+{
+
+lp_return = CALLPROC check_inq_ing (h_num_row_ck      = :p_num_row_ck,
+ 				    h_commit          = 'Y',
+				    h_rollback        = 'N',
+				    h_retries         = 1,
+                                    h_retries_allowed = 1,
+                                    h_frpr_name       = ':h_frpr_name');
+RETURN :lp_return;
+
+}
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(24) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(20) NOT NULL
+
+{
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/*===========================================================================
+      Local procedure for insertng an allocation into industry_analysts
+============================================================================*/
+
+PROCEDURE lp_insert_allocation
+        ( p_industry  = INTEGER4    NOT NULL WITH DEFAULT,
+          p_name      = VARCHAR(36) NOT NULL WITH DEFAULT,
+          p_ext       = CHAR(4)     NOT NULL WITH DEFAULT,
+          p_low       = CHAR(11)    NOT NULL WITH DEFAULT,
+          p_high      = CHAR(11)    NOT NULL WITH DEFAULT,
+          p_user_id   = CHAR(11)    NOT NULL WITH DEFAULT )=
+
+  DECLARE lp_return    = INTEGER4      NOT NULL WITH DEFAULT,
+
+{
+
+h_retry_or_not      = 'RETRY';
+h_retries           = 0;
+h_retries_max       = 3;
+
+WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+DO
+
+  h_retries = :h_retries + 1;
+
+  INSERT INTO industry_analysts
+  VALUES    ( :p_industry,
+              :p_low,
+              :p_high,
+              :p_user_id,
+              :p_name,
+              :p_ext );
+
+  lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 7
+  THEN
+    h_retry_or_not = '';
+  ENDIF;
+
+ENDWHILE;
+
+IF lp_return = 7
+THEN
+  RETURN 7;
+
+ ELSEIF lp_return > 1
+ THEN
+  MESSAGE 'SYSTEM ERROR: Failed to insert into table tt_industry_id. '
+	+ 'Error code '+VARCHAR(:lp_return)+'.' +X'0D'
+	+ 'Please contact I.M. immediately. Program cannot continue.'
+  WITH STYLE = POPUP;
+  RETURN 9;
+
+ENDIF;
+
+}
+
+/*===========================================================================
+      Local procedure for going to a specific industry allocation.
+============================================================================*/
+
+PROCEDURE lp_goto_industry() = 
+
+  DECLARE lp_return  = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_confirm = CHAR(1)  NOT NULL WITH DEFAULT,
+
+{
+
+IF h_first_time = 'N'
+THEN
+  lp_return = CALLPROC lp_save_industry();
+    
+  IF lp_return != 0 
+  THEN 
+    /* Error messages handled in local procedure */
+    RETURN 9; 
+  ENDIF;
+  
+ENDIF; 
+
+lp_confirm = 'N';
+
+WHILE lp_confirm = 'N'
+DO
+  h_prompt = PROMPT 'Please enter an industry allocation to load, or '
+                  + 'enter 1 to start at the first industry: '
+             WITH STYLE = POPUP;
+
+  IF h_prompt = '1'
+  THEN  
+    SELECT industry    AS h_industry,
+           description AS h_title, 
+           ind_id      AS h_ind_id
+    FROM   tt_industry_id
+    WHERE  ind_id = 1;
+
+   ELSE 
+    SELECT industry    AS h_industry,
+           description AS h_title, 
+           ind_id      AS h_ind_id
+    FROM   tt_industry_id
+    WHERE  industry = :h_prompt;
+
+  ENDIF;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return = 0
+  THEN
+    lp_confirm = 'Y';
+
+  ELSEIF lp_return = 1
+  THEN
+    MESSAGE 'ERROR: That is not a valid industry, please try again.'
+    WITH STYLE = POPUP;
+
+  ELSEIF lp_return > 1
+  THEN
+
+    IF h_prompt = '1'
+    THEN 
+      MESSAGE 'SYSTEM ERROR: Failed whilst looking for first row on '
+            + 'tt_industry_id. Process cannot continue so exiting.'
+      WITH STYLE = POPUP;
+    ELSE  
+      MESSAGE 'SYSTEM ERROR: Failed whilst validating ' +VARCHAR(:h_industry)
+            + ' against tt_industry_id. Process cannot continue so exiting.'
+      WITH STYLE = POPUP;
+    ENDIF;
+
+    RETURN 9; 
+
+  ENDIF;
+
+ENDWHILE;
+  
+s_industry = :h_industry;
+s_title = SHIFT(:h_title, (((80-LENGTH(h_title))/2)*1));
+
+h_first_time = 'N';
+
+RETURN 0;
+
+}
+
+/*===========================================================================
+      Local procedure for going to the previous industry allocation.
+============================================================================*/
+
+PROCEDURE lp_prev_industry() = 
+
+  DECLARE lp_return  = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_confirm = CHAR(1)  NOT NULL WITH DEFAULT,
+
+{
+
+lp_return = CALLPROC lp_save_industry();
+    
+IF lp_return = 1 
+THEN 
+  RETURN 1;
+ELSEIF lp_return > 1 
+THEN 
+  /* Error messages handled in local procedure */
+  RETURN 9; 
+ENDIF;
+
+IF h_ind_id = 1
+THEN
+  MESSAGE 'NOTE: Alreay on first industry.' WITH STYLE = POPUP;
+ELSE
+  SELECT industry    AS h_industry,
+         description AS h_title,
+         ind_id      AS h_ind_id
+  FROM   tt_industry_id
+  WHERE  ind_id = (:h_ind_id - 1);
+ENDIF;
+
+lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+IF lp_return != 0
+THEN
+  MESSAGE 'SYSTEM ERROR: Failed whilst looking for previous row on '
+        + 'tt_industry_id. Please contact I.M. Immediately. '
+        + 'Process cannot continue so exiting.'
+  WITH STYLE = POPUP;
+  RETURN 9; 
+ENDIF;
+
+s_industry = :h_industry;
+s_title = SHIFT(:h_title, (((80-LENGTH(h_title))/2)*1));
+
+RETURN 0;
+
+}
+
+/*===========================================================================
+      Local procedure for going to the next industry allocation.
+============================================================================*/
+
+PROCEDURE lp_next_industry() = 
+
+  DECLARE lp_return  = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_confirm = CHAR(1)  NOT NULL WITH DEFAULT,
+
+{
+
+lp_return = CALLPROC lp_save_industry();
+    
+IF lp_return = 1 
+THEN 
+  RETURN 1;
+ELSEIF lp_return > 1 
+THEN 
+  /* Error messages handled in local procedure */
+  RETURN 9; 
+ENDIF;
+
+IF h_ind_id = :h_max_id
+THEN
+
+  MESSAGE 'NOTE: Already on last industry. Looping to first industry.' 
+  WITH STYLE = POPUP;
+
+  SELECT industry    AS h_industry,
+         description AS h_title,
+         ind_id      AS h_ind_id
+  FROM   tt_industry_id
+  WHERE  ind_id = 1;
+
+ELSE
+
+  SELECT industry    AS h_industry,
+         description AS h_title,
+         ind_id      AS h_ind_id
+  FROM   tt_industry_id
+  WHERE  ind_id = (:h_ind_id + 1);
+
+ENDIF;
+
+lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+IF lp_return != 0
+THEN
+  MESSAGE 'SYSTEM ERROR: Failed whilst looking for next row on '
+        + 'tt_industry_id. Please contact I.M. Immediately. '
+        + 'Process cannot continue so exiting.'
+  WITH STYLE = POPUP;
+  RETURN 9; 
+ENDIF;
+
+s_industry = :h_industry;
+s_title = SHIFT(:h_title, (((80-LENGTH(h_title))/2)*1));
+
+RETURN 0;
+
+}
+
+/*===========================================================================
+      Local procedure for loading a specific industry allocation.
+============================================================================*/
+
+PROCEDURE lp_load_industry() = 
+
+  DECLARE lp_return    = INTEGER4      NOT NULL WITH DEFAULT,
+          lp_text      = VARCHAR(1000) NOT NULL WITH DEFAULT,
+          lp_count     = INTEGER1      NOT NULL WITH DEFAULT,
+          lp_name      = VARCHAR(36)   NOT NULL WITH DEFAULT,
+          lp_ext       = CHAR(4)       NOT NULL WITH DEFAULT,
+          lp_low       = CHAR(11)      NOT NULL WITH DEFAULT,
+          lp_high      = CHAR(11)      NOT NULL WITH DEFAULT,
+          lp_user_id   = CHAR(11)      NOT NULL WITH DEFAULT,
+
+{
+
+h_alloc_table = 'tt_allocation_' +VARCHAR(:s_industry);
+
+/*----------------------------------------------------------------------
+     Drop any existing temp allocation table.
+----------------------------------------------------------------------*/
+
+lp_return = CALLPROC lp_drop_table (p_table_name = :h_alloc_table); 
+
+IF lp_return > 1
+THEN
+  MESSAGE 'SYSTEM ERROR: Failed to drop table '+VARCHAR(:h_alloc_table) +'. '
+        + 'Error code '+VARCHAR(:lp_return)+'.' +X'0D'
+	+ 'Please contact I.M. immediately. Program cannot continue.'
+  WITH STYLE = POPUP;
+  RETURN 9;
+ENDIF;
+
+/*----------------------------------------------------------------------
+      Create new temp allocation table.
+----------------------------------------------------------------------*/
+
+CREATE TABLE :h_alloc_table
+AS
+SELECT *
+FROM   industry_analysts
+WHERE  industry = :s_industry;    
+
+lp_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+IF lp_return > 1
+THEN
+  MESSAGE 'SYSTEM ERROR: Failed to create table '
+        + VARCHAR(:h_alloc_table) +'. '
+        + 'Error code '+VARCHAR(:lp_return)+'.' +X'0D'
+	+ 'Please contact I.M. immediately. Program cannot continue.'
+  WITH STYLE = POPUP;
+  RETURN 9;
+ENDIF;
+
+/*----------------------------------------------------------------------
+      Cycle through row of table to allocate variables to screen.
+----------------------------------------------------------------------*/
+
+lp_count = 0;
+
+SELECT name     AS lp_name,
+       ext      AS lp_ext,
+       low_ref  AS lp_low,
+       high_ref AS lp_high,
+       user_id  AS lp_user_id
+FROM   :h_alloc_table
+BEGIN
+
+  lp_count = lp_count + 1;
+
+  IF lp_count = 1 
+  THEN
+    s_name_1    = :lp_name;
+    s_ext_1     = :lp_ext;
+    s_low_1     = :lp_low;
+    s_high_1    = :lp_high;
+    s_user_id_1 = :lp_user_id;
+       
+  ELSEIF lp_count = 2 
+  THEN
+    s_name_2    = :lp_name;
+    s_ext_2     = :lp_ext;
+    s_low_2     = :lp_low;
+    s_high_2    = :lp_high;
+    s_user_id_2 = :lp_user_id;
+       
+  ELSEIF lp_count = 3 
+  THEN
+    s_name_3    = :lp_name;
+    s_ext_3     = :lp_ext;
+    s_low_3     = :lp_low;
+    s_high_3    = :lp_high;
+    s_user_id_3 = :lp_user_id;
+       
+  ELSEIF lp_count = 4 
+  THEN
+    s_name_4    = :lp_name;
+    s_ext_4     = :lp_ext;
+    s_low_4     = :lp_low;
+    s_high_4    = :lp_high;
+    s_user_id_4 = :lp_user_id;
+       
+  ELSEIF lp_count = 5 
+  THEN
+    s_name_5    = :lp_name;
+    s_ext_5     = :lp_ext;
+    s_low_5     = :lp_low;
+    s_high_5    = :lp_high;
+    s_user_id_5 = :lp_user_id;
+       
+  ELSEIF lp_count = 6 
+  THEN
+    s_name_6    = :lp_name;
+    s_ext_6     = :lp_ext;
+    s_low_6     = :lp_low;
+    s_high_6    = :lp_high;
+    s_user_id_6 = :lp_user_id;
+       
+  ELSEIF lp_count = 7 
+  THEN
+    s_name_7    = :lp_name;
+    s_ext_7     = :lp_ext;
+    s_low_7     = :lp_low;
+    s_high_7    = :lp_high;
+    s_user_id_7 = :lp_user_id;
+       
+  ELSE
+    MESSAGE 'ERROR: Maximum of seven staff permitted per industry. '
+          + ' First seven displayed, and only seven will be saved.'
+    WITH STYLE = POPUP; 
+    ENDLOOP; 
+    
+  ENDIF;
+  
+END; 
+
+lp_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+IF lp_return = 1
+THEN
+  MESSAGE 'WARNING: This industry does not have any analysts allocated '
+        + 'to it. Please correct this before continuing.'
+  WITH STYLE = POPUP;
+
+ELSEIF lp_return > 1
+THEN
+  MESSAGE 'SYSTEM ERROR: Failed to select allocation for ' 
+        + VARCHAR(:s_industry) +' from ' + VARCHAR(:h_alloc_table) +'. '
+        + 'Error code '+VARCHAR(:lp_return)+'.' +X'0D'
+        + 'Please contact I.M. immediately. Program cannot continue.'
+  WITH STYLE = POPUP;
+  RETURN 9;
+
+ENDIF;
+
+/*----------------------------------------------------------------------
+     Drop temp allocation table as all now safely on screen.
+----------------------------------------------------------------------*/
+
+lp_return = CALLPROC lp_drop_table (p_table_name = :h_alloc_table); 
+
+IF lp_return > 1
+THEN
+  MESSAGE 'SYSTEM ERROR: Failed to drop table '+VARCHAR(:h_alloc_table) +'. '
+        + 'Error code '+VARCHAR(:lp_return)+'.' +X'0D'
+	+ 'Please contact I.M. immediately. Program cannot continue.'
+  WITH STYLE = POPUP;
+  RETURN 9;
+ENDIF;
+
+/*----------------------------------------------------------------------
+     Blanks off the fields that havent been allocated.
+----------------------------------------------------------------------*/
+
+CALLPROC lp_clear_allocation (p_count = :lp_count);
+
+/*----------------------------------------------------------------------
+      Highlight any duplication errors and display warning message.
+----------------------------------------------------------------------*/
+
+lp_return = CALLPROC lp_duplication_check();
+
+IF lp_return = 1
+THEN
+  RETURN 1;
+ENDIF;
+
+/*----------------------------------------------------------------------
+      Highlight any continuity errors and display warning message.
+----------------------------------------------------------------------*/
+
+lp_return = CALLPROC lp_continuity_check();
+
+IF lp_return > 1
+THEN
+  RETURN :lp_return;
+ENDIF;
+
+
+
+}
+  
+/*===========================================================================
+      Local procedure for saving a specific industry allocation.
+============================================================================*/
+
+PROCEDURE lp_save_industry() = 
+
+  DECLARE lp_return    = INTEGER4      NOT NULL WITH DEFAULT,
+          lp_text      = VARCHAR(1000) NOT NULL WITH DEFAULT,
+          lp_count     = INTEGER1      NOT NULL WITH DEFAULT,
+          lp_name      = VARCHAR(36)   NOT NULL WITH DEFAULT,
+          lp_ext       = CHAR(4)       NOT NULL WITH DEFAULT,
+          lp_low       = CHAR(11)      NOT NULL WITH DEFAULT,
+          lp_high      = CHAR(11)      NOT NULL WITH DEFAULT,
+          lp_user_id   = CHAR(11)      NOT NULL WITH DEFAULT,
+
+{
+
+ 
+/*----------------------------------------------------------------------
+    Re-run analyst validation checks.
+----------------------------------------------------------------------*/
+
+  lp_return = CALLPROC lp_details_check;
+
+  IF lp_return != 0
+  THEN
+    RETURN lp_return;         
+  ENDIF;
+
+/*----------------------------------------------------------------------
+    Re-run duplication check.
+----------------------------------------------------------------------*/
+
+  lp_return = CALLPROC lp_duplication_check;
+
+/*----------------------------------------------------------------------
+    If any warnings present, notify then return 1.
+----------------------------------------------------------------------*/
+
+IF s_message != ''
+THEN
+  MESSAGE 'WARNING: There are outstanding issues that need to be fixed '
+        + 'on this allocation before it can be saved.'
+  WITH STYLE = POPUP;
+  RETURN 1;
+ENDIF;
+
+/*----------------------------------------------------------------------
+    Re-run continuity check.
+----------------------------------------------------------------------*/
+
+  lp_return = CALLPROC lp_continuity_check;
+
+/*----------------------------------------------------------------------
+    If any warnings present, notify then return 1.
+----------------------------------------------------------------------*/
+
+IF s_message != ''
+THEN
+  MESSAGE 'WARNING: There are outstanding issues that need to be fixed '
+        + 'on this allocation before it can be saved.'
+  WITH STYLE = POPUP;
+  RETURN 1;
+ENDIF;
+
+/*----------------------------------------------------------------------
+    Remove the industries rows from industry_analysts
+----------------------------------------------------------------------*/
+
+h_retry_or_not      = 'RETRY';
+h_retries           = 0;
+h_retries_max       = 3;
+
+WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+DO
+
+  h_retries = :h_retries + 1;
+
+  DELETE FROM industry_analysts
+  WHERE       industry = :s_industry;
+
+  lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF lp_return != 7
+  THEN
+    h_retry_or_not = '';
+  ENDIF;
+
+ENDWHILE;
+
+IF lp_return = 7
+THEN
+  RETURN 7;
+
+ ELSEIF lp_return > 1
+ THEN
+  MESSAGE 'SYSTEM ERROR: Failed to delete from table tt_industry_id. '
+	+ 'Error code '+VARCHAR(:lp_return)+'.' +X'0D'
+	+ 'Please contact I.M. immediately. Program cannot continue.'
+  WITH STYLE = POPUP;
+  RETURN 9;
+
+ENDIF;
+
+/*------------------------------------------------------------------------
+    Check for each row then insert if exists. Modify table when done.
+------------------------------------------------------------------------*/
+
+IF s_name_1 != '' 
+THEN
+
+  lp_return = CALLPROC lp_insert_allocation ( p_industry = :s_industry, 
+                                              p_low      = :s_low_1, 
+                                              p_high     = :s_high_1, 
+                                              p_user_id  = :s_user_id_1, 
+                                              p_name     = :s_name_1, 
+                                              p_ext      = :s_ext_1);
+  IF lp_return > 0
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failure was for row 1.' WITH STYLE = POPUP; 
+    RETURN 9;
+  ENDIF;
+
+ENDIF;          
+
+IF s_name_2 != '' 
+THEN
+
+  lp_return = CALLPROC lp_insert_allocation ( p_industry = :s_industry, 
+                                              p_low      = :s_low_2, 
+                                              p_high     = :s_high_2, 
+                                              p_user_id  = :s_user_id_2, 
+                                              p_name     = :s_name_2, 
+                                              p_ext      = :s_ext_2);
+  IF lp_return > 0
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failure was for row 2.' WITH STYLE = POPUP; 
+    RETURN 9;
+  ENDIF;
+
+ENDIF;          
+
+IF s_name_3 != '' 
+THEN
+
+  lp_return = CALLPROC lp_insert_allocation ( p_industry = :s_industry, 
+                                              p_low      = :s_low_3, 
+                                              p_high     = :s_high_3, 
+                                              p_user_id  = :s_user_id_3, 
+                                              p_name     = :s_name_3, 
+                                              p_ext      = :s_ext_3);
+  IF lp_return > 0
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failure was for row 3.' WITH STYLE = POPUP; 
+    RETURN 9;
+  ENDIF;
+
+ENDIF;          
+
+IF s_name_4 != '' 
+THEN
+
+  lp_return = CALLPROC lp_insert_allocation ( p_industry = :s_industry, 
+                                              p_low      = :s_low_4, 
+                                              p_high     = :s_high_4, 
+                                              p_user_id  = :s_user_id_4, 
+                                              p_name     = :s_name_4, 
+                                              p_ext      = :s_ext_4);
+  IF lp_return > 0
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failure was for row 4.' WITH STYLE = POPUP; 
+    RETURN 9;
+  ENDIF;
+
+ENDIF;          
+
+IF s_name_5 != '' 
+THEN
+
+  lp_return = CALLPROC lp_insert_allocation ( p_industry = :s_industry, 
+                                              p_low      = :s_low_5, 
+                                              p_high     = :s_high_5, 
+                                              p_user_id  = :s_user_id_5, 
+                                              p_name     = :s_name_5, 
+                                              p_ext      = :s_ext_5);
+  IF lp_return > 0
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failure was for row 5.' WITH STYLE = POPUP; 
+    RETURN 9;
+  ENDIF;
+
+ENDIF;          
+
+IF s_name_6 != '' 
+THEN
+
+  lp_return = CALLPROC lp_insert_allocation ( p_industry = :s_industry, 
+                                              p_low      = :s_low_6, 
+                                              p_high     = :s_high_6, 
+                                              p_user_id  = :s_user_id_6, 
+                                              p_name     = :s_name_6, 
+                                              p_ext      = :s_ext_6);
+  IF lp_return > 0
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failure was for row 6.' WITH STYLE = POPUP; 
+    RETURN 9;
+  ENDIF;
+
+ENDIF;          
+
+IF s_name_7 != '' 
+THEN
+
+  lp_return = CALLPROC lp_insert_allocation ( p_industry = :s_industry, 
+                                              p_low      = :s_low_7, 
+                                              p_high     = :s_high_7, 
+                                              p_user_id  = :s_user_id_7, 
+                                              p_name     = :s_name_7, 
+                                              p_ext      = :s_ext_7);
+  IF lp_return > 0
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failure was for row 7.' WITH STYLE = POPUP; 
+    RETURN 9;
+  ENDIF;
+
+ENDIF;          
+
+RETURN 0;
+
+}
+
+/*===========================================================================
+      Local procedure for checking continuity of allocation.
+============================================================================*/
+
+PROCEDURE lp_continuity_check() = 
+
+  DECLARE lp_return    = INTEGER4      NOT NULL WITH DEFAULT,
+
+{
+
+  s_warning_1 = ''; 
+  s_warning_2 = ''; 
+  s_warning_3 = ''; 
+  s_warning_4 = ''; 
+  s_warning_5 = ''; 
+  s_warning_6 = ''; 
+  s_warning_7 = ''; 
+  h_message   = '';
+  s_message   = '';
+
+  REDISPLAY;
+
+  /*-------------------------------------------------------------------
+      Ensure Allocation starts at 000000000
+  -------------------------------------------------------------------*/
+
+  IF s_low_1 != '00000000000'
+  THEN 
+    s_low_1 = '00000000000';
+  ENDIF;
+
+  /*-------------------------------------------------------------------
+      Check allocation ends on 99999999999.
+  -------------------------------------------------------------------*/
+  IF  s_high_1 < '99999999999'
+  AND s_name_2 = ''
+  THEN
+    s_warning_1 = '*';
+    h_message   = 'WARNING: Only entry does not complete allocation!';
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 0; 
+  ENDIF;
+
+
+  IF  s_high_2 < '99999999999'
+  AND s_name_2 != ''
+  AND s_name_3 = ''
+  THEN
+    s_warning_2 = '*';
+    h_message   = 'WARNING: Last entry does not complete allocation!';
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 0; 
+  ENDIF;
+
+  IF  s_high_3 < '99999999999'
+  AND s_name_3 != ''
+  AND s_name_4 = ''
+  THEN
+    s_warning_3 = '*';
+    h_message   = 'WARNING: Last entry does not complete allocation!';
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 0; 
+  ENDIF;
+
+  IF  s_high_4 < '99999999999'
+  AND s_name_4 != ''
+  AND s_name_5 = ''
+  THEN
+    s_warning_4 = '*';
+    h_message   = 'WARNING: Last entry does not complete allocation!';
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 0; 
+  ENDIF;
+
+  IF  s_high_5 < '99999999999'
+  AND s_name_5 != ''
+  AND s_name_6 = ''
+  THEN
+    s_warning_5 = '*';
+    h_message   = 'WARNING: Last entry does not complete allocation!';
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 0; 
+  ENDIF;
+
+  IF  s_high_6 < '99999999999'
+  AND s_name_6 != ''
+  AND s_name_7 = ''
+  THEN
+    s_warning_6 = '*';
+    h_message   = 'WARNING: Last entry does not complete allocation!';
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 0; 
+  ENDIF;
+
+  IF  s_high_7 < '99999999999'
+  AND s_name_7 != ''
+  THEN
+    s_warning_7 = '*';
+    h_message   = 'WARNING: Final entry does not complete allocation!';
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 1; 
+  ENDIF;
+
+  /*-------------------------------------------------------------------
+      Check allocation high => low.
+  -------------------------------------------------------------------*/
+
+
+  IF  s_low_1 > s_high_1
+  AND s_name_1 != ''
+  THEN
+    s_warning_1 = '*';
+    h_message   = 'WARNING: Low ref greater than high ref!';
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 1; 
+  ENDIF;
+
+
+  IF  s_low_2 > s_high_2
+  AND s_name_2 != ''
+  THEN
+    s_warning_2 = '*';
+    h_message   = 'WARNING: Low ref greater than high ref!';
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 1; 
+  ENDIF;
+
+  IF  s_low_3 > s_high_3
+  AND s_name_3 != ''
+  THEN
+    s_warning_3 = '*';
+    h_message   = 'WARNING: Low ref greater than high ref!';
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 1; 
+  ENDIF;
+
+  IF  s_low_4 > s_high_4
+  AND s_name_4 != ''
+  THEN
+    s_warning_4 = '*';
+    h_message   = 'WARNING: Low ref greater than high ref!';
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 1; 
+  ENDIF;
+
+  IF  s_low_5 > s_high_5
+  AND s_name_5 != ''
+  THEN
+    s_warning_5 = '*';
+    h_message   = 'WARNING: Low ref greater than high ref!';
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 1; 
+  ENDIF;
+
+  IF  s_low_6 > s_high_6
+  AND s_name_6 != ''
+  THEN
+    s_warning_6 = '*';
+    h_message   = 'WARNING: Low ref greater than high ref!';
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 1; 
+  ENDIF;
+
+  IF  s_low_7 > s_high_7
+  AND s_name_7 != ''
+  THEN
+    s_warning_7 = '*';
+    h_message   = 'WARNING: Low ref greater than high ref!';
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 1; 
+  ENDIF;
+
+  /*-------------------------------------------------------------------
+      Check entry follows on from last.
+  -------------------------------------------------------------------*/
+
+
+  IF  s_low_2 != ''
+  AND s_low_2 != INT8(:s_high_1) + 1
+  THEN
+    s_warning_1 = '*';
+    s_warning_2 = '*';
+    h_message   = 'WARNING: The allocation is not continuous!';
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 0;
+  ENDIF;
+
+
+  IF  s_low_3 != ''
+  AND s_low_3 != INT8(:s_high_2) + 1
+  THEN
+    s_warning_2 = '*';
+    s_warning_3 = '*';
+    h_message   = 'WARNING: The allocation is not continuous!';
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 0;
+  ENDIF;
+
+  IF  s_low_4 != ''
+  AND s_low_4 != INT8(:s_high_3) + 1
+  THEN
+    s_warning_3 = '*';
+    s_warning_4 = '*';
+    h_message   = 'WARNING: The allocation is not continuous!';
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 0;
+  ENDIF;
+
+  IF  s_low_5 != ''
+  AND s_low_5 != INT8(:s_high_4) + 1
+  THEN
+    s_warning_4 = '*';
+    s_warning_5 = '*';
+    h_message   = 'WARNING: The allocation is not continuous!';
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 0;
+  ENDIF;
+
+  IF  s_low_6 != ''
+  AND s_low_6 != INT8(:s_high_5) + 1
+  THEN
+    s_warning_5 = '*';
+    s_warning_6 = '*';
+    h_message   = 'WARNING: The allocation is not continuous!';
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 0;
+  ENDIF;
+
+  IF  s_low_7 != ''
+  AND s_low_7 != INT8(:s_high_6) + 1
+  THEN
+    s_warning_6 = '*';
+    s_warning_7 = '*';
+    h_message   = 'WARNING: The allocation is not continuous!';
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 0;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/*===========================================================================
+      Local procedure for clearing the allocation fields on screen.
+============================================================================*/
+
+PROCEDURE lp_clear_allocation(p_count = INTEGER1 NOT NULL WITH DEFAULT) = 
+
+{
+
+IF p_count < 1 
+THEN
+  s_name_1    = '';
+  s_ext_1     = '';
+  s_low_1     = '';
+  s_high_1    = '';
+  s_user_id_1 = '';
+  s_warning_1 = '';
+ENDIF;
+
+IF p_count < 2 
+THEN
+  s_name_2    = '';
+  s_ext_2     = '';
+  s_low_2     = '';
+  s_high_2    = '';
+  s_user_id_2 = '';
+  s_warning_2 = '';
+ENDIF;
+
+IF p_count < 3 
+THEN
+  s_name_3    = '';
+  s_ext_3     = '';
+  s_ext_3     = '';
+  s_low_3     = '';
+  s_high_3    = '';
+  s_user_id_3 = '';
+  s_warning_3 = '';
+ENDIF;
+
+IF p_count < 4 
+THEN
+  s_name_4    = '';
+  s_ext_4     = '';
+  s_low_4     = '';
+  s_high_4    = '';
+  s_user_id_4 = '';
+  s_warning_4 = '';
+ENDIF;
+
+IF p_count < 5 
+THEN
+  s_name_5    = '';
+  s_ext_5     = '';
+  s_low_5     = '';
+  s_high_5    = '';
+  s_user_id_5 = '';
+  s_warning_5 = '';
+ENDIF;
+
+IF p_count < 6 
+THEN
+  s_name_6    = '';
+  s_ext_6     = '';
+  s_low_6     = '';
+  s_high_6    = '';
+  s_user_id_6 = '';
+  s_warning_6 = '';
+ENDIF;
+
+IF p_count < 7 
+THEN
+  s_name_7    = '';
+  s_ext_7     = '';
+  s_low_7     = '';
+  s_high_7    = '';
+  s_user_id_7 = '';
+  s_warning_7 = '';
+ENDIF;
+
+s_warning_1 = ''; 
+s_warning_2 = ''; 
+s_warning_3 = ''; 
+s_warning_4 = ''; 
+s_warning_5 = ''; 
+s_warning_6 = ''; 
+s_warning_7 = ''; 
+h_message   = '';
+s_message   = '';
+
+REDISPLAY;
+
+}
+
+/*===========================================================================
+      Local procedure for checking user IDs and extensions. 
+============================================================================*/
+
+PROCEDURE lp_details_check() = 
+
+  DECLARE lp_return    = INTEGER4      NOT NULL WITH DEFAULT,
+
+{
+
+/*-------------------------------------------------------------------------
+   Revalidate first row.
+-------------------------------------------------------------------------*/
+
+IF SQUEEZE(:s_name_1) != ''
+THEN
+  
+  MESSAGE 'Re-validating Analyst 1. . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_max       = 3;
+
+  WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT user_id   AS s_user_id_1,
+           extension AS s_ext_1
+    FROM   passwords_new
+    WHERE  user_name = UPPER(:s_name_1) 
+      AND  access_code = 'I3';
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'ERROR: First data analyst cannot be found. Please correct. '
+    WITH STYLE = POPUP;
+    h_resume_field = 's_name_1';
+    RETURN 1; 
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed to select first data analyst from '
+          +   'new passwords table. '
+	  + 'Error code '+VARCHAR(:h_return)+'.' +X'0D'
+	  + 'Please contact I.M. immediately. Program cannot continue.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+
+ELSE
+
+  s_ext_1 = '';
+  s_low_1 = '';
+  s_high_1 = '';
+  s_user_id_1 = '';
+  REDISPLAY;
+
+ENDIF;
+
+/*-------------------------------------------------------------------------
+   Revalidate second row.
+-------------------------------------------------------------------------*/
+
+IF SQUEEZE(:s_name_2) != ''
+THEN
+  
+  MESSAGE 'Re-validating Analyst 2. . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_max       = 3;
+
+  WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT user_id   AS s_user_id_2,
+           extension AS s_ext_2
+    FROM   passwords_new
+    WHERE  user_name = UPPER(:s_name_2) 
+      AND  access_code = 'I3';
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'ERROR: Second data analyst cannot be found. Please correct. '
+    WITH STYLE = POPUP;
+    h_resume_field = 's_name_2';
+    RETURN 1;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed to select second data analyst from '
+          +   'new passwords table. '
+	  + 'Error code '+VARCHAR(:h_return)+'.' +X'0D'
+	  + 'Please contact I.M. immediately. Program cannot continue.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+ELSE
+
+  s_ext_2 = '';
+  s_low_2 = '';
+  s_high_2 = '';
+  s_user_id_2 = '';
+  REDISPLAY;
+
+ENDIF;
+
+/*-------------------------------------------------------------------------
+   Revalidate third row.
+-------------------------------------------------------------------------*/
+
+IF SQUEEZE(:s_name_3) != ''
+THEN
+  
+  MESSAGE 'Re-validating Analyst 3. . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_max       = 3;
+
+  WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT user_id   AS s_user_id_3,
+           extension AS s_ext_3
+    FROM   passwords_new
+    WHERE  user_name = UPPER(:s_name_3) 
+      AND  access_code = 'I3';
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'ERROR: Third data analyst cannot be found. Please correct. '
+    WITH STYLE = POPUP;
+    h_resume_field = 's_name_3';
+    RETURN 1;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed to select third data analyst from '
+          +   'new passwords table. '
+	  + 'Error code '+VARCHAR(:h_return)+'.' +X'0D'
+	  + 'Please contact I.M. immediately. Program cannot continue.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+ELSE
+
+  s_ext_3 = '';
+  s_low_3 = '';
+  s_high_3 = '';
+  s_user_id_3 = '';
+  REDISPLAY;
+
+ENDIF;
+
+/*-------------------------------------------------------------------------
+   Revalidate fourth row.
+-------------------------------------------------------------------------*/
+
+IF SQUEEZE(:s_name_4) != ''
+THEN
+  
+  MESSAGE 'Re-validating Analyst 4. . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_max       = 3;
+
+  WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT user_id   AS s_user_id_4,
+           extension AS s_ext_4
+    FROM   passwords_new
+    WHERE  user_name = UPPER(:s_name_4) 
+      AND  access_code = 'I3';
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'ERROR: Fourth data analyst cannot be found. Please correct. '
+    WITH STYLE = POPUP;
+    h_resume_field = 's_name_4';
+    RETURN 1;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed to select fourth data analyst from '
+          +   'new passwords table. '
+	  + 'Error code '+VARCHAR(:h_return)+'.' +X'0D'
+	  + 'Please contact I.M. immediately. Program cannot continue.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+ELSE
+
+  s_ext_4 = '';
+  s_low_4 = '';
+  s_high_4 = '';
+  s_user_id_4 = '';
+  REDISPLAY;
+
+ENDIF;
+
+/*-------------------------------------------------------------------------
+   Revalidate fifth row.
+-------------------------------------------------------------------------*/
+
+IF SQUEEZE(:s_name_5) != ''
+THEN
+  
+  MESSAGE 'Re-validating Analyst 5. . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_max       = 3;
+
+  WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT user_id   AS s_user_id_5,
+           extension AS s_ext_5
+    FROM   passwords_new
+    WHERE  user_name = UPPER(:s_name_5) 
+      AND  access_code = 'I3';
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'ERROR: Fifth data analyst cannot be found. Please correct. '
+    WITH STYLE = POPUP;
+    h_resume_field = 's_name_5';
+    RETURN 1;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed to select fifth data analyst from '
+          +   'new passwords table. '
+	  + 'Error code '+VARCHAR(:h_return)+'.' +X'0D'
+	  + 'Please contact I.M. immediately. Program cannot continue.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+ELSE
+
+  s_ext_5 = '';
+  s_low_5 = '';
+  s_high_5 = '';
+  s_user_id_5 = '';
+  REDISPLAY;
+
+ENDIF;
+
+/*-------------------------------------------------------------------------
+   Revalidate sixth row.
+-------------------------------------------------------------------------*/
+
+IF SQUEEZE(:s_name_6) != ''
+THEN
+  
+  MESSAGE 'Re-validating Analyst 6. . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_max       = 3;
+
+  WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT user_id   AS s_user_id_6,
+           extension AS s_ext_6
+    FROM   passwords_new
+    WHERE  user_name = UPPER(:s_name_6) 
+      AND  access_code = 'I3';
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'ERROR: Sixth data analyst cannot be found. Please correct. '
+    WITH STYLE = POPUP;
+    h_resume_field = 's_name_6';
+    RETURN 1;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed to select sixth data analyst from '
+          +   'new passwords table. '
+	  + 'Error code '+VARCHAR(:h_return)+'.' +X'0D'
+	  + 'Please contact I.M. immediately. Program cannot continue.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+ELSE
+
+  s_ext_6 = '';
+  s_low_6 = '';
+  s_high_6 = '';
+  s_user_id_6 = '';
+  REDISPLAY;
+
+ENDIF;
+
+/*-------------------------------------------------------------------------
+   Revalidate seventh row.
+-------------------------------------------------------------------------*/
+
+IF SQUEEZE(:s_name_7) != ''
+THEN
+  
+  MESSAGE 'Re-validating Analyst 7. . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_max       = 3;
+
+  WHILE :h_retries < h_retries_max AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT user_id   AS s_user_id_7,
+           extension AS s_ext_7
+    FROM   passwords_new
+    WHERE  user_name = UPPER(:s_name_7) 
+      AND  access_code = 'I3';
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'ERROR: Seventh data analyst cannot be found. Please correct. '
+    WITH STYLE = POPUP;
+    h_resume_field = 's_name_7';
+    RETURN 1;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed to select seventh data analyst from '
+          +   'new passwords table. '
+	  + 'Error code '+VARCHAR(:h_return)+'.' +X'0D'
+	  + 'Please contact I.M. immediately. Program cannot continue.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+ELSE
+
+  s_ext_7 = '';
+  s_low_7 = '';
+  s_high_7 = '';
+  s_user_id_7 = '';
+  REDISPLAY;
+
+ENDIF;
+
+REDISPLAY;
+
+RETURN 0;
+
+}
+
+/*===========================================================================
+      Local procedure for checking if analyst has a second allocation
+      within the specific industry and preventing it. 
+============================================================================*/
+
+PROCEDURE lp_duplication_check(p_check = INTEGER1 NOT NULL WITH DEFAULT) =
+
+{
+
+  s_warning_1 = '';
+  s_warning_2 = '';
+  s_warning_3 = '';
+  s_warning_4 = '';
+  s_warning_5 = '';
+  s_warning_6 = '';
+  s_warning_7 = '';
+  h_message   = '';
+  s_message   = '';
+
+  REDISPLAY;
+
+  /*-------------------------------------------------------------------
+      Check second analyst id. 
+  -------------------------------------------------------------------*/
+
+  IF    s_user_id_2 != '' 
+  AND ( p_check = 2 OR p_check = 0)
+  AND   s_user_id_2 = s_user_id_1
+  THEN
+    h_resume_field = 's_name_2';
+    s_warning_2 = '*';
+    h_message   = 'WARNING: Analyst already has allocation in this industry.'; 
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 1;
+  ENDIF;
+
+  /*-------------------------------------------------------------------
+      Check third analyst id. 
+  -------------------------------------------------------------------*/
+
+  IF    s_user_id_3 != '' 
+  AND ( p_check = 3 OR p_check = 0)
+  AND ( s_user_id_3 = s_user_id_1  OR
+        s_user_id_3 = s_user_id_2  )
+  THEN
+    h_resume_field = 's_name_3';
+    s_warning_3 = '*';
+    h_message   = 'WARNING: Analyst already has allocation in this industry.'; 
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 1;
+  ENDIF;
+
+  /*-------------------------------------------------------------------
+      Check fourth analyst id. 
+  -------------------------------------------------------------------*/
+
+  IF    s_user_id_4 != '' 
+  AND ( p_check = 4 OR p_check = 0)
+  AND ( s_user_id_4 = s_user_id_1  OR
+        s_user_id_4 = s_user_id_2  OR
+        s_user_id_4 = s_user_id_3  )
+  THEN
+    h_resume_field = 's_name_4';
+    s_warning_4 = '*';
+    h_message   = 'WARNING: Analyst already has allocation in this industry.'; 
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 1;
+  ENDIF;
+
+  /*-------------------------------------------------------------------
+      Check fifth analyst id. 
+  -------------------------------------------------------------------*/
+
+  IF    s_user_id_5 != '' 
+  AND ( p_check = 5 OR p_check = 0)
+  AND ( s_user_id_5 = s_user_id_1  OR
+        s_user_id_5 = s_user_id_2  OR
+        s_user_id_5 = s_user_id_3  OR
+        s_user_id_5 = s_user_id_4  )
+  THEN
+    h_resume_field = 's_name_5';
+    s_warning_5 = '*';
+    h_message   = 'WARNING: Analyst already has allocation in this industry.'; 
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 1;
+  ENDIF;
+
+  /*-------------------------------------------------------------------
+      Check sixth analyst id. 
+  -------------------------------------------------------------------*/
+
+  IF    s_user_id_6 != '' 
+  AND ( p_check = 6 OR p_check = 0)
+  AND ( s_user_id_6 = s_user_id_1  OR
+        s_user_id_6 = s_user_id_2  OR
+        s_user_id_6 = s_user_id_3  OR
+        s_user_id_6 = s_user_id_4  OR
+        s_user_id_6 = s_user_id_5  )
+  THEN
+    h_resume_field = 's_name_6';
+    s_warning_6 = '*';
+    h_message   = 'WARNING: Analyst already has allocation in this industry.'; 
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 1;
+  ENDIF;
+
+  /*-------------------------------------------------------------------
+      Check seventh analyst id. 
+  -------------------------------------------------------------------*/
+
+  IF    s_user_id_7 != '' 
+  AND ( p_check = 7 OR p_check = 0)
+  AND ( s_user_id_7 = s_user_id_1  OR
+        s_user_id_7 = s_user_id_2  OR
+        s_user_id_7 = s_user_id_3  OR
+        s_user_id_7 = s_user_id_4  OR
+        s_user_id_7 = s_user_id_5  OR
+        s_user_id_7 = s_user_id_6  )
+  THEN
+    h_resume_field = 's_name_7';
+    s_warning_7 = '*';
+    h_message   = 'WARNING: Analyst already has allocation in this industry.'; 
+    s_message   = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    RETURN 1;
+  ENDIF;
+
+  RETURN 0;
+
+}
+  

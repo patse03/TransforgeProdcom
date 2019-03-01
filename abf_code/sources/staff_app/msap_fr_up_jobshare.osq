@@ -1,0 +1,161 @@
+/*------------------------------------------------------------------
+ Allows control team to set jobshare up.
+------------------------------------------------------------------*/
+
+INITIALIZE (p_user_id     = VARCHAR(8)  NOT NULL WITH DEFAULT)=
+
+DECLARE h_frpr_name       = VARCHAR(25) NOT NULL WITH DEFAULT,
+        h_return          = INTEGER1    NOT NULL WITH DEFAULT,
+        h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+        h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+        h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+
+        lp_full_error_check     = PROCEDURE RETURNING INTEGER,
+
+{
+
+  h_frpr_name = 'msap_fr_up_jobshare';
+  h_retries_allowed = 3;
+
+
+  /*------------------------------------------------------------------------
+        Creates correctly capitalised names
+
+  CALLPROC lp_correct_caps (p_text = BYREF(:p_user_name));
+  CALLPROC lp_correct_caps (p_text = BYREF(:h_c_name));
+  CALLPROC lp_correct_caps (p_text = BYREF(:h_m_name));
+
+  s_user_name        = SHIFT(:p_user_name, (((24-LENGTH(p_user_name))/2)*1));
+  s_coordinator_name = SHIFT(:h_c_name, (((24-LENGTH(h_c_name))/2)*1));
+  s_manager_name     = SHIFT(:h_m_name, (((24-LENGTH(h_m_name))/2)*1));
+  ------------------------------------------------------------------------*/
+
+
+  /*------------------------------------------------------------------------
+        Loads coordinator table field.
+  ------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    tf =
+
+    SELECT user_id AS coordinator_id,
+           user_name AS coordinator_name
+    FROM   passwords_new
+    WHERE  access_code = 'I4'
+      AND  user_id != :p_user_id;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: No Data Coordinators found on system. ' 
+          + 'Please contact the control team immediately to report this.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to load Data Coordinators. Error code '
+          + VARCHAR(:h_return) +'. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'Select', KEY FRSKEY4 =
+{
+
+  /*------------------------------------------------------------------------
+     Inserts two reciprical records into job_share table.
+  ------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO job_share
+    SELECT :p_user_id,
+           :tf.coordinator_id;
+
+    INSERT INTO job_share
+    SELECT :tf.coordinator_id,
+           :p_user_id;
+ 
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to insert records into job_share table. '
+          + 'Error code ' + VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+
+
+}
+
+
+'Abort', KEY FRSKEY12 =
+{
+
+  MESSAGE 'NOTE: No job-share was created for ' + UPPER(:p_user_id) +' .'
+  WITH STYLE = POPUP;
+
+  RETURN 0;
+
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+                  h_num_row_ck = :p_num_row_ck,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}

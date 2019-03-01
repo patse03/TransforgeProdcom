@@ -1,0 +1,205 @@
+/*------------------------------------------------------------------
+ Bulk reassignment of analysts from coordinator.
+------------------------------------------------------------------*/
+
+INITIALIZE (p_user_id     = VARCHAR(8)  NOT NULL WITH DEFAULT,
+            p_user_name   = VARCHAR(24) NOT NULL WITH DEFAULT)=
+
+DECLARE h_frpr_name       = VARCHAR(25) NOT NULL WITH DEFAULT,
+        h_return          = INTEGER1    NOT NULL WITH DEFAULT,
+        h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+        h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+        h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+        h_target_name     = VARCHAR(24) NOT NULL WITH DEFAULT,
+
+        lp_full_error_check     = PROCEDURE RETURNING INTEGER,
+        lp_correct_caps         = PROCEDURE,
+
+{
+
+  h_frpr_name = 'msap_fr_up_staff';
+  h_retries_allowed = 3;
+
+  /*------------------------------------------------------------------------
+        Loads coordinator table field.
+  ------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    tf =
+
+    SELECT user_id AS coordinator_id,
+           user_name AS coordinator_name
+    FROM   passwords_new
+    WHERE  access_code = 'I4'
+      AND  user_id != :p_user_id;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: No Data Coordinators found on system. ' 
+          + 'Please contact the control team immediately to report this.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to load Data Coordinators. Error code '
+          + VARCHAR(:h_return) +'. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'Select', KEY FRSKEY4 =
+{
+  
+  h_target_name = :tf.coordinator_name;
+
+  CALLPROC lp_correct_caps (p_text = BYREF(:h_target_name));
+
+  /*------------------------------------------------------------------------
+     Updates analyst_coordinator_manager with new line manager.
+  ------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE analyst_coordinator_manager
+    SET    coordinator_name = :h_target_name,
+           coordinator_id   = :tf.coordinator_id
+    WHERE  coordinator_id   = :p_user_id;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to update ACM table with updated line management. '
+          + 'Error code ' + VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  MESSAGE 'SUCCESS: All analysts that were assigned to ' +:p_user_name +' '
+        + 'have been reassigned to ' +:h_target_name +'.'
+  WITH STYLE = POPUP;
+
+  RETURN 1;
+
+}
+
+
+'Abort', KEY FRSKEY12 =
+{
+
+  MESSAGE 'NOTE: No changes made to the staff of ' + UPPER(:p_user_name) +'.'
+  WITH STYLE = POPUP;
+
+  RETURN 0;
+
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+                  h_num_row_ck = :p_num_row_ck,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+
+/*=======================================================================
+    Local procedure to correctly capitalise a user name.
+=======================================================================*/
+
+PROCEDURE lp_correct_caps (p_text = VARCHAR(24) NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_text            = VARCHAR(24) NOT NULL WITH DEFAULT,
+          lp_length          = INTEGER1    NOT NULL WITH DEFAULT,
+          lp_cap_next        = INTEGER1    NOT NULL WITH DEFAULT,
+          lp_count           = INTEGER1    NOT NULL WITH DEFAULT,
+          lp_character       = CHAR(1)     NOT NULL WITH DEFAULT,
+
+{
+  lp_length = LENGTH(SQUEEZE(:p_text));
+  lp_cap_next = 1;
+  lp_count    = 1;
+
+  WHILE :lp_count <= :lp_length
+  DO
+    lp_character = CHAREXTRACT(:p_text,:lp_count);
+
+    IF lp_character = ''
+    OR lp_character = ' '
+    THEN
+      lp_text = :lp_text + ' '; 
+    ELSE
+      IF lp_cap_next = 1
+      THEN 
+        lp_text = :lp_text + UPPER(:lp_character);
+      ELSE
+        lp_text = :lp_text + LOWER(:lp_character);
+      ENDIF;
+    ENDIF;
+
+    IF lp_character = ' '
+    OR lp_character = '-'
+    THEN
+      lp_cap_next = 1;
+    ELSE
+      lp_cap_next = 0;
+    ENDIF; 
+
+    lp_count = lp_count +1;
+     
+  ENDWHILE;
+
+  p_text = :lp_text;
+
+}

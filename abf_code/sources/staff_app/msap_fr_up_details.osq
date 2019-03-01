@@ -1,0 +1,1026 @@
+/*------------------------------------------------------------------
+ Allows Control to amend/delete an entry in the new passwords table
+------------------------------------------------------------------*/
+
+INITIALIZE (p_user_id = VARCHAR(24) NOT NULL WITH DEFAULT) =
+
+DECLARE h_yesno                    = CHAR(1)  NOT NULL,
+        h_frpr_name                = VARCHAR(25) NOT NULL,
+        h_return                   = INTEGER1 NOT NULL,
+        h_retries_allowed          = INTEGER1 NOT NULL,
+        h_retries                  = INTEGER1 NOT NULL,
+        h_retry_or_not             = CHAR(5)  NOT NULL,
+        h_first_up_name            = CHAR(24) NOT NULL,
+        h_resume_field             = CHAR(24) NOT NULL,
+        h_original_user_name       = CHAR(24) NOT NULL,
+        h_original_password        = CHAR(5)  NOT NULL,
+        h_original_access_code     = CHAR(2)  NOT NULL,
+        h_original_room_number     = CHAR(6)  NOT NULL,
+        h_original_extension       = CHAR(4)  NOT NULL,
+        h_original_date_changed    = DATE     NOT NULL,
+        h_original_printer         = CHAR(10) NOT NULL,
+
+        lp_full_error_check        = PROCEDURE RETURNING INTEGER,
+        lp_count_industries        = PROCEDURE RETURNING INTEGER,
+        lp_load_data               = PROCEDURE RETURNING INTEGER,
+        lp_save_data               = PROCEDURE RETURNING INTEGER,
+        lp_correct_caps            = PROCEDURE, 
+{
+
+  h_frpr_name = 'msap_fr_up_details';
+  h_retries_allowed = 3;
+  msa_date = 'now';
+
+  h_return = CALLPROC lp_load_data ();
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed on initial loading of screen data. Error code '
+          + VARCHAR(:h_return) +'. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN h_return;
+  ENDIF;
+
+  h_return = CALLPROC lp_count_industries ();
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed on initial count of allocations. Error code '
+          + VARCHAR(:h_return) +'. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN h_return;
+  ENDIF;
+
+  RESUME FIELD s_user_name;
+}
+
+/*************************** FIELD ACTIVATIONS ****************************/
+
+FIELD 's_user_name' =
+{
+  msa_date = 'now';
+
+  IF :s_user_name = ''
+  THEN
+    MESSAGE 'WARNING: Name is a mandatory field and cannot be left blank.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_user_name;
+  ENDIF;
+
+  RESUME FIELD s_password;
+}
+
+FIELD s_password =
+{
+  msa_date = 'now';
+
+  /*------------------------------------------------------------------
+      Validate password
+  ------------------------------------------------------------------*/
+
+  s_password = SQUEEZE(:s_password);
+
+  IF LENGTH(:s_password) != 5
+  THEN
+    MESSAGE 'WARNING: The password must be 5 characters long. Please try again.'
+    WITH STYLE = POPUP;
+    CLEAR FIELD s_password;
+    RESUME FIELD s_password;
+  ENDIF;
+
+  RESUME FIELD s_room_number;
+}
+
+FIELD s_room_number =
+{
+  msa_date = 'now';
+
+  IF :s_room_number = ''
+  THEN
+    MESSAGE 'WARNING: Room Number is a mandatory field and cannot '
+          + 'be left blank.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_room_number;
+  ENDIF;
+
+  RESUME FIELD s_extension;
+}
+
+FIELD s_extension =
+{
+  msa_date = 'now';
+
+  IF :s_extension = ''
+  THEN
+    MESSAGE 'WARNING: Extension is a mandatory field and cannot '
+          + 'be left blank.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_extension;
+  ENDIF;
+
+  RESUME FIELD s_default_printer;
+}
+
+FIELD s_default_printer =
+{
+  msa_date = 'now';
+
+  IF :s_default_printer = ''
+  THEN
+    MESSAGE 'WARNING: Default Printer is a mandatory field and cannot '
+          + 'be left blank.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_default_printer;
+  ENDIF;
+
+  RESUME FIELD s_user_name;
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+/*------------------------------------------------------------------
+  Show Industry list
+------------------------------------------------------------------*/
+
+'Inds', KEY FRSKEY4 =
+{
+
+  h_return = CALLFRAME msap_fr_view_allocation (p_user_id = :s_user_id);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in procedure */
+    RETURN h_return;
+  ENDIF;
+
+  msa_date = 'now';
+
+  h_return = CALLPROC lp_count_industries ();
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in procedure */
+    RETURN h_return;
+  ENDIF;
+
+  REDISPLAY;
+
+}
+
+'Staff', KEY FRSKEY5 =
+{
+  IF s_access_code != 'I4'
+  THEN
+    MESSAGE 'NOTE: This screen is only used for Data Coordinators (I4).'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  h_return = CALLFRAME msap_fr_view_staff (p_user_id = :p_user_id);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in procedure */
+    RETURN h_return;
+  ENDIF;
+
+  msa_date = 'now';
+
+  h_return = CALLPROC lp_count_industries ();
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in procedure */
+    RETURN h_return;
+  ENDIF;
+
+  REDISPLAY;
+
+}
+
+/*------------------------------------------------------------------
+  Update Access Code
+------------------------------------------------------------------*/
+
+'Access', KEY FRSKEY6 =
+{
+  h_return = CALLFRAME msap_fr_up_access
+           ( p_access_code = BYREF(:s_access_code),
+             p_user_name   = :s_user_name,
+             p_user_id     = :s_user_id );
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed during call to msap_fr_up_access. Error code '
+          + VARCHAR(:h_return) +'. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN h_return;
+  ENDIF;
+
+  REDISPLAY;
+
+  IF :s_access_code != :h_original_access_code
+  THEN
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      UPDATE  passwords_new
+      SET     access_code = :s_access_code
+      WHERE   user_id      = :s_user_id;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to update Access Code. Error code '
+            + VARCHAR(:h_return) +'. Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      s_access_code = :h_original_access_code;
+      RETURN 9;
+    ENDIF;
+
+    MESSAGE 'NOTE: Access Code had been successfully changed from '
+          + :h_original_access_code + ' to ' +:s_access_code +'.'
+    WITH STYLE = POPUP;
+
+    h_original_access_code = :s_access_code;
+
+    IF :s_access_code = 'I3'
+    THEN
+      MESSAGE 'NOTE: As access code is now I3, Line Management must be set up.'
+      WITH STYLE = POPUP;
+
+      h_return = CALLFRAME msap_fr_up_management
+                         ( p_user_id     = :s_user_id,
+                           p_user_name   = :s_user_name,
+                           p_access_code = :s_access_code);
+
+      IF h_return != 0
+      THEN
+        /* Error message handled locally */
+        RETURN :h_return;
+      ENDIF; 
+
+    ENDIF; /* End of "New Access = I3" */
+
+    h_return = CALLPROC lp_save_data (); 
+
+    IF h_return = 1
+    THEN
+      RESUME FIELD :h_resume_field;
+    ELSEIF h_return > 1 
+    THEN
+      MESSAGE 'ERROR: Failed to save data following access change. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN h_return;
+    ENDIF;
+
+    h_return = CALLPROC lp_load_data (); 
+
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to reload screen data following access change. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+  ENDIF; /* End of "Access changed" */
+
+  RESUME;
+
+}
+
+/*------------------------------------------------------------------
+       Amend line management chain.
+------------------------------------------------------------------*/
+
+'Mgmt', KEY FRSKEY7 =
+{
+
+ IF :s_access_code = 'I3'
+ THEN
+
+   h_return = CALLFRAME msap_fr_up_management
+                      ( p_user_id = :s_user_id,
+                        p_user_name = :s_user_name,
+                        p_access_code = :s_access_code);
+
+    IF h_return != 0
+    THEN
+      /* Error message handled locally */
+      RETURN :h_return;
+    ENDIF; 
+
+  ELSE
+
+    MESSAGE 'NOTE: Only staff with the I3 access code can be assigned I4 and '
+          + 'I5 line management with this function.'
+    WITH STYLE = POPUP;
+
+  ENDIF; 
+
+  RESUME;
+
+}
+
+/*------------------------------------------------------------------
+       Mark ID as vacant on passwords table, and remove it from 
+       industry_analysts and analyst_coordinator_manager table.
+------------------------------------------------------------------*/
+
+'Vacate', KEY FRSKEY8 =
+{
+  msa_date = 'now';
+
+  IF s_count_ind > 0
+  THEN
+    MESSAGE 'ERROR: This action cannot be taken while the user id '
+          + 'still has industries allocated to it. Please use the '
+          + '"Alloc" key below to correct this before trying again.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  h_yesno = '';
+  WHILE h_yesno != 'Y' AND h_yesno != 'N'
+  DO
+    h_yesno = PROMPT 'WARNING: Really mark ' + VARCHAR(:s_user_id) 
+                   + ' belonging to ' + VARCHAR(:h_original_user_name) 
+                   + ' as Vacant? [Y/N] '
+              WITH STYLE = POPUP;
+    h_yesno = UPPER(:h_yesno);
+  ENDWHILE;
+
+  IF :h_yesno != 'Y'
+  THEN
+    RESUME;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE passwords_new
+       SET user_name       = 'VACANT',
+           password        = 'EMPTY',
+           date_changed    = 'today',
+           access_code     = 'V0',
+           room_number     = '0.000',
+           extension       = '0000',
+           default_printer = 'no printer',
+           email           = 'unused.account@ons.gsi.gov.uk',
+           access_level    = 60
+    WHERE  user_id = :s_user_id;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to update new passwords table with vacant id data. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    DELETE FROM analyst_coordinator_manager
+    WHERE       analyst_id = :s_user_id;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to delete selected user from A.C.M. table. '
+          + 'Error code 9. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    DELETE FROM job_share
+    WHERE  id_one = :p_user_id
+       OR  id_two = :p_user_id;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to delete from jobshare table. '
+          + 'Error code ' + VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  MESSAGE 'NOTE: User_id '+:s_user_id +' has been successfully marked as '
+        + 'vacant. The corresponding entry has been removed from '
+        + 'the line management table.'
+  WITH STYLE = POPUP;
+
+  RETURN 0;
+}
+
+/*------------------------------------------------------------------
+ Save updated entry
+------------------------------------------------------------------*/
+
+'Save', KEY FRSKEY9 =
+{
+  h_return = CALLPROC lp_save_data (); 
+
+  IF h_return = 1
+  THEN
+    RESUME FIELD :h_resume_field;
+  ELSEIF h_return > 1 
+  THEN
+    MESSAGE 'ERROR: Failed to save data to passwords table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN h_return;
+  ENDIF;
+
+  h_return = CALLPROC lp_load_data (); 
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to reload screen data following successful save. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+}
+
+/*------------------------------------------------------------------
+  End
+------------------------------------------------------------------*/
+
+'End', KEY FRSKEY14 =
+{
+  msa_date = 'now';
+
+  IF :s_user_name        != :h_original_user_name
+  OR :s_password         != :h_original_password
+  OR :s_room_number      != :h_original_room_number
+  OR :s_extension        != :h_original_extension
+  OR :s_date_changed     != :h_original_date_changed
+  OR :s_default_printer  != :h_original_printer
+  THEN
+
+    h_yesno = '';
+    WHILE h_yesno != 'Y' AND h_yesno != 'N'
+    DO
+      h_yesno = PROMPT 'WARNING: Do you really wish to exit without saving '
+                     + 'your changes? [Y/N] '
+                WITH STYLE = POPUP;
+      h_yesno = UPPER(:h_yesno);
+    ENDWHILE;
+
+    IF h_yesno != 'Y'
+    THEN
+      RESUME;
+    ENDIF;
+
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*====================================================================
+     Local procedure to load screen details and save unaltered 
+     values for reference.
+====================================================================*/
+
+PROCEDURE lp_load_data () =
+
+DECLARE   lp_return = INTEGER1 NOT NULL WITH DEFAULT,
+
+{
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT user_id          AS s_user_id,
+           user_name        AS s_user_name,
+           password         AS s_password,
+           access_code      AS s_access_code,
+           room_number      AS s_room_number,
+           extension        AS s_extension,
+           date_changed     AS s_date_changed,
+           default_printer  AS s_default_printer,
+           user_name        AS h_original_user_name,
+           password         AS h_original_password,
+           access_code      AS h_original_access_code,
+           room_number      AS h_original_room_number,
+           extension        AS h_original_extension,
+           date_changed     AS h_original_date_changed,
+           default_printer  AS h_original_printer
+    FROM   passwords_new
+    WHERE  user_id = :p_user_id;
+
+    lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF lp_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF lp_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF lp_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select screen data from new passwords table. '
+          + 'Error code ' +VARCHAR(:lp_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN lp_return;
+  
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+        Detects and notifies of management jobshare.
+  ------------------------------------------------------------------------*/
+
+  s_jobshare = 'None';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT id_two AS s_jobshare 
+    FROM   job_share
+    WHERE  id_one = :p_user_id;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 0);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed whilst looking for job share record. '
+          + 'Error code ' + VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+}
+
+/*==================================================================
+ Procedure to Count Industries
+==================================================================*/
+
+PROCEDURE lp_count_industries () =
+
+DECLARE   lp_return = INTEGER1 NOT NULL WITH DEFAULT,
+
+{
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT COUNT(DISTINCT industry) AS s_count_ind
+    FROM   industry_analysts
+    WHERE  user_id = :s_user_id;
+
+    lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF lp_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF lp_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF lp_return = 9
+  THEN
+    MESSAGE 'ERROR: Failed to count industry allocations. '
+          + 'Error code 9. Please contact IM immediately.' 
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+                  h_num_row_ck = :p_num_row_ck,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+
+/*=======================================================================
+    Local procedure to correctly capitalise a user name.
+=======================================================================*/
+
+PROCEDURE lp_correct_caps (p_text = VARCHAR(24) NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_text            = VARCHAR(24) NOT NULL WITH DEFAULT,
+          lp_length          = INTEGER1    NOT NULL WITH DEFAULT,
+          lp_cap_next        = INTEGER1    NOT NULL WITH DEFAULT,
+          lp_count           = INTEGER1    NOT NULL WITH DEFAULT,
+          lp_character       = CHAR(1)     NOT NULL WITH DEFAULT,
+
+{
+  lp_length = LENGTH(SQUEEZE(:p_text));
+  lp_cap_next = 1;
+  lp_count    = 1;
+
+  WHILE :lp_count <= :lp_length
+  DO
+    lp_character = CHAREXTRACT(:p_text,:lp_count);
+
+    IF lp_character = ''
+    OR lp_character = ' '
+    THEN
+      lp_text = :lp_text + ' '; 
+    ELSE
+      IF lp_cap_next = 1
+      THEN 
+        lp_text = :lp_text + UPPER(:lp_character);
+      ELSE
+        lp_text = :lp_text + LOWER(:lp_character);
+      ENDIF;
+    ENDIF;
+
+    IF lp_character = ' '
+    OR lp_character = '-'
+    THEN
+      lp_cap_next = 1;
+    ELSE
+      lp_cap_next = 0;
+    ENDIF; 
+
+    lp_count = lp_count +1;
+     
+  ENDWHILE;
+
+  p_text = :lp_text;
+
+}
+
+/*=======================================================================
+    Local procedure to save data to password table. 
+=======================================================================*/
+
+PROCEDURE lp_save_data ()=
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+  msa_date = 'now';
+
+  IF :s_user_name = ''
+  OR :s_user_name = 'VACANT'
+  THEN
+    MESSAGE 'WARNING: Name is a mandatory field and cannot be left blank '
+          + 'or containing a default value.'
+    WITH STYLE = POPUP;
+    h_resume_field = 's_user_name';
+    RETURN 1;
+  ENDIF;
+
+  s_password = SQUEEZE(:s_password);
+
+  IF LENGTH(:s_password) != 5
+  THEN
+    MESSAGE 'WARNING: The password must be 5 characters long. Please try again.'
+    WITH STYLE = POPUP;
+    CLEAR FIELD s_password;
+    h_resume_field = 's_password';
+    RETURN 1;
+  ENDIF;
+
+  IF :s_access_code =''
+  THEN
+    s_access_code = 'O0';
+  ENDIF;
+   
+  IF :s_room_number = ''
+  OR :s_room_number = '0.000'
+  THEN
+    MESSAGE 'WARNING: Room Number is a mandatory field and cannot '
+          + 'be left blank or containing a default value.'
+    WITH STYLE = POPUP;
+    h_resume_field = 's_room_number';
+    RETURN 1;
+  ENDIF;
+
+  IF :s_extension = ''
+  OR :s_extension = '0000'
+  THEN
+    MESSAGE 'WARNING: Extension is a mandatory field and cannot '
+          + 'be left blank or containing a default value.'
+    WITH STYLE = POPUP;
+    h_resume_field = 's_extension';
+    RETURN 1;
+  ENDIF;
+
+  IF :s_default_printer = ''
+  OR :s_default_printer = 'no printer'
+  THEN
+    MESSAGE 'WARNING: Default Printer is a mandatory field and cannot '
+          + 'be left blank or containing a default value.'
+    WITH STYLE = POPUP;
+    h_resume_field = 's_printer';
+    RETURN 1;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    IF :s_password != :h_original_password
+    THEN
+      UPDATE  passwords_new
+      SET     user_name       = :s_user_name,
+              password        = :s_password,
+              room_number     = :s_room_number,
+              extension       = :s_extension,
+              date_changed    = 'today',
+              default_printer = :s_default_printer
+      WHERE   user_id         = :s_user_id;
+    ELSE
+      UPDATE  passwords_new
+      SET     user_name       = :s_user_name,
+              room_number     = :s_room_number,
+              extension       = :s_extension,
+              default_printer = :s_default_printer
+      WHERE   user_id         = :s_user_id;
+    ENDIF;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0 
+  THEN
+    MESSAGE 'ERROR: Failed to save updated details to new passwords table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*.....................................................................
+       Maintain the old passwords table for now.
+       This can only be deleted when all calls to the old password table
+       have been removed from the system.
+  .....................................................................*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    DELETE FROM passwords
+    WHERE  user_id = :s_user_id;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to delete pre-existing row from old password table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO passwords
+    SELECT :s_user_id,
+           user_name,
+           'DUMMY GRADE',
+           password,
+           69,
+           room_number,
+           extension,
+           date_changed,
+           default_printer,
+           'unused.account@ons.gsi.gov.uk'
+    FROM passwords_new
+    WHERE user_id = :s_user_id;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to copy data to old passwords table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*......................................................................*/
+
+  IF s_access_code = 'I3'
+  THEN
+
+    h_first_up_name = :s_user_name;
+
+    CALLPROC lp_correct_caps (p_text = BYREF(:h_first_up_name));
+  
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      UPDATE  industry_analysts
+      SET     name = :h_first_up_name,
+              ext  = :s_extension
+      WHERE   user_id = :s_user_id;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return > 1
+    THEN
+      MESSAGE 'ERROR: Failed to update extension on industry analysts table. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+    MESSAGE 'NOTE: Amended user details saved successfully.' +X'0D'
+          + '      Please confirm the users line management chain...'
+    WITH STYLE = POPUP;
+
+    h_return = CALLFRAME msap_fr_up_management
+             ( p_user_id = :s_user_id,
+               p_user_name = :s_user_name,
+               p_access_code = :s_access_code );
+
+    IF h_return != 0
+    THEN
+      /* Error message handled locally */
+      RETURN :h_return;
+    ENDIF;
+
+  ELSE
+
+    MESSAGE 'NOTE: Amended user details saved successfully.'
+    WITH STYLE = POPUP;
+
+  ENDIF;
+
+  h_original_user_name    = :s_user_name;       
+  h_original_password     = :s_password;       
+  h_original_room_number  = :s_room_number;   
+  h_original_extension    = :s_extension;    
+  h_original_date_changed = :s_date_changed;
+  h_original_printer      = :s_default_printer;
+
+}

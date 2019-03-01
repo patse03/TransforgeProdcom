@@ -1,0 +1,185 @@
+/**************************************************************************
+  Displays an analysts industry allocation with reference splits.
+  VIEW ONLY: Changes made using option 8 - msap_fr_up_allocation.
+  
+  Part of the sequence of changes made to allow industry splits without
+  hardcoding changes each time, and the move towards a standardise access
+  system. ~ DF - Sept 2012
+
+**************************************************************************/
+
+INITIALIZE (p_user_id = VARCHAR(8) NOT NULL WITH DEFAULT) =
+
+DECLARE h_frpr_name       = VARCHAR(25) NOT NULL,
+        h_return          = INTEGER1    NOT NULL,
+        h_title           = VARCHAR(80) NOT NULL,
+        h_user_name       = VARCHAR(24) NOT NULL,
+        h_alloc_count     = INTEGER2    NOT NULL,
+        h_split_count     = INTEGER2    NOT NULL,
+        h_retries_allowed = INTEGER1    NOT NULL,
+        h_retries         = INTEGER1    NOT NULL,
+        h_retry_or_not    = CHAR(5)     NOT NULL
+
+{
+  h_frpr_name = 'msap_fr_view_industries';
+  h_retries_allowed = 3;
+  msa_date = 'now';
+  s_user_id = :p_user_id;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT name AS h_user_name,
+           COUNT (industry) AS h_alloc_count
+    FROM   industry_analysts
+    WHERE  user_id = :p_user_id
+    GROUP BY name;   
+
+    h_return = CALLPROC check_inq_ing (
+               h_num_row_ck      = 1,
+               h_commit          = 'Y',
+               h_frpr_name       = :h_frpr_name,
+               h_retries         = :h_retries,
+               h_retries_allowed = :h_retries_allowed,
+               h_rollback        = 'N');
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 9;
+
+  ELSEIF h_return = 9
+  THEN
+    MESSAGE 'ERROR: Failed to select allocation count from industry_staff. '
+          + 'Error code 9. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  h_title = :h_user_name + ' has ' + VARCHAR(:h_alloc_count) 
+          + ' industry allocations.';
+  s_title = SHIFT(:h_title, (((80-LENGTH(h_title))/2)*1));
+
+  SET_FORMS FORM (MODE = 'read');
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    tf =
+
+    SELECT industry AS industry,
+           ''         AS shared,
+           low_ref  AS low_ref,
+           high_ref AS high_ref
+    FROM   industry_analysts
+    WHERE  user_id = :p_user_id;
+
+    h_return = CALLPROC check_inq_ing (
+               h_num_row_ck      = 1,
+               h_commit          = 'Y',
+               h_frpr_name       = :h_frpr_name,
+               h_retries         = :h_retries,
+               h_retries_allowed = :h_retries_allowed,
+               h_rollback        = 'N');
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 9;
+  ELSEIF h_return = 9
+  THEN
+    MESSAGE 'ERROR: Failed to select industry allocations from '
+          + 'industry_analysts. Error code 9. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  UNLOADTABLE tf
+  BEGIN
+     
+    SELECT COUNT(user_id) AS h_split_count
+    FROM   industry_analysts
+    WHERE  industry = :tf.industry;
+
+    h_return = CALLPROC check_inq_ing (
+               h_num_row_ck = 1,
+               h_commit     = 'Y',
+               h_rollback   = 'N',
+               h_frpr_name  = :h_frpr_name);
+
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to check for split allocation on industry '
+            + VARCHAR(:tf.industry) + '. Error code ' 
+            + VARCHAR(:h_return) + '. Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+    IF h_split_count > 1
+    THEN
+      tf.shared = 'S';
+    ENDIF;
+
+  END;
+
+  REDISPLAY;
+
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+
+'Relink Allocation', KEY FRSKEY4 =
+{
+
+  IF  g_user_class != 'C'
+  AND g_user_class != 'D'
+  THEN
+    MESSAGE 'NOTE: This action is not available to your work area.'
+    WITH STYLE = POPUP;
+  ENDIF;
+
+  h_return = CALLFRAME msap_fr_bulk_allocation (p_user_id   = :p_user_id,
+                                                p_user_name = :h_user_name);
+
+  IF h_return = 1 
+  THEN
+    /* If successful, theres nothing left to see here. */
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN 
+    /* Error message handled in external prodcedure */
+    RETURN 9;
+  ENDIF;
+
+  RESUME MENU;
+}
+
+
+'End', KEY FRSKEY14 =
+{
+    RETURN 0;
+}

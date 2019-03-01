@@ -1,0 +1,447 @@
+/*------------------------------------------------------------------
+ Allows Control to create a new entry in the password table
+------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_password        = CHAR(5)  NOT NULL,
+        h_access_level    = INTEGER1 NOT NULL,
+        h_frpr_name       = VARCHAR(25) NOT NULL,
+        h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_return           = INTEGER1 NOT NULL,
+        h_id_flag         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5)  NOT NULL,
+        h_yesno           = CHAR(1)  NOT NULL,
+
+        lp_full_error_check        = PROCEDURE RETURNING INTEGER,
+
+{
+    h_frpr_name = 'msap_fr_cr_details';
+    h_retries_allowed = 3;
+    msa_date = 'now';
+
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+}
+
+/*************************** FIELD ACTIVATIONS ****************************/
+
+FIELD s_user_id =
+{
+  msa_date = 'now';
+
+  /*------------------------------------------------------------------
+      Validate UserId
+  ------------------------------------------------------------------*/
+
+  s_user_id = SQUEEZE(:s_user_id);
+
+  IF LENGTH(:s_user_id) > 8 
+  OR LENGTH(:s_user_id) < 7
+  THEN
+    MESSAGE 'WARNING: The User ID should be 7 or 8 characters long.'
+    WITH STYLE = POPUP;
+    CLEAR FIELD s_user_id;
+    RESUME FIELD s_user_id;
+  ENDIF;
+
+  h_id_flag = 0;  
+
+  IF LEFT(:s_user_id,6) = 'acprod' OR LEFT(:s_user_id,6) = 'piprod'
+  THEN
+     h_id_flag = 1;  
+  ENDIF; 	
+
+  IF  LEFT(:s_user_id,5) != 'prod0' 
+  AND LEFT(:s_user_id,5) != 'prod1'
+  AND LEFT(:s_user_id,5) != 'prodd'
+  AND h_id_flag != 1
+  THEN
+    MESSAGE 'WARNING: The User ID should be in the format "prod0..", ' 
+          + '"prod1..", "prodd...", "acprod.." or "piprod..".'
+    WITH STYLE = POPUP;
+    CLEAR FIELD s_user_id;
+    RESUME FIELD s_user_id;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT password AS h_password
+    FROM   new_passwords
+    WHERE  user_id = :s_user_id;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 0);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return = 9
+  THEN
+    MESSAGE 'ERROR: Failed to validate User ID on new passwords table. '
+          + 'Error code 9. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This User ID already exists on the system. '
+          + 'Please use "Amend Staff Details" on the main menu instead, '
+          + 'or enter a new User ID.'
+    WITH STYLE = POPUP;
+    CLEAR FIELD s_user_id; 
+    RESUME FIELD s_user_id; 
+  ENDIF;
+
+  RESUME FIELD s_user_name;
+}
+
+
+FIELD 's_user_name' =
+{
+  msa_date = 'now';
+
+  IF :s_user_name = ''
+  THEN
+    MESSAGE 'WARNING: Name is a mandatory field and cannot be left blank.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_user_name;
+  ENDIF;
+
+  RESUME FIELD s_password;
+}
+
+FIELD s_password =
+{
+  msa_date = 'now';
+
+  /*------------------------------------------------------------------
+      Validate password
+  ------------------------------------------------------------------*/
+
+  s_password = SQUEEZE(:s_password);
+
+  IF LENGTH(:s_password) != 5
+  THEN
+    MESSAGE 'WARNING: The password must be 5 characters long. Please try again.'
+    WITH STYLE = POPUP;
+    CLEAR FIELD s_password;
+    RESUME FIELD s_password;
+  ENDIF;
+
+  RESUME FIELD s_room_number;
+}
+
+FIELD s_room_number =
+{
+  msa_date = 'now';
+
+  IF :s_room_number = ''
+  THEN
+    MESSAGE 'WARNING: Room Number is a mandatory field and cannot '
+          + 'be left blank.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_room_number;
+  ENDIF;
+
+  RESUME FIELD s_extension;
+}
+
+FIELD s_extension =
+{
+  msa_date = 'now';
+
+  IF :s_extension = ''
+  THEN
+    MESSAGE 'WARNING: Extension is a mandatory field and cannot '
+          + 'be left blank.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_extension;
+  ENDIF;
+
+  RESUME FIELD s_default_printer;
+}
+
+FIELD s_default_printer =
+{
+  msa_date = 'now';
+
+  IF :s_default_printer = ''
+  THEN
+    MESSAGE 'WARNING: Default Printer is a mandatory field and cannot '
+          + 'be left blank.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_default_printer;
+  ENDIF;
+
+  RESUME FIELD s_user_name;
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+/*------------------------------------------------------------------
+  Update Access Code
+------------------------------------------------------------------*/
+
+'Access', KEY FRSKEY6 =
+{
+  h_return = CALLFRAME msap_fr_up_access
+           ( p_access_code = BYREF(:s_access_code),
+             p_user_name   = :s_user_name,
+             p_user_id     = :s_user_id );
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed during call to msap_fr_up_access. Error code '
+          + VARCHAR(:h_return) +'. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN h_return;
+  ENDIF;
+
+  REDISPLAY;
+
+}
+
+/*------------------------------------------------------------------
+ Mark fields for vacant id creation.
+------------------------------------------------------------------*/
+
+'Vacant', KEY FRSKEY8 =
+{
+
+  IF :s_user_id = ''
+  THEN
+    MESSAGE 'WARNING: A user id is needed before this function can be used.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_user_id;
+  ENDIF;
+  
+  s_user_name       = 'VACANT';
+  s_password        = 'EMPTY';
+  s_access_code     = 'V0';
+  s_room_number     = '0.000';
+  s_extension       = '0000'; 
+  s_default_printer = 'no printer';
+
+  REDISPLAY;
+
+  RESUME FIELD s_user_name;
+
+}
+
+/*------------------------------------------------------------------
+ Save newly created data
+------------------------------------------------------------------*/
+
+'Save', KEY FRSKEY9 =
+{
+  msa_date = 'now';
+
+  IF :s_user_name = ''
+  THEN
+    MESSAGE 'WARNING: Name is a mandatory field and cannot be left blank.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_user_name;
+  ENDIF;
+
+  s_password = SQUEEZE(:s_password);
+
+  IF LENGTH(:s_password) != 5
+  THEN
+    MESSAGE 'WARNING: The password must be 5 characters long. Please try again.'
+    WITH STYLE = POPUP;
+    CLEAR FIELD s_password;
+    RESUME FIELD s_password;
+  ENDIF;
+
+  IF :s_access_code =''
+  OR ( :s_access_code ='V0' AND 
+       :s_user_name != 'VACANT')
+  THEN
+
+    MESSAGE' WARNING: Please set users Access Code...'
+    WITH STYLE = POPUP; 
+
+    h_return = CALLFRAME msap_fr_up_access 
+                       ( p_access_code = BYREF(:s_access_code),
+                         p_user_id = :s_user_id,
+                         p_user_name = :s_user_name);  
+
+    IF h_return != 0
+    THEN
+     /* Error message handled locally */
+     RETURN :h_return;
+    ENDIF;
+    
+  ENDIF;
+
+  IF :s_room_number = ''
+  THEN
+    MESSAGE 'WARNING: Room Number is a mandatory field and cannot '
+          + 'be left blank.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_room_number;
+  ENDIF;
+
+  IF :s_extension = ''
+  THEN
+    MESSAGE 'WARNING: Extension is a mandatory field and cannot '
+          + 'be left blank.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_extension;
+  ENDIF;
+
+  IF :s_default_printer = ''
+  THEN
+    MESSAGE 'WARNING: Default Printer is a mandatory field and cannot '
+          + 'be left blank.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_default_printer;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO passwords_new
+    VALUES (    :s_user_id,
+                :s_user_name,
+                :s_password,
+                'today',
+                :s_access_code,
+                :s_room_number,
+                :s_extension,
+                :s_default_printer,
+                'unused.account@ons.gsi.gov.uk',
+                69);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return != 0 
+  THEN
+    MESSAGE 'ERROR: Failed to save new user details to new passwords table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+  IF LEFT(s_access_code,1) != 'I'
+  THEN
+    MESSAGE 'NOTE: New user details saved successfully. ' + X'0D'
+    WITH STYLE = POPUP;
+    RETURN 0;
+  ELSE
+    MESSAGE 'NOTE: New user details saved successfully. ' + X'0D'
+          + '      Now set up line management details.'
+    WITH STYLE = POPUP;
+  ENDIF;
+
+  h_return = CALLFRAME msap_fr_up_management (p_user_id = :s_user_id,
+                                              p_user_name = :s_user_name,
+                                              p_access_code = :s_access_code);
+
+  RETURN :h_return;  
+  
+}
+
+/*------------------------------------------------------------------
+  End
+------------------------------------------------------------------*/
+
+'End', KEY FRSKEY14 =
+{
+  msa_date = 'now';
+
+  IF s_user_id != ''
+  THEN 
+
+    h_yesno = '';
+
+    WHILE h_yesno != 'Y' AND h_yesno != 'N'
+    DO
+      h_yesno = PROMPT 'WARNING: Do you really wish to exit without saving '
+                     + 'your changes? [Y/N] '
+                WITH STYLE = POPUP;
+      h_yesno = UPPER(:h_yesno);
+    ENDWHILE;
+
+    IF h_yesno != 'Y'
+    THEN
+      RESUME;
+    ENDIF;
+
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+                  h_num_row_ck = :p_num_row_ck,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

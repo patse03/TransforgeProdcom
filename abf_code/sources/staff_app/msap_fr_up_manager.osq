@@ -1,0 +1,307 @@
+/*------------------------------------------------------------------
+ Allows control team to set the Survey Manager.
+------------------------------------------------------------------*/
+
+INITIALIZE (p_user_id     = VARCHAR(8)  NOT NULL WITH DEFAULT,
+            p_user_name   = VARCHAR(24) NOT NULL WITH DEFAULT,
+            p_access_code = VARCHAR(2)  NOT NULL WITH DEFAULT)=
+
+DECLARE h_frpr_name       = VARCHAR(25) NOT NULL WITH DEFAULT,
+        h_return          = INTEGER1    NOT NULL WITH DEFAULT,
+        h_alloc_count     = INTEGER2    NOT NULL WITH DEFAULT,
+        h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+        h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+        h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+        h_user_name       = CHAR(24)    NOT NULL WITH DEFAULT,
+        h_m_name          = CHAR(24)    NOT NULL WITH DEFAULT,
+        h_c_name          = CHAR(24)    NOT NULL WITH DEFAULT,
+        h_mode            = CHAR(1)     NOT NULL WITH DEFAULT,
+
+        lp_error_check          = PROCEDURE RETURNING INTEGER,
+        lp_full_error_check     = PROCEDURE RETURNING INTEGER,
+        lp_correct_caps         = PROCEDURE,
+
+{
+
+  h_frpr_name = 'msap_fr_up_manager';
+  h_retries_allowed = 3;
+  msa_date = 'now';
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  
+  /*------------------------------------------------------------------------
+        Determines current survey manager.
+  ------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT DISTINCT manager_name     AS h_m_name,
+                    manager_id       AS s_manager_id
+    FROM            analyst_coordinator_manager;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return <> 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 9;
+
+  ELSEIF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to load current survey manager. Error code '
+          + VARCHAR(:h_return) +'. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+        Creates correctly capitalised names
+  ------------------------------------------------------------------------*/
+
+  CALLPROC lp_correct_caps (p_text = BYREF(:h_m_name));
+
+  s_manager_name     = SHIFT(:h_m_name, (((24-LENGTH(h_m_name))/2)*1));
+
+
+  /*------------------------------------------------------------------------
+        Loads Manager Table Field.
+  ------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    tf1 =
+
+    SELECT user_id AS manager_id,
+           user_name AS manager_name
+    FROM   passwords_new
+    WHERE  access_code = 'I5';
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return <> 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 9;
+
+  ELSEIF h_return = 9
+  THEN
+    MESSAGE 'ERROR: Failed to load Survey Managers. Error code '
+          + VARCHAR(:h_return) +'. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'WARNING: No Survey Manager found on system. ' 
+          + 'Please contact the control team immediately to report this.'
+    WITH STYLE = POPUP;
+    RETURN 1;
+
+  ENDIF;
+
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'Select', KEY FRSKEY4 =
+{
+
+  /*------------------------------------------------------------------------
+     Creates correctly capitalised user name from tf.manager_name
+     for use in s_manager_name and thus analyst_coordinator_manager. 
+  ------------------------------------------------------------------------*/
+
+  h_m_name = :tf1.manager_name;
+    
+  CALLPROC lp_correct_caps (p_text = BYREF(:h_m_name));
+
+  s_manager_name = SHIFT(:h_m_name, (((24-LENGTH(h_m_name))/2)*1));
+  s_manager_id   = :tf1.manager_id;
+
+  REDISPLAY;
+
+  RESUME;
+
+}
+
+
+'Save', KEY FRSKEY12 =
+{
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+    
+    UPDATE analyst_coordinator_manager
+    SET    manager_name     = SQUEEZE(:s_manager_name),
+           manager_id       = SQUEEZE(:s_manager_id); 
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return <> 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 9;
+
+  ELSEIF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed in bulk update of A.C.B. structure table. '
+          + 'Error code ' + VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+  MESSAGE 'NOTE: Survey Manager successfully saved.'
+  WITH STYLE = POPUP;    
+
+  RETURN 0;
+
+}
+
+/************************** LOCAL PROCEDURES ******************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+                  h_num_row_ck = :p_num_row_ck,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+/*=======================================================================
+    Local procedure to correctly capitalise a user name.
+=======================================================================*/
+
+PROCEDURE lp_correct_caps (p_text = VARCHAR(24) NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_text            = VARCHAR(24) NOT NULL WITH DEFAULT,
+          lp_length          = INTEGER1    NOT NULL WITH DEFAULT,
+          lp_cap_next        = INTEGER1    NOT NULL WITH DEFAULT,
+          lp_count           = INTEGER1    NOT NULL WITH DEFAULT,
+          lp_character       = CHAR(1)     NOT NULL WITH DEFAULT,
+
+{
+  lp_length = LENGTH(SQUEEZE(:p_text));
+  lp_cap_next = 1;
+  lp_count    = 1;
+
+  WHILE :lp_count <= :lp_length
+  DO
+    lp_character = CHAREXTRACT(:p_text,:lp_count);
+
+    IF lp_character = ''
+    OR lp_character = ' '
+    THEN
+      lp_text = :lp_text + ' '; 
+    ELSE
+      IF lp_cap_next = 1
+      THEN 
+        lp_text = :lp_text + UPPER(:lp_character);
+      ELSE
+        lp_text = :lp_text + LOWER(:lp_character);
+      ENDIF;
+    ENDIF;
+
+    IF lp_character = ' '
+    OR lp_character = '-'
+    THEN
+      lp_cap_next = 1;
+    ELSE
+      lp_cap_next = 0;
+    ENDIF; 
+
+    lp_count = lp_count +1;
+     
+  ENDWHILE;
+
+  p_text = :lp_text;
+
+
+}

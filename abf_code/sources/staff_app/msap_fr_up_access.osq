@@ -1,0 +1,624 @@
+/*------------------------------------------------------------------
+ Allows control team to set new style access code for user.
+------------------------------------------------------------------*/
+
+INITIALIZE (p_user_id     = VARCHAR(8)  NOT NULL WITH DEFAULT,
+            p_user_name   = VARCHAR(24) NOT NULL WITH DEFAULT,
+            p_access_code = VARCHAR(2)  NOT NULL WITH DEFAULT)=
+
+DECLARE h_frpr_name       = VARCHAR(25) NOT NULL WITH DEFAULT,
+        h_return          = INTEGER1    NOT NULL WITH DEFAULT,
+        h_alloc_count     = INTEGER2    NOT NULL WITH DEFAULT,
+        h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+        h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+        h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+        h_prompt          = CHAR(1)     NOT NULL WITH DEFAULT,
+        h_user_name       = CHAR(24)    NOT NULL WITH DEFAULT,
+        h_original_code   = VARCHAR(2)  NOT NULL WITH DEFAULT,
+        h_jobshare        = VARCHAR(8)  NOT NULL WITH DEFAULT,
+
+        lp_error_check          = PROCEDURE RETURNING INTEGER,
+        lp_full_error_check     = PROCEDURE RETURNING INTEGER,
+
+{
+
+  h_frpr_name = 'msap_fr_up_access';
+  h_retries_allowed = 3;
+  msa_date = 'now';
+
+  h_original_code = :p_access_code;
+  s_access_code   = :p_access_code;
+  s_class         = IFNULL(LEFT(:s_access_code,1),'V');
+  s_level         = IFNULL(RIGHT(:s_access_code,1),'0');
+  s_user_id       = :p_user_id;
+
+  IF p_user_name = ''
+  THEN
+     p_user_name =  'New User '+:p_user_id;
+  ENDIF;
+
+  SET_FORMS FIELD '' (INVISIBLE  (s_message) = 1);  
+
+  /*------------------------------------------------------------------------
+        Selects user name from acm table to avoid upper case display.
+  ------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+    
+    SELECT analyst_name AS h_user_name
+    FROM   analyst_coordinator_manager
+    WHERE  analyst_id = :p_user_id;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 9;
+      
+
+  ELSEIF h_return = 1
+  THEN
+    h_user_name = :p_user_name;     
+
+  ELSEIF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to load user name. Error code '
+          + VARCHAR(:h_return) +'. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+  s_user_name = SHIFT(:h_user_name, (((24-LENGTH(h_user_name))/2)*1));
+
+  /*------------------------------------------------------------------------
+        Loads Class Table Field.
+  ------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    tf1 =
+
+    SELECT l AS code,
+           text
+    FROM   access_codes
+    WHERE  l != '';
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 9;
+
+  ELSEIF h_return = 9
+  THEN
+    MESSAGE 'ERROR: Failed to load class details. Error code '
+          + VARCHAR(:h_return) +'. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+        Loads Level Table Field.
+  ------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    tf2 =
+
+    SELECT r AS code,
+           text
+    FROM   access_codes
+    WHERE  l = '';
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 9;
+
+  ELSEIF h_return = 9
+  THEN
+    MESSAGE 'ERROR: Failed to load class details. Error code '
+          + VARCHAR(:h_return) +'. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+        Detects and notifies of management jobshare.
+  ------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT id_two AS h_jobshare 
+    FROM   job_share
+    WHERE  id_one = :p_user_id;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 0);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    s_message = 'JOB SHARE WITH ' +UPPER(:h_jobshare);
+    SET_FORMS FIELD '' (INVISIBLE  (s_message) = 0);  
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed whilst looking for job share record. '
+          + 'Error code ' + VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  REDISPLAY;
+
+  RESUME FIELD s_class;
+}
+
+/*************************** FIELD ACTIVATIONS ****************************/
+
+FIELD s_class =
+{
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT l AS s_class
+    FROM   access_codes
+    WHERE  l = :s_class;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 9;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to validate access class. Error code '
+          + VARCHAR(:h_return) +'. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'WARNING: Please select a valid class from the abve list.'
+    WITH STYLE = POPUP;
+    CLEAR FIELD s_class;
+    RESUME FIELD s_class;
+
+  ENDIF;
+
+  s_access_code = :s_class + s_level;
+
+  REDISPLAY;
+
+  RESUME FIELD s_level;
+
+}
+
+     
+FIELD s_level =
+{
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT r AS s_level
+    FROM   access_codes
+    WHERE  r = :s_level;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 9;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to validate access level. Error code '
+          + VARCHAR(:h_return) +'. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'WARNING: Please select a valid level from the abve list.'
+    WITH STYLE = POPUP;
+    CLEAR FIELD s_level;
+    RESUME FIELD s_level;
+
+  ENDIF;
+
+  s_access_code = :s_class + s_level;
+
+  REDISPLAY;
+
+  RESUME FIELD s_class;
+
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'Save', KEY FRSKEY12 =
+{
+
+  /*------------------------------------------------------------------------
+     If no longer data analyst, check allocations, then remove from ACM 
+  ------------------------------------------------------------------------*/
+
+  IF h_original_code = 'I3'
+  AND :s_access_code != 'I3'
+  THEN
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      SELECT COUNT(industry) AS h_alloc_count
+      FROM industry_analysts
+      WHERE user_id = :s_user_id; 
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+      RETURN 9;
+
+    ELSEIF h_return > 1
+    THEN
+      MESSAGE 'ERROR: Failed to count industry allocation. Error code '
+            + VARCHAR(:h_return) +'. Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+    IF h_alloc_count > 0
+    THEN
+      MESSAGE 'WARNING: Unable to change access code from I3 while '
+            + 'user has industry allocations. Please remove these using '
+            + 'the "Amend Industry Allocations" screen before trying again.'
+      WITH STYLE = POPUP;
+
+      s_access_code = 'I3';
+
+      REDISPLAY;
+
+      RETURN 0;
+
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      DELETE FROM analyst_coordinator_manager
+      WHERE  analyst_id = :s_user_id;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to delete from ACM structure table. Error code '
+            + VARCHAR(:h_return) +'. Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+  ENDIF; /* End of "No longer a Data Analyst" */
+
+  /*------------------------------------------------------------------------
+     If no longer data coordinator, remove any entries from jobshare.
+     Then make sure they have no analysts still linked to them.
+  ------------------------------------------------------------------------*/
+
+  IF h_original_code = 'I4'
+  AND :s_access_code != 'I4'
+  THEN
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      DELETE FROM job_share
+      WHERE  id_one = :p_user_id
+         OR  id_two = :p_user_id;
+      
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+      RETURN 9;
+
+    ELSEIF h_return > 1
+    THEN
+      MESSAGE 'ERROR: Failed to delete from ACM structure table. Error code '
+            + VARCHAR(:h_return) +'. Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+    s_message = '';
+    SET_FORMS FIELD '' (INVISIBLE  (s_message) = 1);
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      SELECT COUNT(analyst_id) AS h_alloc_count
+      FROM analyst_coordinator_manager
+      WHERE coordinator_id = :s_user_id; 
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return > 1
+    THEN
+      MESSAGE 'ERROR: Failed to count managed analysts. Error code '
+            + VARCHAR(:h_return) +'. Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+    IF h_alloc_count > 0
+    THEN
+      MESSAGE 'WARNING: Unable to change access code from I4 while '
+            + 'user has Data Analysts assigned to them. '  
+            + 'Please relink their staff to a new Data Coordinator '
+            + 'before trying again.'
+      WITH STYLE = POPUP;
+
+      s_access_code = 'I4';
+
+      REDISPLAY;
+
+      RETURN 0;
+
+    ENDIF;
+
+  ENDIF; /* End of "No longer a Data Coordinator" */
+
+  /*------------------------------------------------------------------------
+     If a new Data Coordinator, prompt for jobshare. If confirmed,
+     open job share selection popup.
+  ------------------------------------------------------------------------*/
+
+  IF h_original_code != 'I4'
+  AND :s_access_code  = 'I4'
+  THEN
+
+    h_prompt = ' ';
+
+    WHILE h_prompt != 'Y' AND h_prompt != 'N'
+    DO
+
+      h_prompt = PROMPT 'Is this Data Coordinator job-sharing with an existing '
+                      + 'Data Coordinator? [Y/N] : '
+                 WITH STYLE = POPUP;
+      h_prompt = UPPER(:h_prompt);
+     
+    ENDWHILE;
+
+    IF h_prompt = 'Y'
+    THEN
+
+      h_return = CALLFRAME msap_fr_up_jobshare (p_user_id = :p_user_id);
+ 
+      IF h_return != 0
+      THEN
+        /* Error message handled in external procedure */
+        RETURN 9;
+      ENDIF; 
+
+      /*------------------------------------------------------------------------
+            Displays new jobshare message.
+      ------------------------------------------------------------------------*/
+
+      h_retry_or_not      = 'RETRY';
+      h_retries           = 0;
+
+      WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+      DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT id_two AS h_jobshare 
+        FROM   job_share
+        WHERE  id_one = :p_user_id;
+
+        h_return = CALLPROC lp_full_error_check (p_num_row_ck = 0);
+
+        IF h_return != 7
+        THEN
+          h_retry_or_not = '';
+        ENDIF;
+
+      ENDWHILE;
+
+      IF h_return = 1
+      THEN
+        s_message = 'JOB SHARE WITH ' +UPPER(:h_jobshare);
+        SET_FORMS FIELD '' (INVISIBLE  (s_message) = 0);  
+      ELSEIF h_return > 1
+      THEN
+        MESSAGE 'ERROR: Failed whilst checking newly created jobshare record. '
+              + 'Error code ' + VARCHAR(:h_return) +'. '
+              + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+        RETURN 9;
+      ENDIF;
+
+    ENDIF;
+
+  ENDIF;
+
+  p_access_code = :s_access_code;
+
+  RETURN 0;
+
+}
+
+/************************** LOCAL PROCEDURES ******************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+                  h_num_row_ck = :p_num_row_ck,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

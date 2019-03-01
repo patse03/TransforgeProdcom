@@ -1,0 +1,365 @@
+/*------------------------------------------------------------------
+ Allows Control to add/remove industries
+------------------------------------------------------------------*/
+
+INITIALIZE ( h_job_title       = CHAR(24) NOT NULL) =
+
+DECLARE h_industry        = INTEGER4 NOT NULL,
+        h_frpr_name       = VARCHAR(25) NOT NULL,
+        h_user_name       = CHAR(24) NOT NULL,
+        h_user_list       = VARCHAR(240) NOT NULL,
+        h_limit           = INTEGER1 NOT NULL,
+        h_count_users     = INTEGER1 NOT NULL,
+        h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5)  NOT NULL
+
+{
+    MESSAGE 'SYSTEM ERROR: This screen should no longer be accessible. '
+          + 'It has been replaced by option 8 off the staff menu. '
+          + 'Please can you contact IM and let them know how you '
+          + 'accessed this screen so they can ensure the link is '
+          + 'corrected as soon as possible. '
+    WITH STYLE = POPUP;
+    RETURN 0;
+
+
+    h_frpr_name = 'msap_fr_in_industries';
+    h_retries_allowed = 3;
+    msa_date = 'now';
+
+    IF :h_job_title = 'DATA ANALYST'
+    THEN
+        h_limit = 4;
+    ELSEIF :h_job_title = 'DATA COORDINATOR'
+    THEN
+        h_limit = 2;
+    ENDIF;
+
+    SET_FORMS FORM (MODE = 'read');
+
+    MESSAGE 'Selecting Industries . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT     industry,
+                   ' A ' as inquiry,
+                   industry_text
+        FROM       industry
+        WHERE      inquiry = 14
+        UNION
+        SELECT     industry,
+                   ' Q ' as inquiry,
+                   industry_text
+        FROM       industry
+        WHERE      inquiry = 15
+        ORDER BY   industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                   h_num_row_ck      = 1,
+                   h_commit          = 'Y',
+                   h_frpr_name       = :h_frpr_name,
+                   h_retries         = :h_retries,
+                   h_retries_allowed = :h_retries_allowed,
+                   h_rollback        = 'N');
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 9;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading industry details'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Error in loading industry details - no rows'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Loads the Y flags
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT industry AS h_industry
+        FROM   obsolete_table
+        WHERE  user_id = :user_id
+        {
+            UNLOADTABLE tf
+            {
+                IF :tf.industry = :h_industry
+                THEN
+                    tf.own_industry = 'YES';
+                ENDIF;
+            };
+        };
+
+        ret_val = CALLPROC check_inq_ing (
+                   h_num_row         = BYREF(count_ind),
+                   h_num_row_ck      = 1,
+                   h_commit          = 'Y',
+                   h_rollback        = 'N',
+                   h_retries         = :h_retries,
+                   h_retries_allowed = :h_retries_allowed,
+                   h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in selecting from obsolete_table'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+}
+
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'help',
+               FILE    = :g_help + '/' + :h_frpr_name + '.hlp');
+}
+
+'Add' =
+{
+    IF :tf.own_industry = 'YES'
+    THEN
+        RESUME;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        h_user_list = '';
+        h_count_users = 0;
+
+        SELECT a.user_name AS h_user_name
+        FROM   passwords a,
+               obsolete_table b
+        WHERE  a.user_id = b.user_id
+        AND    b.industry = :tf.industry
+        AND    b.grade = :h_job_title
+        {
+            h_user_list = CONCAT(CONCAT(:h_user_list,', '),:h_user_name);
+            h_count_users = :h_count_users + 1;
+        };
+
+        IF :h_user_list <> ''
+        THEN
+            h_user_list = RIGHT(:h_user_list,LENGTH(:h_user_list) - 2);
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                   h_num_row_ck      = 1,
+                   h_commit          = 'Y',
+                   h_rollback        = 'N',
+                   h_retries         = :h_retries,
+                   h_retries_allowed = :h_retries_allowed,
+                   h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error checking industry owners'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    IF :tf.industry <> 22220
+    THEN
+        IF :h_count_users >= :h_limit
+        THEN
+            MESSAGE 'The limit for ' + TRIM(:h_job_title) +
+                    's for this industry has already been reached: ' +
+                    SQUEEZE(:h_user_list)
+            WITH STYLE = POPUP;
+
+            RESUME;
+        ENDIF;
+    ELSE
+        IF :h_count_users >= 7        
+        THEN
+            MESSAGE 'The limit for ' + TRIM(:h_job_title) +
+                    's for this industry has already been reached: ' +
+                    SQUEEZE(:h_user_list)
+            WITH STYLE = POPUP;
+
+            RESUME;
+        ENDIF;
+
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        INSERT INTO obsolete_table (
+                    industry,
+                    user_id,
+                    grade,
+                    print_order)
+        VALUES (    :tf.industry,
+                    :user_id,
+                    :h_job_title,
+                    0);
+
+        ret_val = CALLPROC check_inq_ing (
+                   h_num_row_ck      = 1,
+                   h_commit          = 'Y',
+                   h_rollback        = 'N',
+                   h_retries         = :h_retries,
+                   h_retries_allowed = :h_retries_allowed,
+                   h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error inserting industry ' +
+                VARCHAR(:tf.industry)
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Error inserting (no rows) industry ' +
+                VARCHAR(:tf.industry)
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    count_ind = count_ind + 1;
+
+    tf.own_industry = 'YES';
+}
+
+'Delete' =
+{
+    IF :tf.own_industry <> 'YES'
+    THEN
+        RESUME;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        DELETE FROM obsolete_table
+        WHERE       industry = :tf.industry
+        AND         user_id  = :user_id;
+
+        ret_val = CALLPROC check_inq_ing (
+                   h_num_row_ck      = 1,
+                   h_commit          = 'Y',
+                   h_rollback        = 'N',
+                   h_retries         = :h_retries,
+                   h_retries_allowed = :h_retries_allowed,
+                   h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error deleting industry ' +
+                VARCHAR(:tf.industry)
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Error (no rows) deleting industry ' +
+                VARCHAR(:tf.industry)
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    count_ind = count_ind - 1;
+
+    tf.own_industry = '';
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}
+

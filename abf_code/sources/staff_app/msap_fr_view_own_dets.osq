@@ -1,0 +1,199 @@
+/*------------------------------------------------------------------
+ Allows staff to view their own details
+------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_frpr_name       = VARCHAR(25) NOT NULL,
+        h_user_name       = VARCHAR(24) NOT NULL,
+        h_email           = VARCHAR(58) NOT NULL,
+        h_return          = INTEGER1 NOT NULL,
+        h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5)  NOT NULL,
+
+        lp_full_error_check = PROCEDURE RETURNING INTEGER
+
+{
+  h_frpr_name = 'msap_fr_view_own_dets';
+  h_retries_allowed = 3;
+  msa_date = 'now';
+
+  /*----------------------------------------------------------------------
+       Access check.
+  ----------------------------------------------------------------------*/
+
+  /* Not needed. Anyone can check their own details and change their p/w. */
+  
+  /*----------------------------------------------------------------------
+       Select screen data.
+  ----------------------------------------------------------------------*/
+  
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT user_id         AS s_user_id,
+           user_name       AS h_user_name,
+           password        AS s_password,
+           access_code     AS s_access,
+           room_number     AS s_room,
+           extension       AS s_extension,
+           date_changed    AS s_date_changed,
+           default_printer AS s_printer,
+           email           AS h_email
+    FROM   passwords_new
+    WHERE  user_id = :g_user_id;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 9;
+  ELSEIF h_return = 9
+  THEN
+    MESSAGE 'ERROR: Failed to load staff details. Error code '
+          + VARCHAR(:h_return) +'. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  s_user_name = SHIFT(:h_user_name, (((34-LENGTH(h_user_name))/2)*1));
+
+  REDISPLAY;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT COUNT(DISTINCT industry) AS s_count_ind
+    FROM   industry_analysts
+    WHERE  user_id = :g_user_id;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return <> 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to count industry allocations. Error code '
+          + VARCHAR(:h_return) +'. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'Inds', KEY FRSKEY4 =
+{
+  h_return = CALLFRAME msap_fr_view_industries  (p_user_id = :s_user_id);
+
+  msa_date = 'now';
+
+  IF h_return <> 0
+  THEN
+    MESSAGE 'Error calling view_industry';
+  ENDIF;
+
+}
+
+'Splits', KEY FRSKEY5 =
+{
+  h_return = CALLFRAME msap_fr_view_splits (p_user_id = :s_user_id,
+                                            p_user_name = :h_user_name);
+
+  msa_date = 'now';
+
+  IF h_return <> 0
+  THEN
+    MESSAGE 'Error calling view_industry';
+  ENDIF;
+
+}
+
+
+'Pcom P/W', KEY FRSKEY8 =
+{
+  h_return = CALLFRAME msap_fr_up_password ();
+
+  msa_date = 'now';
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to change ProdCom password. Error code '
+          + VARCHAR(:h_return) +'. Please contact IM immediately.'
+  ENDIF;
+
+}
+
+'Unix P/W', KEY FRSKEY9 =
+{
+  h_return = CALLFRAME msap_fr_up_unix_pass ();
+
+  msa_date = 'now';
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to change Unix password. Error code '
+          + VARCHAR(:h_return) +'. Please contact IM immediately.'
+  ENDIF;
+
+}
+
+'End', KEY FRSKEY14 =
+{
+  RETURN 0;
+}
+ 
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+                  h_num_row_ck = :p_num_row_ck,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+
