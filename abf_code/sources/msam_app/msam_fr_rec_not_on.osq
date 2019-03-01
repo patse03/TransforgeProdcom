@@ -1,0 +1,587 @@
+/******************************************************************************
+                      msam_fr_rec_not_on
+
+ This provides an overview of the status of take on by industry, 
+ including forms receipted but not taken on.  
+
+ The industries to display are already contained in the passed table.
+
+******************************************************************************/
+
+INITIALIZE (p_table = VARCHAR(32) NOT NULL WITH DEFAULT)=
+
+DECLARE 
+  h_retries_allowed     = INTEGER1     NOT NULL WITH DEFAULT,
+  h_retries             = INTEGER1     NOT NULL WITH DEFAULT,
+  h_retry_or_not        = CHAR(5)      NOT NULL WITH DEFAULT,
+  h_frpr_name           = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_prev_week           = INTEGER4     NOT NULL WITH DEFAULT,
+  h_form_status         = INTEGER1     NOT NULL WITH DEFAULT,
+  h_form_taken_on       = CHAR(1)      NOT NULL WITH DEFAULT,
+  h_receipt_date        = DATE         NOT NULL WITH DEFAULT,
+  h_correct_date        = DATE         NOT NULL WITH DEFAULT,
+  h_corr_week_no        = INTEGER4     NOT NULL WITH DEFAULT,
+  h_return              = INTEGER      NOT NULL WITH DEFAULT,
+  h_return2             = INTEGER      NOT NULL WITH DEFAULT,
+  h_rec_nto             = INTEGER4     NOT NULL WITH DEFAULT,
+  h_rec_nts             = INTEGER4     NOT NULL WITH DEFAULT,
+  h_rec_nco             = INTEGER4     NOT NULL WITH DEFAULT,
+  h_rec_ncs             = INTEGER4     NOT NULL WITH DEFAULT,
+  h_rec_c               = INTEGER4     NOT NULL WITH DEFAULT,
+  h_pw_c                = INTEGER4     NOT NULL WITH DEFAULT,
+  h_non_resp            = INTEGER4     NOT NULL WITH DEFAULT,
+  h_target              = INTEGER4     NOT NULL WITH DEFAULT,
+  h_industry            = INTEGER4     NOT NULL WITH DEFAULT,
+  h_regemp              = INTEGER4     NOT NULL WITH DEFAULT,
+  h_cutoff              = INTEGER4     NOT NULL WITH DEFAULT,
+  h_counter             = INTEGER4     NOT NULL WITH DEFAULT,
+  h_day                 = CHAR(2)      NOT NULL WITH DEFAULT,
+  h_month               = CHAR(2)      NOT NULL WITH DEFAULT,
+  h_year                = CHAR(4)      NOT NULL WITH DEFAULT,
+  h_command             = VARCHAR(100) NOT NULL WITH DEFAULT,
+  h_table               = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_file                = VARCHAR(50)  NOT NULL WITH DEFAULT,
+
+  lp_error_check      = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+
+  h_frpr_name         = 'msam_fr_rec_not_on';
+  h_table             = 'tt_rec_not_on';
+  h_prev_week         = :g_week - 1;
+  h_retries_allowed   = 3;
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  SET_FORMS FIELD '' (MODE(tf_display) = 'READ',
+                      MODE(tf_totals) = 'READ');
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+  /*------------------------------------------------------------------------
+      Drop then create working table.  
+  ------------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_drop_table (p_table = :h_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure */
+    RETURN 9;
+  ENDIF;
+
+  MESSAGE 'Selecting Data . . .';
+
+  CREATE TABLE :h_table
+  AS 
+  SELECT contributor_industry AS industry,
+         INT4(0)              AS rec_nto,
+         INT4(0)              AS rec_nts,
+         INT4(0)              AS rec_nco,
+         INT4(0)              AS rec_ncs,
+         INT4(0)              AS rec_c,
+         INT4(0)              AS pw_c,
+         INT4(0)              AS non_resp,
+         INT4(0)              AS target
+  FROM  :p_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to create working table ' +:h_table +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Counts for each industry
+  ------------------------------------------------------------------*/
+
+  h_counter = 0;
+
+  SELECT   industry AS h_industry
+  FROM     :h_table
+  ORDER BY h_industry
+  BEGIN
+
+    h_counter = :h_counter + 1;
+
+    h_rec_nto   = 0;
+    h_rec_nts   = 0;
+    h_rec_nco   = 0;
+    h_rec_ncs   = 0;
+    h_rec_c     = 0;
+    h_pw_c      = 0;
+    h_non_resp  = 0;
+    h_target    = 0;
+
+    MESSAGE 'Processing Industry ' +VARCHAR(h_industry) +'...';
+
+    SELECT a.form_status   AS h_form_status,
+           a.form_taken_on AS h_form_taken_on,
+           a.receipt_date  AS h_receipt_date,
+           a.correct_date  AS h_correct_date,
+           a.corr_week_no  AS h_corr_week_no,
+           a.register_emp  AS h_regemp,
+           b.emp_cutoff    AS h_cutoff
+    FROM   contributor_period a,
+           industry_period b
+    WHERE  a.period                = :g_period
+      AND  a.rec_week_no          <= :g_week
+      AND  a.contributor_industry  = :h_industry
+      AND  a.contributor_industry  = b.industry
+      AND  a.period                = b.period
+    BEGIN
+
+      IF (h_receipt_date != '' AND h_form_taken_on = 'N')
+      OR h_form_status = 1
+      THEN
+        IF :h_regemp >= :h_cutoff
+        THEN
+          h_rec_nto = h_rec_nto + 1;
+        ELSE
+          h_rec_nts = h_rec_nts + 1;
+        ENDIF;
+      ENDIF;
+
+      IF h_form_taken_on != 'N' AND h_correct_date = ''
+      THEN
+        IF :h_regemp >= :h_cutoff
+        THEN
+          h_rec_nco = h_rec_nco + 1;
+        ELSE
+          h_rec_ncs = h_rec_ncs + 1;
+        ENDIF;
+      ENDIF;
+
+      IF h_correct_date != ''
+      THEN
+        h_rec_c = h_rec_c + 1;
+      ENDIF;
+
+      IF h_correct_date != '' AND h_corr_week_no <= :h_prev_week
+      THEN
+        h_pw_c = h_pw_c + 1;
+      ENDIF;
+
+      IF h_receipt_date = ''
+      THEN
+        h_non_resp = h_non_resp + 1;
+      ENDIF;
+
+      h_target = h_target + 1;
+
+    END; /* End of inner loop */
+
+    UPDATE :h_table
+    SET    rec_nto   = :h_rec_nto,
+           rec_nts   = :h_rec_nts,
+           rec_nco   = :h_rec_nco,
+           rec_ncs   = :h_rec_ncs,
+           rec_c     = :h_rec_c,
+           pw_c      = :h_pw_c,
+           non_resp  = :h_non_resp,
+           target    = :h_target
+    WHERE  industry  = :h_industry;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to update counts for ' +VARCHAR(h_industry) +' '
+            + ' on working table ' +:h_table +'. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+  END; /* End of outer loop */
+
+  h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return2 != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select loop data from ' +:h_table +'. '
+          + 'Error code ' +VARCHAR(:h_return2) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Loda data to table field from working table.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Loading data to screen...';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    tf_display =
+
+    SELECT industry,
+           rec_nto,
+           rec_nts,
+           rec_nco,
+           rec_ncs,
+           rec_c,
+           pw_c,
+           non_resp,
+           target,
+           FLOAT4(rec_c) / target * 100 AS perc
+    FROM   :h_table;
+ 
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select screen data from ' +:h_table +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Calculate the totals
+  ------------------------------------------------------------------*/
+
+  tf_totals =
+
+  SELECT   'TOTAL'       AS industry,
+           SUM(rec_nto)  AS rec_nto,
+           SUM(rec_nts)  AS rec_nts,
+           SUM(rec_nco)  AS rec_nco,
+           SUM(rec_ncs)  AS rec_ncs,
+           SUM(rec_c)    AS rec_c,
+           SUM(pw_c)     AS pw_c,
+           SUM(non_resp) AS non_resp,
+           SUM(target)   AS target,
+           FLOAT4(0)     AS perc
+  FROM     :h_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to calculate totals from ' +:h_table +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  UNLOADTABLE tf_totals
+  BEGIN
+    IF :tf_totals.target != 0
+    THEN
+      tf_totals.perc = FLOAT4(:tf_totals.rec_c) / :tf_totals.target * 100;
+    ENDIF;
+  END;
+
+}
+
+/*************************** FIELD ACTIVATIONS ****************************/
+
+BEFORE FIELD 'tf_totals.industry' =
+{
+    RESUME FIELD tf_display;
+}
+
+FIELD 'tf_display.target' =
+{
+    RESUME FIELD tf_display;
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'Print', KEY FRSKEY4 =
+{
+  MESSAGE 'Preparing Report . . .';
+
+  h_return = CALLPROC msa_cp_callsys (
+            'report ' +
+            :g_database +
+            ' ''(user_name = "' + :g_user_name + '"' +
+            ',week_no = ' + VARCHAR(:g_week) +
+            ',inquiry = 14' + 
+            ',period = ' + VARCHAR(:g_period) +
+            ')'' -i$REPORTS/msam_rw_not_on_display.rw' +
+            ' > report.output 2> report.output');
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to produce report for printing. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ELSE
+    /*--------------------------------------------------------------
+       Print report.    
+    --------------------------------------------------------------*/
+
+    h_return = CALLPROC msa_cp_callsys (
+               'lines=`wc -l < msam_rw_not_on_display.rpt`;' +
+               'lines=`expr ${lines} - 1`;' +
+               'head -${lines} msam_rw_not_on_display.rpt | ' +
+               'lp -o12p -d' + :g_printer +
+               ' >> report.output 2>> report.output');
+
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to send report to printer '+:g_printer +'. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ELSE
+      MESSAGE 'NOTE: Message successfully sent to printer ' +:g_printer +'.'
+      WITH STYLE = POPUP;
+    ENDIF;
+
+  ENDIF;
+
+}
+
+'NonResponders', KEY FRSKEY5 =
+{
+  h_return = CALLFRAME msam_fr_get_cref_rec
+                     ( p_mode = 1,
+                       p_industry = :tf_display.industry);
+}
+
+'NotTakenOn', KEY FRSKEY6 =
+{
+  h_return = CALLFRAME msam_fr_get_cref_rec
+                     ( p_mode = 2,
+                       p_industry = :tf_display.industry);
+}
+
+'NotCleared', KEY FRSKEY7 =
+{
+  h_return = CALLFRAME msam_fr_get_cref_rec
+                     ( p_mode = 3,
+                       p_industry = :tf_display.industry);
+}
+
+'Cleared', KEY FRSKEY8 =
+{
+  h_return = CALLFRAME msam_fr_get_cref_rec
+                     ( p_mode = 4,
+                       p_industry = :tf_display.industry);
+}
+
+'PrevWeekCleared', KEY FRSKEY9 =
+{
+  h_return = CALLFRAME msam_fr_get_cref_rec
+                     ( p_mode = 5,
+                       p_industry = :tf_display.industry);
+}
+
+'AllNotTakenOn', KEY FRSKEY10 =
+{
+  h_return = CALLFRAME msam_fr_get_cref_rec
+                     ( p_mode = 7,
+                       p_industry = 0);
+}
+
+'CopyToFile', KEY FRSKEY11 =
+{
+  IF g_user_level != 5
+  AND ( g_user_class != 'C' OR g_user_class != 'D')
+  THEN
+    MESSAGE 'WARNING: This facility is only available to the '
+          + 'inquiry control team.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  CALLPROC msa_fp_todays_date ( h_day   = BYREF(:h_day),
+                                h_month = BYREF(:h_month),
+                                h_year  = BYREF(:h_year));
+
+  h_file = 'rec_' + VARCHAR(RIGHT(:h_year,2)) + VARCHAR(:h_month) +
+             '.' + :h_day;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    COPY TABLE :h_table 
+             ( industry = c5comma,
+               rec_nto  = c6comma,
+               rec_nts  = c6comma,
+               rec_nco  = c6comma,
+               rec_ncs  = c6comma,
+               rec_c    = c6comma,
+               pw_c     = c6comma,
+               non_resp = c6comma,
+               target   = c0nl)
+    INTO :h_file;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to export data to output file ' +:h_file +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Lose spaces
+  ------------------------------------------------------------------*/
+
+  h_command = 'whitespace ' + :h_file;
+
+  h_return = CALLPROC msa_cp_callsys (:h_command);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to remove whitespace from file ' +:h_file +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Move text file to ~prodftp
+  ------------------------------------------------------------------*/
+
+  IF g_database = 'prodlivedb'
+  THEN
+    h_command = '/home/prodcom/admin/prodlive/cp_runasuser "' 
+              + 'cp ' + :h_file + ' /home/prodcom/prodftp"';
+  ELSE
+    h_command = '/home/prodcom/admin/produser/cp_runasuser "' 
+              + 'cp ' + :h_file + ' /home/prodcom/prodftp"';
+  ENDIF;
+
+  h_return = CALLPROC msa_cp_callsys (:h_command);
+
+  IF h_return = 0
+  THEN
+    MESSAGE 'SUCCESS: The data in this table has been copied to '
+          + 'a comma delimited  file called "' + :h_file + '''.' + X'0D0D'
+          + 'Please access it by logging into prodftp ' 
+          + ' (PRODCOM''s File Transfer username).'
+    WITH STYLE = POPUP;
+  ELSE
+    MESSAGE 'ERROR: Failed to copy output file ' +:h_file +' to ftp directory. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  h_command = '\rm ' + :h_file;
+  h_return = CALLPROC msa_cp_callsys (:h_command);
+
+}
+
+'End', KEY FRSKEY14 =
+{
+  h_return = CALLPROC msa_fp_drop_table (h_table = :h_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled by external procedure */
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

@@ -1,0 +1,291 @@
+INITIALIZE (
+
+        user_name         = VARCHAR(24) NOT NULL,
+	user_id           = CHAR(8) NOT NULL,
+	weekno            = INTEGER1 NOT NULL,
+	period            = INTEGER4 NOT NULL,
+        h_table           = VARCHAR(24) NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+	h_field_name      = VARCHAR(24) NOT NULL,
+	h_rows            = INTEGER4 NOT NULL,
+	h_counter         = INTEGER4 NOT NULL,
+	h_record         = INTEGER4 NOT NULL,
+	h_industry        = INTEGER4 NOT NULL,
+	contributor_industry  = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+
+{
+    h_table = 'temp_person_progress';
+    h_frpr_name = 'msam_fr_person_progress2';
+    h_retries_allowed = 3;
+    s_weekno = :weekno;
+    s_period = :period;
+
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+    /*------------------------------------------------------------------
+     Load the screen
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Loading Screen . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT   industry,
+                 cleared,
+                 pw_cleared
+        FROM     :h_table
+        ORDER BY industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading screen'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE VARCHAR(user_name) + ' has not cleared any Forms'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Totals
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT IFNULL(SUM(cleared),0) AS tot_cleared,
+               IFNULL(SUM(pw_cleared),0) AS tot_pw_cleared
+        FROM   :h_table;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in totalling from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    SET_FORMS FIELD '' (INVISIBLE(tf) = 0);
+
+    /*-----------------------------------------------------------------------
+    Load table of industries into array
+    ________________________________________________________________________*/
+
+    ret_val = CALLPROC ARRAYCLEAR(g_industry_array);
+    h_counter = 0;
+
+    UNLOADTABLE tf
+    {
+	h_counter = :h_counter + 1;
+	g_industry_array[:h_counter].industry = :tf.industry;
+
+    };
+
+    /*msa_date = 'now';*/
+    
+}
+
+'ByDay' =
+{
+
+    /*------------------------------------------------------------------
+    This option is restricted to Data Coordinators only
+    ------------------------------------------------------------------*/
+
+    IF :g_grade <> 'DATA COORDINATOR'
+    THEN
+        MESSAGE 'This option is for DATA COORDINATOR use only' 
+        WITH STYLE = POPUP;
+	RESUME;
+    ENDIF;
+
+
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name <> 'tf'
+    THEN
+	MESSAGE 'Please highlight the required Industry'
+	WITH STYLE = POPUP;
+	RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+	MESSAGE 'Please highlight the required Industry'
+	WITH STYLE = POPUP;
+	RESUME;
+    ENDIF;
+
+    h_industry = :tf.industry;
+    h_counter = 0;
+  
+    UNLOADTABLE g_industry_array
+    {
+        h_counter = :h_counter + 1;
+	IF :g_industry_array.industry = :tf.industry
+	THEN
+	    ENDLOOP;
+	ENDIF;
+    };
+
+
+    ret_val = CALLFRAME msam_fr_person_byday (
+              h_counter = :h_counter,
+	      weekno   = :weekno,
+	      user_id  = :user_id,
+	      period   = :period,
+              industry = BYREF(:h_industry));
+
+
+    /*
+    UNLOADTABLE tf (h_record = _RECORD)
+    {
+        IF :tf.industry = :h_industry
+        THEN
+            SCROLL tf TO :h_industry;
+            RESUME FIELD tf;
+        ENDIF;
+    };
+*/
+    /*msa_date = 'now';*/
+}
+
+'ShowRefs' =
+{
+    
+    /*-s------------------------------------------------------------------
+    This option is restricted to Data Coordinators only
+    ------------------------------------------------------------------e-*/
+
+    IF :g_grade <> 'DATA COORDINATOR' AND :g_user_id != 'produser' 
+    THEN
+        MESSAGE 'This option is for DATA COORDINATOR use only' 
+        WITH STYLE = POPUP;
+	RESUME;
+    ENDIF;
+
+
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name <> 'tf'
+    THEN
+	MESSAGE 'Please highlight the required Industry'
+	WITH STYLE = POPUP;
+	RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+	MESSAGE 'Please highlight the required Industry'
+	WITH STYLE = POPUP;
+	RESUME;
+    ENDIF;
+
+    h_industry = :tf.industry;
+    h_counter = 0;
+  
+    UNLOADTABLE g_industry_array
+    {
+        h_counter = :h_counter + 1;
+	IF :g_industry_array.industry = :tf.industry
+	THEN
+	    ENDLOOP;
+	ENDIF;
+    };
+
+
+    ret_val = CALLFRAME msam_fr_person_cleared_refs (
+              h_counter = :h_counter,
+	      user_id   = :user_id,
+	      period    = :period,
+	      weekno    = :weekno,
+	      h_table1  = :h_table,
+              industry  = BYREF(:h_industry));
+
+
+    /*
+    UNLOADTABLE tf (h_record = _RECORD)
+    {
+        IF :tf.industry = :h_industry
+        THEN
+            SCROLL tf TO :h_industry;
+            RESUME FIELD tf;
+        ENDIF;
+    };
+    */
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}

@@ -1,0 +1,183 @@
+INITIALIZE (p_contributor_reference = VARCHAR(11) NOT NULL,
+            p_question              = INTEGER4    NOT NULL,
+            p_period                = INTEGER4    NOT NULL) =
+
+DECLARE
+  h_return          = INTEGER2    NOT NULL WITH DEFAULT,
+  h_return2         = INTEGER2    NOT NULL WITH DEFAULT,
+  h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name       = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_table           = VARCHAR(24) NOT NULL WITH DEFAULT,
+
+  lp_error_check      = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_retries_allowed = 3;
+  h_frpr_name = 'msam_fr_question_select';
+  h_table     = 'tt_question_select';
+
+  MESSAGE 'Selecting questions from the audit trail for this contributor in '
+        +  VARCHAR(:g_period) +'. . .';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+  /*--------------------------------------------------------------------------
+      Get the questions for the contributor and period that are contained in
+      the audit trail.
+  --------------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_drop_table (p_table = :h_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled by local procedure */
+    RETURN 9;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+        
+    CREATE TABLE :h_table
+    AS
+    SELECT DISTINCT question
+    FROM   audit_trail
+    WHERE  contributor_reference = :p_contributor_reference
+      AND  period                = :p_period
+      AND  question              > 0;
+            
+    h_return = lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+     MESSAGE 'ERROR: Failed to create temp question table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'NOTE: There are no question level records on the audit trail '
+          + 'for this contributor period. '
+          + 'Setting search criteria to form level.'
+    WITH STYLE = POPUP;
+    RETURN 1;
+  ENDIF;
+
+  MODIFY :h_table TO BTREE ON question;
+  COMMIT;
+
+  /*----------------------------------------------------------------------
+     Display data in table field.
+  ----------------------------------------------------------------------*/
+
+  tf =
+
+  SELECT question
+  FROM   :h_table 
+  ORDER BY question;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to load data to screen. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+   
+  /*----------------------------------------------------------------------
+     Drop working table and shift focus to table field.
+  ----------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_drop_table (p_table = :h_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled by local procedure */
+    RETURN 9;
+  ENDIF;
+
+  RESUME FIELD tf;
+
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'Select', KEY FRSKEY4 =
+{
+  p_question   = INTEGER(:tf.question);
+  RETURN 0;
+}
+
+
+'Abort', KEY FRSKEY14 =
+{
+  RETURN 1;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

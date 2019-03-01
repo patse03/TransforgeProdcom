@@ -1,0 +1,181 @@
+/*****************************************************************************
+
+   This program selects all coded out questions for the requested criteria.
+
+   It selects from question_insert_log table which is inserted into from
+   take_on_receipt_app/msae_fr_uncleared.
+
+******************************************************************************/
+
+INITIALIZE (p_table = VARCHAR(24) NOT NULL WITH DEFAULT) = 
+
+DECLARE 
+  h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name       = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_field_name      = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_return          = INTEGER1    NOT NULL WITH DEFAULT,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_retries_allowed = 3;
+  h_frpr_name = 'msam_fr_written_ins_clrd';
+  s_title = 'CLEARED WRITTEN INS';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+       Load data.
+  ----------------------------------------------------------------------*/
+
+  MESSAGE 'Loading data...';
+  
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    tf =
+
+    SELECT a.contributor_reference,
+           a.contributor_industry,
+           a.question,
+           a.avalue,
+           a.question_industry,
+           a.user_id,
+           a.time
+    FROM   question_insert_log a 
+    WHERE  a.period = :g_period
+      AND  a.contributor_industry =
+        (  SELECT b.contributor_industry 
+           FROM   :p_table b
+           WHERE  b.contributor_industry = a.contributor_industry)
+    ORDER 
+       BY contributor_industry,
+          contributor_reference;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'NOTE: There are no cleared written-ins for the given criteria.'
+    WITH STYLE = POPUP;
+    RETURN 1;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select cleared written-ins for table field. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'Question', KEY FRSKEY4 =
+{
+  INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+  IF :h_field_name != 'tf'
+  THEN
+    MESSAGE 'Please highlight the required question'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  IF :tf.contributor_reference = ''
+  THEN
+    MESSAGE 'WARNING: Please highlight the required Contributor and try again.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  CALL APPLICATION 
+     ( exec  = '$IMAGES/quest_note_appl -numeric_overflow=ignore ' 
+             + 'msaee_fr_in_quest_info',
+       param = VARCHAR(:tf.question) + ' ' + VARCHAR(:g_period));
+}
+
+'Contact', KEY FRSKEY8 =
+{
+  INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+  IF :h_field_name != 'tf'
+  THEN
+    MESSAGE 'WARNING: Please highlight the required Contributor and try again.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  IF :tf.contributor_reference = ''
+  THEN
+    MESSAGE 'WARNING: Please highlight the required Contributor and try again.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  CALL APPLICATION ( exec = '$IMAGES/communicate -numeric_overflow=ignore',
+                     param = VARCHAR(:tf.contributor_reference));
+}
+
+'End', KEY FRSKEY14 =
+{
+  RETURN 0;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+

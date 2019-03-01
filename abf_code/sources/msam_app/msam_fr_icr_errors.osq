@@ -1,0 +1,441 @@
+INITIALIZE (p_table = VARCHAR(24) NOT NULL WITH DEFAULT)=
+
+DECLARE 
+  h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name       = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_table1          = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_table2          = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_return          = INTEGER2    NOT NULL WITH DEFAULT,
+  h_return2         = INTEGER2    NOT NULL WITH DEFAULT,
+  h_error_code      = INTEGER2    NOT NULL WITH DEFAULT,
+  h_count           = INTEGER4    NOT NULL WITH DEFAULT,
+
+  lp_error_check      = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_retries_allowed = 3;
+  h_frpr_name = 'msam_fr_icr_errors';
+  h_table1 = 'tt_icr_errors_1';
+  h_table2 = 'tt_icr_errors_2';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+  s_title = 'ICR ERRORS FOR FORMS RECEIPTED '
+          + 'UP TO AND INCLUDING WEEK ' + VARCHAR(:g_week) +'.';
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+  /*------------------------------------------------------------------
+     Create first working table.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating first working table...';
+
+  h_return = CALLPROC msa_fp_drop_table (p_table = :h_table1);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure */
+    RETURN 9;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    CREATE TABLE :h_table1
+    AS 
+    SELECT a.contributor_reference,
+           a.contributor_industry,
+           a.time,
+           a.user_id,
+           a.icr_code AS error_code,
+           b.form_taken_on,
+           b.receipt_date,
+           b.correct_date,
+           c.text AS error_text
+    FROM   icr_contributor a,
+           contributor_period b,
+           icr_error_text c
+    WHERE  a.contributor_reference = b.contributor_reference
+      AND  a.period        = b.period
+      AND  a.icr_code      = c.icr_code
+      AND  b.period        = :g_period
+      AND  b.rec_week_no  <= :g_week
+      AND  b.receipt_date != ''
+      AND  b.contributor_industry =
+        (  SELECT c.contributor_industry
+           FROM   :p_table c
+           WHERE  c.contributor_industry = b.contributor_industry);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'NOTE: There are no ICR errors for the given criteria. '
+          + 'If you think that this may be an error, please contact IM.'
+    WITH STYLE = POPUP;
+    RETURN 1;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to create first working table. '
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :h_table1 TO BTREE ON error_code;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to modify data structure of first working table. '
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Create second working table for totals of errors
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating second working table...';
+
+  h_return = CALLPROC msa_fp_drop_table (p_table = :h_table2);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure */
+    RETURN 9;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    CREATE TABLE :h_table2
+    AS 
+    SELECT DISTINCT error_code AS error_code,
+           0 AS occurances,
+           error_text
+    FROM   :h_table1 
+    WHERE  error_code != 100;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to create second working table. '
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :h_table2 TO BTREE ON error_code;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to modify data structure of second working table. '
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Calculate error code subtotals.
+  ------------------------------------------------------------------*/
+  
+  SELECT error_code as h_error_code,
+         COUNT(contributor_reference) AS h_count  
+  FROM   :h_table1
+  GROUP BY error_code
+  BEGIN
+    
+    UPDATE :h_table2 a
+    SET    occurances = :h_count
+    WHERE  a.error_code = :h_error_code;
+       
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to update second working table with subtotal '
+            + 'for type ' +VARCHAR(:h_error_code) +' errors. '
+            + 'Error code ' +VARCHAR(:h_return2) + '. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+  
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select ICR error type for loop. '
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Load data to screen. 
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Selecting to Screen . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    tf =
+
+    SELECT error_text,
+           occurances,
+           error_code
+    FROM   :h_table2
+    ORDER 
+       BY  error_code;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to load data to screen. '
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Calculate totals.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Selecting Totals . . .';
+
+  s_total_errors = 0;
+  s_total_forms  = 0;
+  s_sole_total   = 0;
+
+  SELECT COUNT(contributor_reference) AS s_total_errors
+  FROM   :h_table1
+  WHERE   error_code != 100;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to count ICR errors for total. '
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  SELECT COUNT(DISTINCT contributor_reference) AS s_total_forms
+  FROM   :h_table1
+  WHERE   error_code != 100;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to count forms with ICR errors. '
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  SELECT COUNT(DISTINCT contributor_reference) AS s_sole_total
+  FROM   :h_table1
+  WHERE   error_code = 100;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to count forms with ICR errors. '
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'All Refs', KEY FRSKEY4 =
+{
+  h_return = CALLFRAME msam_fr_icr_refs 
+           ( p_table  = :h_table1,
+             p_code   = 0,
+             p_text   = 'ALL ICR ERRORS');
+
+  IF h_return != 0
+  THEN
+    /* Error message handled by external procedure */
+    RETURN h_return;
+  ENDIF;
+}
+
+'Err Refs', KEY FRSKEY5 =
+{
+  IF :tf.occurances = 0
+  THEN
+    MESSAGE 'WARNING: There are none of that ICR error class to list.'
+    WITH STYLE = POPUP;
+    RESUME FIELD tf;
+  ENDIF;
+
+  h_return = CALLFRAME msam_fr_icr_refs 
+           ( p_table  = :h_table1,
+             p_code   = :tf.error_code,
+             p_text   = UPPER(:tf.error_text));
+
+  IF h_return != 0
+  THEN
+    /* Error message handled by external procedure */
+    RETURN h_return;
+  ENDIF;
+}
+
+'Sole Refs', KEY FRSKEY8 =
+{
+  IF :s_sole_total = 0
+  THEN
+    MESSAGE 'WARNING: There are forms where an ICR error was the '
+          + ' sole cause of validation failure.'
+    WITH STYLE = POPUP;
+    RESUME FIELD tf;
+  ENDIF;
+
+  h_return = CALLFRAME msam_fr_icr_refs 
+           ( p_table  = :h_table1,
+             p_code   = 100,
+             p_text   = 'SOLE CAUSE OF VALIDATION FAILURE');
+
+  IF h_return != 0
+  THEN
+    /* Error message handled by external procedure */
+    RETURN h_return;
+  ENDIF;
+}
+
+
+'End', KEY FRSKEY14 =
+{
+    MESSAGE 'Exiting Screen . . .';
+    h_return = CALLPROC msa_fp_drop_table (p_table = :h_table1);
+    h_return = CALLPROC msa_fp_drop_table (p_table = :h_table2);
+    RETURN 0;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

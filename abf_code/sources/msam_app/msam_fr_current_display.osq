@@ -1,0 +1,513 @@
+/*****************************************************************************
+  Clearance by industry for 3 periods
+*****************************************************************************/
+
+INITIALIZE (p_table = VARCHAR(32) NOT NULL WITH DEFAULT) =
+
+DECLARE 
+  h_retries_allowed   = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries           = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not      = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name         = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_return            = INTEGER1    NOT NULL WITH DEFAULT,
+  h_count             = INTEGER4    NOT NULL WITH DEFAULT,
+  h_total             = INTEGER4    NOT NULL WITH DEFAULT,
+  h_industry          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_period            = INTEGER4    NOT NULL WITH DEFAULT,
+  h_period1           = INTEGER4    NOT NULL WITH DEFAULT,
+  h_period2           = INTEGER4    NOT NULL WITH DEFAULT,
+  h_period3           = INTEGER4    NOT NULL WITH DEFAULT,
+  h_p1totemp          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_p1totfrm          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_p2totemp          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_p2totfrm          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_p3totemp          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_p3totfrm          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_p1clrfrmtot       = INTEGER4    NOT NULL WITH DEFAULT,
+  h_p1clremptot       = INTEGER4    NOT NULL WITH DEFAULT,
+  h_p2clrfrmtot       = INTEGER4    NOT NULL WITH DEFAULT,
+  h_p2clremptot       = INTEGER4    NOT NULL WITH DEFAULT,
+  h_p3clrfrmtot       = INTEGER4    NOT NULL WITH DEFAULT,
+  h_p3clremptot       = INTEGER4    NOT NULL WITH DEFAULT,
+  h_reg_emp           = INTEGER4    NOT NULL WITH DEFAULT,
+  h_cweek             = INTEGER1    NOT NULL WITH DEFAULT,
+  h_correct_date      = DATE        NOT NULL WITH DEFAULT,
+  h_table1            = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_table2            = VARCHAR(24) NOT NULL WITH DEFAULT,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_error_check      = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+  arr                 = ARRAY OF TYPE OF TABLE FIELD tf
+
+{
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  h_frpr_name       = 'msam_fr_current_display';
+  h_table1          = 'tt_clearance_progres_1';
+  h_table2          = 'tt_clearance_progres_2';
+  h_retries_allowed = 3;
+
+  s_title = 'YEAR ON YEAR CLEARANCE COMPARISON AT WEEK '+VARCHAR(:g_week)+'.';
+
+  SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+  /*------------------------------------------------------------------
+      Set up screen display fields
+  ------------------------------------------------------------------*/
+
+  s_p1_frm = :g_period;
+  s_p2_frm = :g_period - 100;
+  s_p3_frm = :g_period - 200;
+
+  s_p1_emp = :g_period;
+  s_p2_emp = :g_period - 100;
+  s_p3_emp = :g_period - 200;
+
+  h_period1 = :g_period;
+  h_period2 = :g_period - 100;
+  h_period3 = :g_period - 200;
+
+  CLEAR FIELD tf;
+  REDISPLAY;
+
+  /*------------------------------------------------------------------
+      Create working table to speed up later select loops.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Preparing data for counting. . .';
+
+  h_return = CALLPROC msa_fp_drop_table (p_table = :h_table1);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled by local procedure */
+    RETURN 9;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+    
+    CREATE TABLE :h_table1
+    AS
+    SELECT a.contributor_industry, 
+           a.period,       
+           a.register_emp,
+           a.corr_week_no,
+           a.correct_date
+    FROM   contributor_period a
+    WHERE  a.period IN (:h_period1,:h_period2,:h_period3)
+      AND  a.contributor_industry =
+        (  SELECT b.contributor_industry
+           FROM   :p_table b
+           WHERE b.contributor_industry = a.contributor_industry);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to create first working table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :h_table1 TO HASH ON contributor_industry, period;
+  COMMIT;
+
+  /*------------------------------------------------------------------
+      Set up the array and blank it
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC arrayclear(arr);
+
+  MESSAGE 'Setting Up the Array . . .';
+
+  h_count = 0;
+
+  SELECT contributor_industry AS h_industry
+  FROM   :p_table 
+  BEGIN
+
+    INSERTROW arr  [:h_count]  
+            ( industry = :h_industry,
+              p1totfrm = 0,
+              p1clrfrm = 0,
+              p2totfrm = 0,
+              p2clrfrm = 0,
+              p3totfrm = 0,
+              p3clrfrm = 0,
+              p1totemp = 0,
+              p1clremp = 0,
+              p2totemp = 0,
+              p2clremp = 0,
+              p3totemp = 0,
+              p3clremp = 0);
+
+    h_count = :h_count +1;
+
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select data for array insertion. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  h_total = h_count;
+
+  /*------------------------------------------------------------------
+      Load up contributor_period data
+      NB: Due to array weirdness, the count runs from 1 to total for 
+          reading rather than the 0 to total-1 used in creation.
+  ------------------------------------------------------------------*/
+
+ 
+  h_count = 1;
+  
+  WHILE h_count <= :h_total
+  DO
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      SELECT contributor_industry AS h_industry,
+             period       AS h_period,
+             register_emp AS h_reg_emp,
+             corr_week_no AS h_cweek,
+             correct_date AS h_correct_date
+      FROM   :h_table1
+      WHERE  contributor_industry = :arr[h_count].industry
+      BEGIN
+
+        MESSAGE 'Processing industry ' +VARCHAR(:h_industry) + '. . .';
+        
+        IF :h_period = :h_period1
+        THEN
+
+          arr[h_count].p1totfrm   = :arr[h_count].p1totfrm + 1;
+          arr[h_count].p1totemp   = :arr[h_count].p1totemp + :h_reg_emp;
+
+          IF :h_cweek != 0 AND :h_cweek <= :g_week AND :h_correct_date != ''
+          THEN
+            arr[:h_count].p1clrfrm = arr[:h_count].p1clrfrm + 1;
+            arr[:h_count].p1clremp = arr[:h_count].p1clremp + :h_reg_emp;
+          ENDIF;
+
+        ELSEIF :h_period = :h_period2
+        THEN
+
+          arr[h_count].p2totfrm = :arr[h_count].p2totfrm + 1;
+          arr[h_count].p2totemp = :arr[h_count].p2totemp + :h_reg_emp;
+
+          IF :h_cweek != 0 AND :h_cweek <= :g_week AND :h_correct_date != ''
+          THEN
+            arr[:h_count].p2clrfrm = arr[:h_count].p2clrfrm + 1;
+            arr[:h_count].p2clremp = arr[:h_count].p2clremp + :h_reg_emp;
+          ENDIF;
+
+        ELSE /* h_period3 */
+
+          arr[h_count].p3totfrm = :arr[h_count].p3totfrm + 1;
+          arr[h_count].p3totemp = :arr[h_count].p3totemp + :h_reg_emp;
+
+          IF :h_cweek != 0 AND :h_cweek <= :g_week AND :h_correct_date != ''
+          THEN
+            arr[:h_count].p3clrfrm = arr[:h_count].p3clrfrm + 1;
+            arr[:h_count].p3clremp = arr[:h_count].p3clremp + :h_reg_emp;
+          ENDIF;
+
+        ENDIF;
+
+      END;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return > 1
+    THEN
+      MESSAGE 'ERROR: Failed to select data for counting loops. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+  h_count = :h_count +1;
+
+  ENDWHILE;
+
+  /*------------------------------------------------------------------
+      Create Table
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_drop_table (p_table = :h_table2);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled by local procedure */
+    RETURN 9;
+  ENDIF;
+
+  MESSAGE 'Creating Table . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    CREATE TABLE :h_table2 
+               ( industry     INTEGER4 NOT NULL,
+                 p1clrfrm     INTEGER4 NOT NULL,
+                 p2clrfrm     INTEGER4 NOT NULL,
+                 p3clrfrm     INTEGER4 NOT NULL,
+                 p1clremp     INTEGER4 NOT NULL,
+                 p2clremp     INTEGER4 NOT NULL,
+                 p3clremp     INTEGER4 NOT NULL,
+                 p1totemp     INTEGER4 NOT NULL,
+                 p2totemp     INTEGER4 NOT NULL,
+                 p3totemp     INTEGER4 NOT NULL,
+                 p1totfrm     INTEGER4 NOT NULL,
+                 p2totfrm     INTEGER4 NOT NULL,
+                 p3totfrm     INTEGER4 NOT NULL);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to create table ' +:h_table2 +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Load up table with array data
+  ------------------------------------------------------------------*/
+
+  UNLOADTABLE arr
+  BEGIN
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      INSERT INTO :h_table2 
+                ( industry,
+                  p1clrfrm,
+                  p2clrfrm,
+                  p3clrfrm,
+                  p1clremp,
+                  p2clremp,
+                  p3clremp,
+                  p1totemp,
+                  p2totemp,
+                  p3totemp,
+                  p1totfrm,
+                  p2totfrm,
+                  p3totfrm)
+      VALUES (    :arr.industry,
+                  :arr.p1clrfrm,
+                  :arr.p2clrfrm,
+                  :arr.p3clrfrm,
+                  :arr.p1clremp,
+                  :arr.p2clremp,
+                  :arr.p3clremp,
+                  :arr.p1totemp,
+                  :arr.p2totemp,
+                  :arr.p3totemp,
+                  :arr.p1totfrm,
+                  :arr.p2totfrm,
+                  :arr.p3totfrm);
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to populate ' +:h_table2 +' with array data. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+  END;
+
+  /*------------------------------------------------------------------
+      Load the Percentages onto the screen
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Loading Screen Table . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    tf =
+
+    SELECT   industry,
+             p1totfrm ,
+             p1clrfrm * 100.0 / p1totfrm AS p1clrfrm,
+             p2totfrm ,
+             p2clrfrm * 100.0 / p2totfrm AS p2clrfrm,
+             p3totfrm ,
+             p3clrfrm * 100.0 / p3totfrm AS p3clrfrm,
+             p1totemp ,
+             p1clremp * 100.0 / p1totemp AS p1clremp,
+             p2totemp ,
+             p2clremp * 100.0 / p2totemp AS p2clremp,
+             p3totemp ,
+             p3clremp * 100.0 / p3totemp AS p3clremp
+    FROM     :h_table2
+    ORDER BY industry; 
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to load data to screen. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  RESUME FIELD tf;
+
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+
+'End', KEY FRSKEY14 =
+{
+  h_return = CALLPROC msa_fp_drop_table (p_table = :h_table1);
+  h_return = CALLPROC msa_fp_drop_table (p_table = :h_table2);
+
+  RETURN 0;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

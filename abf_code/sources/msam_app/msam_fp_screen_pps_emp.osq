@@ -1,0 +1,193 @@
+/*----------------------------------------------------------------------
+ Receipted info for all subclasses
+----------------------------------------------------------------------*/
+
+PROCEDURE msam_fp_screen_pps_emp(
+
+        period              = INTEGER4 NOT NULL,
+        inquiry             = INTEGER4 NOT NULL,
+        week_no             = INTEGER4 NOT NULL)=
+
+DECLARE ret_val             = INTEGER4 NOT NULL,
+        tot_target_forms    = INTEGER4 NOT NULL,
+        overs_target_forms  = INTEGER4 NOT NULL,
+        h_regemp            = INTEGER4 NOT NULL,
+        h_form_rec          = CHAR(1) NOT NULL,
+        h_cutoff            = INTEGER4 NOT NULL,
+        sample_target_forms = INTEGER4 NOT NULL,
+        tot_recd_forms      = INTEGER4 NOT NULL,
+        overs_recd_forms    = INTEGER4 NOT NULL,
+        sample_recd_forms   = INTEGER4 NOT NULL,
+        target_reg_emp      = INTEGER4 NOT NULL,
+        retd_reg_emp        = INTEGER4 NOT NULL,
+        industry            = INTEGER4 NOT NULL,
+        h_week              = INTEGER1 NOT NULL,
+        h_counter           = INTEGER4 NOT NULL,
+        h_retries_allowed   = INTEGER1 NOT NULL,
+        h_retries           = INTEGER1 NOT NULL,
+        h_retry_or_not      = CHAR(5) NOT NULL,
+        h_table             = VARCHAR(25) NOT NULL,
+        h_check_table       = VARCHAR(25) NOT NULL,
+        h_frpr_name         = VARCHAR(25) NOT NULL
+
+{
+
+    h_retries_allowed = 3;
+    h_frpr_name = 'msam_fp_screen_pps_emp';
+
+    MESSAGE 'Selecting Data . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = 'emp_response');
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE emp_response
+        AS SELECT    industry,
+                     INT4(0) AS tot_target_forms,
+                     INT4(0) AS overs_target_forms,
+                     INT4(0) AS sample_target_forms,
+                     INT4(0) AS tot_recd_forms,
+                     INT4(0) AS overs_recd_forms,
+                     INT4(0) AS sample_recd_forms,
+                     INT4(0) AS target_reg_emp,
+                     INT4(0) AS retd_reg_emp
+       FROM          industry 
+       WHERE         inquiry = :inquiry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in selecting to create emp_response.'
+        WITH STYLE = POPUP;
+
+        ret_val = CALLPROC msa_fp_drop_table (
+                  h_table = 'emp_response');
+
+        RETURN 9;
+
+    ENDIF;
+
+    /*--------------------------------------------------------------
+     Update itself ..
+    --------------------------------------------------------------*/
+
+    h_counter = 1;
+
+    SELECT    industry
+    FROM      emp_response
+    ORDER BY  industry
+    {
+        MESSAGE 'Processing Industry No. ' +ASCII(h_counter)+ ' . . .';
+
+        target_reg_emp      = 0;
+        retd_reg_emp        = 0;
+        tot_target_forms    = 0;
+        overs_target_forms  = 0;
+        sample_target_forms = 0;
+        tot_recd_forms      = 0;
+        overs_recd_forms    = 0;
+        sample_recd_forms   = 0;
+
+        SELECT a.register_emp  AS h_regemp,
+               a.form_received AS h_form_rec,
+               a.rec_week_no   AS h_week,
+               b.emp_cutoff AS h_cutoff
+        FROM   contributor_period a,
+               industry_period b
+        WHERE  a.inquiry              = :inquiry
+        AND    a.inquiry              = b.inquiry
+        AND    a.period               = :period
+        AND    a.period               = b.period
+        AND    a.contributor_industry = :industry
+        AND    a.contributor_industry = b.industry
+        {
+            tot_target_forms = :tot_target_forms + 1;
+            target_reg_emp = target_reg_emp + :h_regemp;
+
+            IF :h_regemp >= :h_cutoff
+            THEN
+                overs_target_forms = :overs_target_forms + 1;
+            ELSE
+                sample_target_forms = sample_target_forms + 1;
+            ENDIF;
+
+            IF :h_week <= :week_no
+            THEN
+                IF :h_form_rec <> 'N'
+                THEN
+                    tot_recd_forms = :tot_recd_forms + 1;
+                    retd_reg_emp = :retd_reg_emp + :h_regemp;
+
+                    IF :h_regemp >= :h_cutoff
+                    THEN
+                        overs_recd_forms = :overs_recd_forms + 1;
+                    ELSE
+                        sample_recd_forms = :sample_recd_forms + 1;
+                    ENDIF;
+                ENDIF;
+            ENDIF;
+        };
+
+        UPDATE emp_response
+        SET    tot_target_forms    = :tot_target_forms,
+               overs_target_forms  = :overs_target_forms,
+               sample_target_forms = :sample_target_forms,
+               tot_recd_forms      = :tot_recd_forms,
+               overs_recd_forms    = :overs_recd_forms,
+               sample_recd_forms   = :sample_recd_forms,
+               target_reg_emp      = :target_reg_emp,
+               retd_reg_emp        = :retd_reg_emp
+        WHERE  industry = :industry;
+
+        ret_val = CALLPROC check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_frpr_name = :h_frpr_name,
+                  h_rollback = 'N');
+
+        IF ret_val = 9
+        THEN
+            MESSAGE 'System error updating emp_response.'
+            WITH STYLE = POPUP;
+
+            ret_val = CALLPROC msa_fp_drop_table (
+                      h_table = 'emp_response');
+
+            RETURN 9;
+        ENDIF;
+
+        h_counter = :h_counter + 1;
+    };
+
+    RETURN 0;
+}

@@ -1,0 +1,540 @@
+INITIALIZE () =
+
+DECLARE 
+  h_param_list         = VARCHAR(100) NOT NULL WITH DEFAULT,
+  h_varchar_variable   = VARCHAR(100) NOT NULL WITH DEFAULT,
+  h_integer_variable   = INTEGER1     NOT NULL WITH DEFAULT,
+  h_param1             = VARCHAR(20)  NOT NULL WITH DEFAULT,
+  h_param2             = VARCHAR(20)  NOT NULL WITH DEFAULT,
+  h_retries_allowed    = INTEGER1     NOT NULL WITH DEFAULT,
+  h_retries            = INTEGER1     NOT NULL WITH DEFAULT,
+  h_retry_or_not       = CHAR(5)      NOT NULL WITH DEFAULT,
+  h_frpr_name          = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_inquiry            = INTEGER1     NOT NULL WITH DEFAULT,
+  h_table              = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_field              = VARCHAR(32)  NOT NULL WITH DEFAULT,
+  h_rows               = INTEGER4     NOT NULL WITH DEFAULT,
+  h_return             = INTEGER1     NOT NULL WITH DEFAULT,
+  h_industry           = INTEGER4     NOT NULL WITH DEFAULT,
+  h_num_rows           = INTEGER4     NOT NULL WITH DEFAULT,
+
+  lp_load_data         = PROCEDURE RETURNING INTEGER NOT NULL WITh DEFAULT,
+  lp_drop_table        = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,  
+  lp_error_check       = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_full_error_check  = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+
+{
+  h_frpr_name = 'msatb_fr_view_key';
+  h_retries_allowed = 3;
+  h_table = 'temp_view_key';
+  h_industry = INT(:g_scope);
+
+  CLEAR FIELD ALL;
+
+  s_title = 'EXPANDED KEY CONTRIBUTOR DATA';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  SET_FORMS FIELD '' (MODE(tf) = 'READ');
+  
+  h_return = CALLPROC lp_load_data;
+
+  IF h_return > 1
+  THEN
+    /*Error message handled in local procedure*/
+    RETURN 9;
+  ENDIF;
+
+  IF h_return = 1
+  THEN
+    /* "No keys" message alredy displayed */
+    RETURN 0;
+  ENDIF;
+
+}
+
+'Questions', KEY FRSKEY11 =
+{
+
+  INQUIRE_FORMS FORM (h_field = FIELD);
+
+  IF :h_field != 'tf'
+  THEN
+    MESSAGE 'WARNING: Please highlight the required contributor and try again.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+  IF :h_rows = 0
+  THEN
+    MESSAGE 'WARNING: Please highlight the required contributor and try again.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  h_return = CALLFRAME msam_fr_view_key_qst 
+                     ( p_contributor_reference = :tf.contributor_reference);
+
+  IF h_return > 0
+  THEN
+    /* Error message handled in external procedure */
+    RETURN :h_return;
+  ENDIF;
+
+  RESUME FIELD tf;
+
+}
+
+
+
+'Back', KEY FRSKEY14 =
+{
+    RETURN 0;
+}
+
+
+/****************************** LOCAL PROCEDURES ******************************/
+
+/*============================================================================
+   Local procedure to load data to table field.
+============================================================================*/
+
+PROCEDURE lp_load_data () =
+
+DECLARE   l_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  s_message_1a = 'Belong To ' + VARCHAR(:h_industry);
+  s_message_1b = '& Key To ' + VARCHAR(:h_industry);
+  s_message_2a = 'Belong To ' + VARCHAR(:h_industry);
+  s_message_2b = '& Key To Others';
+  s_message_3a = 'Belong To Others';
+  s_message_3b = '& Key To ' + VARCHAR(:h_industry);
+
+  MESSAGE 'Selecting Key Responders . . ';
+
+  /*-------------------------------------------------------------------------
+     Drop then create working table.
+  -------------------------------------------------------------------------*/
+
+  l_return = CALLPROC lp_drop_table (p_table_name = :h_table);
+
+  IF l_return != 0
+  THEN
+    RETURN l_return;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      CREATE TABLE :h_table
+      AS 
+      SELECT    DISTINCT contributor_reference,
+                contributor_industry,
+                'N' AS form_received,
+                'N' AS form_cleared,
+                'N' AS belong_and_key,
+                'N' AS belong_and_key_to_other,
+                'N' AS belong_to_other_and_key
+      FROM      key_responder_data
+      WHERE     for_period = :g_period
+        AND     (contributor_industry = :h_industry 
+                 OR question_industry = :h_industry);
+
+    l_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF l_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF l_return = 7
+  THEN
+    RETURN 7;
+
+  ELSEIF l_return = 9
+  THEN
+    MESSAGE 'ERROR: Failed to create working table ' +VARCHAR(:h_table) +'. '
+          + 'Error code 9. Please conact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ELSEIF l_return = 1
+  THEN
+    MESSAGE 'NOTE: There are no key contributors '
+          + 'for industry ' + VARCHAR(:h_industry) + ' '
+          + 'in period ' + VARCHAR(:g_period) +'.'
+    WITH STYLE = POPUP;
+    RETURN 0;
+  ENDIF;
+
+  MESSAGE 'Modifying . . .';
+
+  MODIFY    :h_table TO BTREE
+  UNIQUE ON contributor_reference;
+
+  l_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF l_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to modify storage structure ' 
+          + 'of working table ' +:h_table + '. '
+          + 'Error code ' +VARCHAR(:l_return) +'. '
+          + 'Please conact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+        Belong to the Industry and are Key to it
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Contributors belonging to ' + VARCHAR(:h_industry) +
+          ' who are Key to ' + VARCHAR(:h_industry) + ' . . . ';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE :h_table a
+    SET    belong_and_key = 'Y'
+    WHERE  contributor_reference IN
+        (  SELECT  b.contributor_reference 
+           FROM   key_responder_data b
+           WHERE  b.for_period = :g_period
+           AND    a.contributor_reference = b.contributor_reference
+           AND    b.contributor_industry = :h_industry
+           AND    b.question_industry = :h_industry);
+
+    l_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF l_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF l_return = 7
+  THEN
+    RETURN 7;
+  ELSEIF l_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed on first update to table ' +:h_table +'. '
+          + 'Error code ' +VARCHAR(:l_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Belong to the Industry and are Key to others
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Contributors belonging to ' + VARCHAR(:h_industry) +
+          ' who are Key to other Industries . . . ';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE :h_table a
+    SET    belong_and_key_to_other = 'Y'
+    WHERE  contributor_reference IN
+        (  SELECT  b.contributor_reference 
+           FROM    key_responder_data b
+           WHERE   b.for_period = :g_period
+           AND     a.contributor_reference = b.contributor_reference
+           AND     b.contributor_industry = :h_industry
+           AND     b.question_industry != :h_industry);
+
+    l_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF l_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF l_return = 7
+  THEN
+    RETURN 7;
+  ELSEIF l_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed on second update to table ' +:h_table +'. '
+          + 'Error code ' +VARCHAR(:l_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+      Belong to another Industry and are Key to the one you're looking at
+  ----------------------------------------------------------------------*/
+
+  MESSAGE 'Contributors belonging to other Industries who are' +
+          ' Key to ' + VARCHAR(:h_industry) + ' . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE :h_table a
+    SET    belong_to_other_and_key = 'Y'
+    WHERE  contributor_reference IN
+        (  SELECT  b.contributor_reference 
+           FROM    key_responder_data b
+           WHERE   b.for_period = :g_period
+           AND     a.contributor_reference = b.contributor_reference
+           AND     b.contributor_industry != :h_industry
+           AND     b.question_industry = :h_industry);
+
+    l_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF l_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF l_return = 7
+  THEN
+    RETURN 7;
+  ELSEIF l_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed on third update to table ' +:h_table +'. '
+          + 'Error code ' +VARCHAR(:l_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+       Form Received
+  ----------------------------------------------------------------------*/
+
+  MESSAGE 'Form Received Markers . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE :h_table a
+    FROM   contributor_period b
+    SET    form_received = 'Y'
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    b.period = :g_period
+    AND    b.receipt_date != '';
+
+    l_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF l_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF l_return = 7
+  THEN
+    RETURN 7;
+  ELSEIF l_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed on receipt marker update to table ' +:h_table +'. '
+          + 'Error code ' +VARCHAR(:l_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+        Form Cleared
+  ----------------------------------------------------------------------*/
+
+  MESSAGE 'Form Cleared Markers . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE :h_table a
+    FROM   contributor_period b
+    SET    form_cleared = 'Y'
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    b.period = :g_period
+    AND    b.correct_date != '';
+
+    l_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF l_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF l_return = 7
+  THEN
+    RETURN 7;
+  ELSEIF l_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed on clearance marker update to table ' +:h_table +'. '
+          + 'Error code ' +VARCHAR(:l_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+        Display data on screen
+  ----------------------------------------------------------------------*/
+
+  MESSAGE 'Selecting to Screen . . .';
+
+  tf =
+
+  SELECT contributor_reference,
+         contributor_industry,
+         form_received,
+         form_cleared,
+         belong_and_key,
+         belong_and_key_to_other,
+         belong_to_other_and_key
+  FROM   :h_table
+  ORDER  BY contributor_reference;
+
+  l_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF l_return = 1
+  THEN
+    MESSAGE 'WARNING: There are no key contributors for this industry.'
+    WITH STYLE = POPUP;
+    RETURN 1;
+  ELSEIF l_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select data for screen display. '
+          + 'Error code ' +VARCHAR(:l_return) +'. '
+          + 'Please contact IM immediately.'  
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  s_contributors = :h_num_rows;
+
+  REDISPLAY;
+
+  RETURN 0;
+}
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   l_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  l_return  = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :l_return;
+
+}
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   l_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  l_return  = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name,
+              h_num_row    = BYREF(:h_num_rows));
+
+  RETURN IFNULL(:l_return,9);
+
+}
+
+/*===========================================================================
+        Local procedure for dropping a table via external call.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL) = 
+
+DECLARE 
+
+  l_return = INTEGER4    NOT NULL WITH DEFAULT,
+  l_text   = VARCHAR(70) NOT NULL WITH DEFAULT,
+
+{
+
+  l_return = CALLPROC msa_fp_drop_table (p_table = :p_table_name);
+
+  IF l_return != 0
+  THEN
+    l_text = 'ERROR: Failed to drop ' +:p_table_name +'. See error log.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :l_return,
+             p_text      = :l_text);
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+
+

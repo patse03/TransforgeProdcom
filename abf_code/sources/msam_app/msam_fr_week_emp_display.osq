@@ -1,0 +1,157 @@
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+
+{
+    msa_date = 'now';
+    h_retries_allowed   = 3;
+    h_frpr_name = 'msam_fr_week_emp_display';
+    SET_FORMS FIELD '' (MODE(tf_display) = 'READ');
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf_display =
+
+        SELECT    industry,
+                  week_no,
+                  period,
+                  target_contrib,
+                  tot_contrib AS retd_contrib,
+                  (100.0 * tot_contrib) / FLOAT4(target_contrib) 
+                  AS perc_contrib,
+                  target_employment,
+                  tot_employment AS retd_employment,
+                  (100.0 * tot_employment) / FLOAT4(target_employment) 
+                  AS perc_employment
+         FROM     resp_table
+         ORDER BY industry,
+                  week_no,
+                  period DESC;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading from resp_table'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No data could be found'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      De-highlight previous period
+    ------------------------------------------------------------------*/
+
+    UNLOADTABLE tf_display
+    {
+        IF :tf_display.period = :period
+        THEN
+            SET_FORMS ROW '' tf_display (INTENSITY(industry) = 0,
+                                         INTENSITY(week_no) = 0,
+                                         INTENSITY(period) = 0,
+                                         INTENSITY(target_contrib) = 0,
+                                         INTENSITY(retd_contrib) = 0,
+                                         INTENSITY(perc_contrib) = 0,
+                                         INTENSITY(target_employment) = 0,
+                                         INTENSITY(retd_employment) = 0,
+                                         INTENSITY(perc_employment) = 0);
+        ELSE
+            SET_FORMS ROW '' tf_display (INTENSITY(industry) = 1,
+                                         INTENSITY(week_no) = 1,
+                                         INTENSITY(period) = 1,
+                                         INTENSITY(target_contrib) = 1,
+                                         INTENSITY(retd_contrib) = 1,
+                                         INTENSITY(perc_contrib) = 1,
+                                         INTENSITY(target_employment) = 1,
+                                         INTENSITY(retd_employment) = 1,
+                                         INTENSITY(perc_employment) = 1);
+        ENDIF;
+    };
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    msa_date = 'now';
+    HELP_FORMS(SUBJECT = 'HELP',
+                FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+}
+
+'Print' =
+{
+    MESSAGE 'Preparing Report . . .';
+    msa_date = 'now';
+
+    ret_val = CALLPROC msa_cp_callsys (
+              'report ' + 
+              :g_database + 
+              ' ''(user_name = "' + :g_user_name + '"' +
+              ',week_no = ' + VARCHAR(:week_no) + 
+              ',period = ' + VARCHAR(:period) + 
+              ')'' -i$REPORTS/msam_rw_week_emp_display.rw' +
+              ' > report.output 2> report.output');
+
+    IF ret_val <> 0
+    THEN
+        MESSAGE 'Error producing report'
+        WITH STYLE = POPUP;
+    ELSE
+        /*--------------------------------------------------------------
+         Remove last line - so a blank end page is not printed
+        --------------------------------------------------------------*/
+
+        ret_val = CALLPROC msa_cp_callsys (
+              'lines=`wc -l < msam_rw_week_emp_display.rpt`;' +
+              'lines=`expr ${lines} - 1`;' +
+              'head -${lines} msam_rw_week_emp_display.rpt | ' +
+              'lp -o12p -d' + :g_printer + 
+              ' >> report.output 2>> report.output');
+
+        IF ret_val <> 0
+        THEN
+            MESSAGE 'Error sending report to printer ' +
+                    :g_printer
+            WITH STYLE = POPUP;
+        ELSE
+            MESSAGE 'Report sent to printer ' + :g_printer + ' OK'
+            WITH STYLE = POPUP;
+        ENDIF;
+    ENDIF;
+}
+
+'End', KEY FRSKEY6 = 
+{
+    RETURN 0;
+}

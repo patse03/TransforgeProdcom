@@ -1,0 +1,274 @@
+INITIALIZE (p_analyst_name         = VARCHAR(24) NOT NULL,
+            p_analyst_id           = CHAR(8) NOT NULL) =
+
+DECLARE
+  h_return          = INTEGER2    NOT NULL WITH DEFAULT,
+  h_return2         = INTEGER2    NOT NULL WITH DEFAULT,
+  h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name       = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_table           = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_user_name       = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_user_id         = VARCHAR(8)  NOT NULL WITH DEFAULT,
+  h_user_class      = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_vacant          = INTEGER1    NOT NULL WITH DEFAULT,
+  tf.h_analyst_id   = CHAR(8)     NOT NULL WITH DEFAULT,
+
+  lp_error_check      = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_retries_allowed = 3;
+  h_frpr_name = 'msam_fr_person_select';
+  h_table     = 'tt_person_select';
+
+  MESSAGE 'Selecting Analysts and Coordinators active in ' 
+        +  VARCHAR(:g_period) +'. . .';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+  /*--------------------------------------------------------------------------
+      Get the user ids and names for anyone who has actioned a form on
+      contributor period for the given period into a table. 
+  --------------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_drop_table (p_table = :h_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled by local procedure */
+    RETURN 9;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+        
+    CREATE TABLE :h_table
+    AS
+    SELECT DISTINCT a.user_name   AS analyst_name,
+                    b.user_id     AS analyst_id,
+                    a.access_code AS access_code,
+                    0             AS vacant
+    FROM   passwords_new a,
+           contributor_period b
+    WHERE  a.user_id = b.user_id
+      AND  b.period = :g_period;
+            
+    h_return = lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+     MESSAGE 'ERROR: Failed to create temp analyst table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :h_table TO BTREE ON analyst_name;
+  COMMIT;
+
+  /*--------------------------------------------------------------------------
+      If not a dev user, remove system ids from table.
+  --------------------------------------------------------------------------*/
+  
+  IF g_user_class != 'D'
+  THEN 
+
+    DELETE FROM :h_table 
+    WHERE  analyst_id IN ('prodlive','produser');
+
+    h_return = lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to delete system IDs from temp analyst table. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+  /*--------------------------------------------------------------------------
+      Loop through to preprocess system IDs and vacant IDs 
+      Extra IF condition utilised to prevent unneccessary updates.
+  --------------------------------------------------------------------------*/
+
+  SELECT analyst_name        AS h_user_name,
+         analyst_id          AS h_user_id,
+         LEFT(access_code,1) AS h_user_class 
+  FROM   :h_table
+  BEGIN
+
+
+
+    IF :h_user_class != 'I' 
+    OR h_user_name = 'VACANT'
+    OR h_user_name = 'PRODLIVE'
+    OR h_user_name = 'PRODUSER'
+    THEN
+
+      h_vacant = 0;
+
+      IF h_user_name = 'VACANT'
+      THEN
+        h_user_name = :h_user_name + ' ID (' +:h_user_id +')';
+        h_vacant    = 1;
+      ELSEIF h_user_name = 'PRODLIVE'
+          OR h_user_name = 'PRODUSER'
+      THEN
+        h_user_name = '(' +:h_user_name +')';
+      ELSE
+        h_user_name = 'RECYCLED ID (' +:h_user_id +')';
+        h_vacant    = 1;
+      ENDIF;
+
+      UPDATE :h_table
+      SET    analyst_name = :h_user_name,
+             vacant       = :h_vacant
+      WHERE  analyst_id   = :h_user_id; 
+
+      h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return2 != 0
+      THEN
+        MESSAGE 'ERROR: Failed to populate analyst table for ' +:h_user_id +'. '
+              + 'Error code ' +VARCHAR(:h_return2) +'. '
+              + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+        RETURN 9;
+      ENDIF;
+
+    ENDIF;
+
+  END;
+
+  h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select for analyst id loop. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+     Display data in table field.
+  ----------------------------------------------------------------------*/
+
+  tf =
+
+  SELECT analyst_name,
+         vacant,
+         analyst_id AS h_analyst_id
+  FROM   :h_table 
+  ORDER BY vacant, analyst_name;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to load data to screen. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+   
+  /*----------------------------------------------------------------------
+     Drop working table and shift focus to table field.
+  ----------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_drop_table (p_table = :h_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled by local procedure */
+    RETURN 9;
+  ENDIF;
+
+  RESUME FIELD tf;
+
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'Select', KEY FRSKEY4 =
+{
+  p_analyst_id   = :tf.h_analyst_id;
+  p_analyst_name = :tf.analyst_name;
+  RETURN 0;
+}
+
+
+'Abort', KEY FRSKEY14 =
+{
+  RETURN 1;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

@@ -1,0 +1,183 @@
+PROCEDURE msam_fp_current_response (
+
+        period                 = INTEGER4 NOT NULL,
+        previous_period        = INTEGER4 NOT NULL,
+        temp_table             = VARCHAR(24) NOT NULL) =
+
+DECLARE ret_val                = INTEGER4 NOT NULL,
+        h_retries_allowed      = INTEGER1 NOT NULL,
+        h_retries              = INTEGER1 NOT NULL,
+        h_retry_or_not         = CHAR(5) NOT NULL,
+        h_contributor_industry = INTEGER4 NOT NULL,
+        h_period               = INTEGER4 NOT NULL,
+        h_contributors         = INTEGER4 NOT NULL,
+        h_employment           = INTEGER4 NOT NULL,
+        h_table                = VARCHAR(24) NOT NULL,
+        h_frpr_name            = VARCHAR(25) NOT NULL
+
+{
+
+    h_retries_allowed = 3;
+    h_frpr_name = 'msam_fp_current_response';
+    h_table = 'current_response';
+
+    MESSAGE 'Selecting Data . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+     Initial select creates list of industries & periods
+    --------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table
+        AS SELECT    industry AS contributor_industry,
+                     period,
+                     INT4(0) AS actual_emp,
+                     INT4(0) AS actual_form,
+                     INT4(0) AS target_emp,
+                     INT4(0) AS target_form
+        FROM         industry_period
+        WHERE        period IN (:period,:previous_period)
+        AND          industry IN
+                     (SELECT industry FROM :temp_table);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in initial load from industry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows initially loaded from industry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+     Create actual and target (those returned)
+     Amended October 200100 to use register_emp instead of returned
+     employment
+    --------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Respondents . . .';
+
+    SELECT    contributor_industry         AS h_contributor_industry,
+              period                       AS h_period,
+              SUM(register_emp)            AS h_employment,
+              COUNT(contributor_reference) AS h_contributors
+    FROM      contributor_period 
+    WHERE     period IN (:period,:previous_period)
+    AND       correct_date <> ''
+    AND       contributor_industry IN (SELECT industry FROM :temp_table)
+    GROUP BY  contributor_industry,
+              period
+    {
+
+        UPDATE :h_table
+        SET    target_emp  = :h_employment,
+               target_form = :h_contributors,
+               actual_emp  = :h_employment,
+               actual_form = :h_contributors
+        WHERE  contributor_industry = :h_contributor_industry
+        AND    period = :h_period;
+
+    };
+
+    ret_val = CALLPROC check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit = 'Y',
+              h_frpr_name = :h_frpr_name,
+              h_rollback = 'N');
+
+    IF ret_val = 9
+    THEN
+        MESSAGE 'System error updating ' + :h_table
+        WITH STYLE = POPUP;
+
+        ret_val = CALLPROC msa_fp_drop_table (
+                  h_table = :h_table);
+
+        RETURN 9;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+     Add not-returned (to those returned) to create target
+    --------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Non-Respondents . . .';
+
+    SELECT    contributor_industry AS h_contributor_industry,
+              period AS h_period,
+              SUM(register_emp) AS h_employment,
+              COUNT(contributor_reference) AS h_contributors
+    FROM      contributor_period
+    WHERE     period IN (:period,:previous_period)
+    AND       correct_date = ''
+    AND       contributor_industry IN 
+              (SELECT industry FROM :temp_table)
+    GROUP BY  contributor_industry,
+              period
+
+    {
+
+        UPDATE :h_table
+        SET    target_emp  = target_emp  + :h_employment,
+               target_form = target_form + :h_contributors
+        WHERE  contributor_industry = :h_contributor_industry
+        AND    period = :h_period;
+
+    };
+
+    ret_val = CALLPROC check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit = 'Y',
+              h_frpr_name = :h_frpr_name,
+              h_rollback = 'N');
+
+    IF ret_val = 9
+    THEN
+        MESSAGE 'System error updating ' + :h_table
+        WITH STYLE = POPUP;
+
+        ret_val = CALLPROC msa_fp_drop_table (
+                  h_table = :h_table);
+
+        RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+}

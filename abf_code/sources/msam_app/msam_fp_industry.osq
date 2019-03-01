@@ -1,0 +1,287 @@
+/*****************************************************************************
+
+             Standard Procedure msam_fp_industry
+
+  This procedure creates a temporary table holding industries corresponding
+  to one of the following based on the scope input.
+
+  INDUSTRY: Populates table with single industry so long as it existed
+            in teh specified period.
+
+  "GROUP":  Populates table with industries based upon Analyst allocations
+            and line management chains.
+
+  "ALL":    Populates table with all industries.               
+
+  NB: Industries with no contributors are not included.
+
+  There are no industry responsibility restrictions as this application
+  contains managment info screens, not eding screens. Any links to such
+  editing screens from this application will be controlled by the standard
+  access methods.
+
+  2013.11 - DF - Rewritten to modern standards and methods. 
+
+*****************************************************************************/
+
+PROCEDURE msam_fp_industry  
+        ( p_scope          = VARCHAR(5)  NOT NULL WITH DEFAULT,
+          p_table          = VARCHAR(32) NOT NULL WITH DEFAULT) =
+
+DECLARE  
+  h_return           = INTEGER4    NOT NULL WITH DEFAULT,
+  h_retries          = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries_allowed  = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not     = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name        = VARCHAR(25) NOT NULL WITH DEFAULT,
+  h_industry         = INTEGER4    NOT NULL WITH DEFAULT,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+{
+  h_retries_allowed = 3;
+  h_frpr_name = 'msam_fp_industry';
+
+  p_scope = UPPER(:p_scope);
+
+  IF p_table = ''
+  THEN
+    p_table = 'tt_industry_scope_' + :g_user_id;
+  ENDIF;
+
+  h_return = CALLPROC msa_fp_drop_table (p_table = :p_table);
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to drop table ' +VARCHAR(:p_table) +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*--------------------------------------------------------------------------
+     Group only exists for inquiry staff, so convert to All for others.
+  --------------------------------------------------------------------------*/
+
+  IF  p_scope        = 'GROUP'
+  AND g_access_code != 'I3'
+  AND g_access_code != 'I4'
+  THEN
+    p_scope = 'ALL';
+  ENDIF;
+
+  /*--------------------------------------------------------------------------
+     A) ALL
+  --------------------------------------------------------------------------*/
+
+  IF p_scope = 'ALL'
+  THEN
+    
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1; 
+
+      CREATE TABLE :p_table
+      AS
+      SELECT DISTINCT industry AS contributor_industry
+      FROM   industry_period
+      WHERE  period = :g_period;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck= 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to select industries from industry period. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+
+  ENDIF;
+
+  /*--------------------------------------------------------------------------
+     B) GROUP (Only available to I3 and I4. Others filtered out earlier.)
+  --------------------------------------------------------------------------*/
+
+  IF p_scope = 'GROUP'
+  THEN
+
+    IF g_access_code = 'I3'
+    THEN  
+      
+      h_retry_or_not      = 'RETRY';
+      h_retries           = 0;
+
+      WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+      DO
+
+        h_retries = :h_retries + 1; 
+
+        CREATE TABLE :p_table
+        AS
+        SELECT DISTINCT industry AS contributor_industry
+        FROM   industry_analysts
+        WHERE  user_id = :g_user_id; 
+
+        h_return = CALLPROC lp_full_error_check (p_num_row_ck= 1);
+  
+        IF h_return != 7
+        THEN
+          h_retry_or_not = '';
+        ENDIF;
+
+      ENDWHILE;
+
+      IF h_return != 0
+      THEN
+        MESSAGE 'ERROR: Failed to select from industry_analysts table. '
+              + 'Error code ' +VARCHAR(:h_return) +'. '
+              + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+        RETURN 9;
+      ENDIF;
+
+    ELSE  /* g_access_code = 'I4' */
+      
+      h_retry_or_not      = 'RETRY';
+      h_retries           = 0;
+
+      WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+      DO
+
+        h_retries = :h_retries + 1; 
+
+        CREATE TABLE :p_table
+        AS
+        SELECT DISTINCT a.industry AS contributor_industry
+        FROM   industry_analysts a
+        WHERE  a.user_id IN 
+            (  SELECT b.analyst_id
+               FROM   analyst_coordinator_manager b
+               WHERE  b.coordinator_id = :g_user_id 
+                  OR  b.coordinator_id = 
+                   (  SELECT c.id_two
+                      FROM   job_share c
+                      WHERE  c.id_one  = :g_user_id));
+
+        h_return = CALLPROC lp_full_error_check (p_num_row_ck= 1);
+  
+        IF h_return != 7
+        THEN
+          h_retry_or_not = '';
+        ENDIF;
+
+      ENDWHILE;
+
+      IF h_return != 0
+      THEN
+        MESSAGE 'ERROR: Failed to select from A.C.M. table. '
+              + 'Error code ' +VARCHAR(:h_return) +'. '
+              + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+        RETURN 9;
+      ENDIF;
+
+    ENDIF;
+
+    RETURN 0;
+
+  ENDIF;
+
+  /*--------------------------------------------------------------------------
+     C) Industry
+  --------------------------------------------------------------------------*/
+
+  h_industry = INT(:p_scope);
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1; 
+
+    CREATE TABLE :p_table
+    AS
+    SELECT DISTINCT contributor_industry
+    FROM   contributor_period
+    WHERE  contributor_industry = :h_industry
+      AND  period               = :g_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck= 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: That is not a valid ProdCom industry '
+          + 'for period ' +VARCHAR(:g_period) +'. '
+          + 'Please try again...'
+    WITH STYLE = POPUP;
+    RETURN 1;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select industries from contributor period. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+  
+
+
+
+
+  
+  
+

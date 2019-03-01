@@ -1,0 +1,400 @@
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_field_name      = VARCHAR(24) NOT NULL,
+        h_period          = INTEGER4 NOT NULL,
+        h_counter         = INTEGER4 NOT NULL,
+        h_rows            = INTEGER4 NOT NULL,
+        h_max_rows        = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        h_display         = INTEGER1 NOT NULL,
+        lp_load_period    = PROCEDURE RETURNING INTEGER
+{
+    msa_date = 'now';
+    h_frpr_name = 'msam_fr_welsh_forms';
+    h_retries_allowed = 3;
+
+    SET_FORMS FIELD '' (MODE(tf) = 'READ',
+                        DISPLAYONLY(inquiry) = 0,
+                        REVERSE(inquiry) = 0,
+                        UNDERLINE(inquiry) = 1);
+
+    MESSAGE 'Counting Welsh Language Forms . . .';
+
+    /*------------------------------------------------------------------
+    Get totals of welsh language forms
+    ------------------------------------------------------------------*/
+
+    all_forms = 0;
+    annual_forms = 0;
+    quarterly_forms = 0;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT period AS h_period
+        FROM   welsh_forms
+        {
+            all_forms = all_forms + 1;
+
+            IF MOD(:h_period,100) = 0
+            THEN
+                annual_forms = annual_forms + 1;
+            ELSE
+                quarterly_forms = quarterly_forms + 1;
+            ENDIF;
+        };
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing welsh_forms'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+}
+
+FIELD inquiry =
+{
+    IF inquiry <> 14 AND inquiry <> 15
+    THEN
+        MESSAGE 'Invalid Inquiry'
+        WITH STYLE = POPUP;
+        RESUME FIELD inquiry;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(inquiry) = 1,
+                        REVERSE(inquiry) = 1,
+                        UNDERLINE(inquiry) = 0);
+
+    /*------------------------------------------------------------------
+    Load up periods into array
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Checking Periods . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        g_period_array = 
+
+        SELECT   period
+        FROM     inquiry_period
+        WHERE    inquiry = :inquiry
+        ORDER BY period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(h_max_rows),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows found on inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    h_counter = h_max_rows;
+
+    ret_val = CALLPROC lp_load_period ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Clear' =
+{
+    CLEAR FIELD tf, inquiry, period, period_msg, no_forms, all_welsh;
+    msa_date = 'now';
+    SET_FORMS FIELD '' (DISPLAYONLY(inquiry) = 0,
+                        REVERSE(inquiry) = 0,
+                        UNDERLINE(inquiry) = 1);
+    RESUME FIELD inquiry;
+}
+
+'PreviousPeriod' =
+{
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(inquiry));
+    IF h_display = 0
+    THEN
+        MESSAGE 'Please enter an Inquiry'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    IF h_counter = 1
+    THEN
+        MESSAGE 'No more periods'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_counter = h_counter - 1;
+
+    ret_val = CALLPROC lp_load_period ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+}
+
+'NextPeriod' =
+{
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(inquiry));
+    IF h_display = 0
+    THEN
+        MESSAGE 'Please enter an Inquiry'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    IF h_counter = h_max_rows
+    THEN
+        MESSAGE 'No more periods'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_counter = h_counter + 1;
+
+    ret_val = CALLPROC lp_load_period ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+}
+
+'ViewContributor' =
+{
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name <> 'tf'
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    CALL APPLICATION ( 
+       exec = '$IMAGES/online_cont_sel_app -numeric_overflow=ignore msafd_fr_in_contper',
+       param = VARCHAR(:tf.contributor_reference) + ' ' + 
+               VARCHAR(:period));
+}
+
+'ContactDetails' =
+{
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name <> 'tf'
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    CALL APPLICATION ( exec = '$IMAGES/communicate',
+                       param = VARCHAR(:tf.contributor_reference));
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                 L O C A L   P R O C E D U R E    1
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_period () =
+{
+    CLEAR FIELD tf;
+
+    period_msg = '(' + VARCHAR(h_counter) + ' of ' +
+                 VARCHAR(h_max_rows) + ')';
+
+    period = g_period_array[h_counter].period;
+
+    MESSAGE 'Loading Data for Period ' + VARCHAR(period) + ' . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT   a.contributor_reference,
+                 a.contributor_industry,
+                 b.add_name1
+        FROM     contributor_period a,
+                 contributor b,
+                 welsh_forms c
+        WHERE    a.contributor_reference = b.contributor_reference
+        AND      a.contributor_reference = c.contributor_reference
+        AND      a.period = c.period
+        AND      a.period = :period
+        ORDER BY contributor_reference;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:no_forms),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading from contributor/welsh_forms'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Count number of total Welsh Contributors
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Counting all Welsh Contributors . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT COUNT(*) AS all_welsh
+        FROM   welsh_contributor
+        WHERE  period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing welsh_contributor'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    RETURN 0;
+
+}

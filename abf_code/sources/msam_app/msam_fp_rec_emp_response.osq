@@ -1,0 +1,159 @@
+/*--------------------------------------------------------------
+msam_fp_rec_emp_response
+
+Counts for single week receipting response
+--------------------------------------------------------------*/
+
+PROCEDURE msam_fp_rec_emp_response(
+
+        period              = INTEGER4 NOT NULL,
+        prev_period         = INTEGER4 NOT NULL,
+        inquiry             = INTEGER4 NOT NULL,
+        week_no             = INTEGER4 NOT NULL,
+        temp_table          = CHAR(25) NOT NULL) =
+
+DECLARE ret_val             = INTEGER4 NOT NULL,
+        h_regemp            = INTEGER4 NOT NULL,
+        h_form_rec          = CHAR(1)  NOT NULL,
+        h_week              = INTEGER4 NOT NULL,
+        industry            = INTEGER4 NOT NULL,
+        h_target_emp        = INTEGER4 NOT NULL,
+        h_retd_emp          = INTEGER4 NOT NULL,
+        h_target_contrib    = INTEGER4 NOT NULL,
+        h_retd_contrib      = INTEGER4 NOT NULL,
+        h_retries_allowed   = INTEGER1 NOT NULL,
+        h_retries           = INTEGER1 NOT NULL,
+        h_retry_or_not      = CHAR(5) NOT NULL,
+        h_frpr_name         = VARCHAR(25) NOT NULL,
+        h_table             = VARCHAR(25) NOT NULL,
+        h_check_table       = VARCHAR(25) NOT NULL,
+        h_target_employment = INTEGER4 NOT NULL
+
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msam_fp_rec_emp_response';
+    h_table = 'single_week_emp';
+
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table
+        AS SELECT    industry,
+                     period,
+                     INT4(0) AS target_contrib,
+                     INT4(0) AS target_employment,
+                     INT4(0) AS retd_contrib,
+                     INT4(0) AS retd_employment
+        FROM         industry_period
+        WHERE        period IN (:period,:prev_period)
+        AND          inquiry = :inquiry
+        AND          industry IN (SELECT industry FROM :temp_table);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating ' + :h_table
+        WITH STYLE = POPUP;
+        ret_val = CALLPROC msa_fp_drop_table (
+                  h_table = :h_table);
+        RETURN 9;
+
+    ENDIF;
+
+    /*--------------------------------------------------------------
+     Updating itself ....
+    --------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Contributor Period Data . . .';
+
+    SELECT   industry,
+             period
+    FROM     :h_table
+    ORDER BY industry,
+             period
+
+    {
+        h_target_emp     = 0;
+        h_retd_emp       = 0;
+        h_target_contrib = 0;
+        h_retd_contrib   = 0;
+
+        SELECT register_emp    AS h_regemp,
+               form_received   AS h_form_rec,
+               rec_week_no     AS h_week
+        FROM   contributor_period
+        WHERE  period = :period
+        AND    contributor_industry = :industry
+        {
+
+            h_target_contrib = :h_target_contrib + 1;
+            h_target_emp     = :h_target_emp + :h_regemp;
+
+            IF :h_week <= :week_no
+            THEN
+                IF :h_form_rec <> 'N'
+                THEN
+                    h_retd_contrib = :h_retd_contrib + 1;
+                    h_retd_emp     = :h_retd_emp + :h_regemp;
+                ENDIF;
+            ENDIF;
+        };
+
+        UPDATE :h_table
+        SET    target_employment = :h_target_emp,
+               target_contrib    = :h_target_contrib,
+               retd_contrib      = :h_retd_contrib,
+               retd_employment   = :h_retd_emp
+        WHERE  period = :period
+        AND    industry = :industry;
+
+        ret_val = CALLPROC check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_frpr_name = :h_frpr_name,
+                  h_rollback = 'N');
+
+        IF ret_val = 9
+        THEN
+            MESSAGE 'System error updating ' + :h_table
+            WITH STYLE = POPUP;
+            ret_val = CALLPROC msa_fp_drop_table (
+                      h_table = :h_table);
+            RETURN 9;
+        ENDIF;
+
+    };
+
+    RETURN 0;
+}

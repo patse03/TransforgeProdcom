@@ -1,0 +1,102 @@
+INITIALIZE (
+
+        temp_table        = VARCHAR(24) NOT NULL,
+        inquiry           = INTEGER1 NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+{
+    h_frpr_name = 'msam_fr_euro_inds';
+    h_retries_allowed = 3;
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+    total_euros = 0;
+    msa_date = 'now';
+
+    MESSAGE 'Selecting Data . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT   a.contributor_industry,
+                 COUNT(a.contributor_industry) AS num
+        FROM     contributor_period a,
+                 :temp_table b
+        WHERE    a.contributor_industry = b.industry
+        AND      a.period = :period
+        AND      a.currency = 'E'
+        GROUP BY contributor_industry
+        ORDER BY contributor_industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing contributor_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No Euro forms exist for these Industries in ' +
+                VARCHAR(:period) + '.'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+    UNLOADTABLE tf
+    {
+        total_euros = total_euros + :tf.num;
+    };
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'ListContributors', KEY FRSKEY4 =
+{
+
+    ret_val = CALLFRAME msam_fr_euro_cont (
+              contributor_industry = :tf.contributor_industry,
+              period               = :period);
+
+    msa_date = 'now';
+
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}

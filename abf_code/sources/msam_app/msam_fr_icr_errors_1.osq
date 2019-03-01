@@ -1,0 +1,181 @@
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_date_msg        = VARCHAR(50) NOT NULL,
+        h_period          = INTEGER4 NOT NULL,
+        h_display         = INTEGER1 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msam_fr_icr_errors_1';
+    msa_date = 'now';
+    from_date = '';
+    to_date = 'today';
+    SET_FORMS FIELD '' (DISPLAYONLY(char_period) = 0,
+                        UNDERLINE(char_period) = 1,
+                        REVERSE(char_period) = 0,
+                        DISPLAYONLY(from_date) = 0,
+                        UNDERLINE(from_date) = 1,
+                        REVERSE(from_date) = 0);
+
+}
+
+FIELD char_period =
+{
+    IF char_period <> 'ALL' AND 
+       char_period <> 'ALL14' AND 
+       char_period <> 'ALL15' AND 
+       char_period NOT LIKE '/[0-9/]/[0-9/]/[0-9/]/[0-9/]/[0-9/]/[0-9/]' escape '/'
+    THEN
+        MESSAGE 'Period must be ALL, ALL14, ALL15 or a 6 digit period'
+        WITH STYLE = POPUP;
+        RESUME FIELD char_period;
+    ENDIF;
+
+    IF char_period <> 'ALL' AND char_period <> 'ALL14' AND char_period <> 'ALL15'
+    THEN
+        MESSAGE 'Checking Period . . .';
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+    
+            SELECT period AS h_period
+            FROM   inquiry_period
+            WHERE  period = INT4(:char_period);
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+    
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+    
+        ENDWHILE;
+    
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+    
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing inquiry_period'
+            WITH STYLE = POPUP;
+            RETURN 9;
+    
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'Invalid period'
+            WITH STYLE = POPUP;
+            RESUME FIELD char_period;
+        ENDIF;
+    ENDIF;    
+
+    SET_FORMS FIELD '' (DISPLAYONLY(char_period) = 1,
+                        UNDERLINE(char_period) = 0,
+                        REVERSE(char_period) = 1);
+
+    RESUME FIELD from_date;
+}
+
+FIELD from_date =
+{
+    VALIDATE FIELD from_date;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(from_date) = 1,
+                        UNDERLINE(from_date) = 0,
+                        REVERSE(from_date) = 1);
+
+    RESUME FIELD to_date;
+}
+
+FIELD to_date =
+{
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(char_period));
+    IF h_display = 0
+    THEN
+        MESSAGE 'Please complete the Period'
+        WITH STYLE = POPUP;
+        RESUME FIELD char_period;
+    ENDIF;
+
+    VALIDATE FIELD to_date;
+
+    IF from_date > to_date
+    THEN
+        MESSAGE 'The From-Date must not be later than the To-Date'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    IF from_date = ''
+    THEN
+        h_date_msg = 'RECEIPTED UP TO ' + VARCHAR(to_date);
+    ELSE
+        h_date_msg = 'RECEIPTED BETWEEN ' + VARCHAR(from_date) + 
+                     ' AND ' + VARCHAR(to_date);
+    ENDIF;
+
+    ret_val = CALLFRAME msam_fr_icr_errors_2 (
+              from_date = :from_date,
+              to_date   = :to_date,
+              date_msg  = :h_date_msg,
+              period    = :char_period);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    msa_date = 'now';
+    char_period = '';
+    from_date = '';
+    to_date = 'today';
+    SET_FORMS FIELD '' (DISPLAYONLY(char_period) = 0,
+                        UNDERLINE(char_period) = 1,
+                        REVERSE(char_period) = 0,
+                        DISPLAYONLY(from_date) = 0,
+                        UNDERLINE(from_date) = 1,
+                        REVERSE(from_date) = 0);
+    RESUME FIELD char_period;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Clear' =
+{
+    msa_date = 'now';
+    char_period = '';
+    from_date = '';
+    to_date = 'today';
+    SET_FORMS FIELD '' (DISPLAYONLY(char_period) = 0,
+                        UNDERLINE(char_period) = 1,
+                        REVERSE(char_period) = 0,
+                        DISPLAYONLY(from_date) = 0,
+                        UNDERLINE(from_date) = 1,
+                        REVERSE(from_date) = 0);
+    RESUME FIELD char_period;
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}

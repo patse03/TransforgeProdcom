@@ -1,0 +1,155 @@
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_inquiry         = INTEGER1 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        temp_table        = VARCHAR(24) NOT NULL
+{
+    msa_date = 'now';
+    h_retries_allowed = 3;
+    h_frpr_name = 'msam_fr_sample';
+
+    SET_FORMS FIELD '' (DISPLAYONLY(period) = 0,
+                        REVERSE(period) = 0,
+                        UNDERLINE(period) = 1,
+                        DISPLAYONLY(sc_group) = 0,
+                        REVERSE(sc_group) = 0,
+                        UNDERLINE(sc_group) = 1);
+}
+
+FIELD period =
+{
+    MESSAGE 'Checking Period . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT inquiry AS h_inquiry
+        FROM   inquiry_period
+        WHERE  period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Period does not exist'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(period) = 1,
+                        REVERSE(period) = 1,
+                        UNDERLINE(period) = 0);
+
+    RESUME FIELD sc_group;
+}
+
+FIELD sc_group =
+{
+    IF :sc_group <> 'GROUP' AND :sc_group <> 'ALL'
+    THEN
+        IF :sc_group NOT LIKE
+       '$[0-9$]$[0-9$]$[0-9$]$[0-9$]$[0-9$]' escape '$'
+        THEN
+            MESSAGE 'Please enter GROUP, ALL or a'+
+                    ' five digit Industry'
+            WITH STYLE = POPUP;
+            RESUME FIELD sc_group;
+        ENDIF;
+    ENDIF;
+
+    MESSAGE 'Creating List of Industries . . .';
+
+    ret_val = CALLPROC msam_fp_industry (
+              industry   = :sc_group,
+              inquiry    = :h_inquiry,
+              temp_table = BYREF(temp_table));
+
+    IF ret_val <> 0
+    THEN
+        RESUME FIELD sc_group;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(sc_group) = 1,
+                        REVERSE(sc_group) = 1,
+                        UNDERLINE(sc_group) = 0);
+
+    ret_val = CALLFRAME msam_fr_euro_inds (
+              temp_table = :temp_table,
+              inquiry    = :h_inquiry,
+              period     = :period);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CLEAR FIELD ALL;
+    msa_date = 'now';
+
+    SET_FORMS FIELD '' (DISPLAYONLY(period) = 0,
+                        REVERSE(period) = 0,
+                        UNDERLINE(period) = 1,
+                        DISPLAYONLY(sc_group) = 0,
+                        REVERSE(sc_group) = 0,
+                        UNDERLINE(sc_group) = 1);
+    RESUME FIELD period;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Clear' =
+{
+    CLEAR FIELD ALL;
+    msa_date = 'now';
+
+    SET_FORMS FIELD '' (DISPLAYONLY(period) = 0,
+                        REVERSE(period) = 0,
+                        UNDERLINE(period) = 1,
+                        DISPLAYONLY(sc_group) = 0,
+                        REVERSE(sc_group) = 0,
+                        UNDERLINE(sc_group) = 1);
+    RESUME FIELD period;
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}

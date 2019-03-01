@@ -1,0 +1,146 @@
+INITIALIZE (p_table  = VARCHAR(24) NOT NULL WITH DEFAULT) =
+
+DECLARE
+  h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name       = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_return          = INTEGER2    NOT NULL WITH DEFAULT,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_retries_allowed   = 3;
+  h_frpr_name = 'msam_fr_cleared_rerefs';
+
+  s_title = 'CLEARED REFERENCED CONTRIBUTORS '
+          + 'UP TO AND INCLUDING ' + VARCHAR(:g_week); 
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+  /*----------------------------------------------------------------------
+       Select info direct to table field.
+  ----------------------------------------------------------------------*/
+
+  MESSAGE 'Selecting data. . .';
+  
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    tf =
+
+    SELECT a.contributor_reference,
+           a.contributor_industry,
+           a.period,
+           b.corr_week_no,
+           b.correct_date,
+           a.user_id,
+           a.reason
+    FROM   reref_contributors a,
+           contributor_period b
+    WHERE  a.period = :g_period
+      AND  b.period = a.period
+      AND  a.contributor_reference = b.contributor_reference
+      AND  b.corr_week_no <= :g_week
+      AND  b.correct_date != ''
+      AND  a.contributor_industry =
+        (  SELECT c.contributor_industry
+           FROM   :p_table c
+           WHERE c.contributor_industry = a.contributor_industry)
+    ORDER 
+       BY  corr_week_no desc,
+           contributor_industry,
+           contributor_reference;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'NOTE: No data could be found to display for the given criteria.'
+    WITH STYLE = POPUP;
+    RETURN 1;
+  ELSEIF h_return > 1 
+  THEN
+    MESSAGE 'ERROR: Failed to select data to on-screen table field. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  RESUME FIELD tf;
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'ContactDetails', KEY FRSKEY8 =
+{
+  CALL APPLICATION(exec = '$IMAGES/communicate',
+                   param = VARCHAR(:tf.contributor_reference));
+}
+
+'QuickView', KEY FRSKEY20 =
+{
+  CALL APPLICATION (exec = '$IMAGES/quickview_app -numeric_overflow=ignore ');
+}
+
+'End', KEY FRSKEY14 = 
+{
+  RETURN 0;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

@@ -1,0 +1,149 @@
+INITIALIZE (p_contributor_reference = VARCHAR(11) NOT NULL WITH DEFAULT,
+            p_question              = INTEGER4    NOT NULL WITH DEFAULT,
+            p_period                = INTEGER4    NOT NULL WITH DEFAULT) =
+
+DECLARE 
+  h_retries_allowed   = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries           = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not      = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name         = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_return            = INTEGER1    NOT NULL WITH DEFAULT,
+  h_who               = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_where             = VARCHAR(36) NOT NULL WITH DEFAULT,
+
+  tf.who               = VARCHAR(24) NOT NULL WITH DEFAULT,
+  tf.where             = VARCHAR(36) NOT NULL WITH DEFAULT,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_retries_allowed   = 3;
+  h_frpr_name         = 'msam_fr_audit_trail';
+
+  SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+  s_title = 'AUDIT TRAIL';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+    
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    IF :p_question > 0
+    THEN 
+
+      tf =
+
+      SELECT time,
+             question,
+             type,
+             action,
+             user_name AS who,
+             frpr_name AS where 
+      FROM   audit_trail
+      WHERE  contributor_reference = :p_contributor_reference
+        AND  period                = :p_period
+        AND  question              IN ('000000000',:p_question)
+      ORDER 
+         BY  time,question;
+
+    ELSE
+
+      tf =
+
+      SELECT time,
+             question,
+             type,
+             action,
+             user_name AS who, 
+             frpr_name AS where 
+      FROM   audit_trail
+      WHERE  contributor_reference = :p_contributor_reference
+        AND  period                = :p_period
+        AND  question              = '000000000'
+      ORDER 
+         BY  time,question;
+
+    ENDIF;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to display audit trail data. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  RESUME FIELD tf;
+
+}
+
+BEFORE FIELD tf.action =
+{
+  s_action = :tf.action;
+}  
+
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'Who', KEY FRSKEY4 = 
+{
+
+  h_who   = SQUEEZE(tf.who);
+  h_where = SQUEEZE(tf.where);
+
+  MESSAGE 'ACTIONED BY ' +UPPER(:h_who) +' '
+        + 'USING ' +UPPER(:h_where) +'.'
+  WITH STYLE = POPUP;
+
+}
+
+'Switch Question', KEY FRSKEY11 =
+{
+  RETURN 2;
+}
+
+'Back', KEY FRSKEY14 =
+{
+  RETURN 0;
+}
+
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

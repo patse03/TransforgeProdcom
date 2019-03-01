@@ -1,0 +1,101 @@
+INITIALIZE (
+
+        prev_week_no      = INTEGER1 NOT NULL,
+        calling_frame     = VARCHAR(40) NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+
+{
+    h_retries_allowed   = 3;
+    msa_date = 'now';
+    h_frpr_name = 'msam_fr_get_cref';
+
+    SET_FORMS FIELD '' (MODE(tf_display) = 'READ');
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        IF period >= 199406 OR (period >= 199400 AND period < 300000)
+        THEN
+
+            tf_display =
+
+            SELECT   a.contributor_reference,
+                     b.add_name1
+            FROM     contributor_period a,
+                     contributor b
+            WHERE    a.contributor_industry = :industry
+            AND      a.period = :period
+            AND      a.form_received = 'N'
+            AND      a.contributor_reference = b.contributor_reference
+            ORDER BY contributor_reference;
+
+        ELSE
+            tf_display =
+
+            SELECT   a.contributor_reference,
+                     b.add_name1
+            FROM     contributor_period a,
+                     contributor b,
+                     idbr_lookup c
+            WHERE    a.contributor_industry = :industry
+            AND      a.period = :period
+            AND      a.form_received = 'N'
+            AND      a.contributor_reference = c.dummy_reference
+            AND      c.new_reference = b.contributor_reference
+            ORDER BY contributor_reference;
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading from contributor tables'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No data could be found'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    msa_date = 'now';
+    HELP_FORMS( SUBJECT = 'HELP',
+                FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}

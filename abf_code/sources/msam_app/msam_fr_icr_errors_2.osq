@@ -1,0 +1,589 @@
+
+INITIALIZE (
+
+        from_date         = DATE NOT NULL,
+        to_date           = DATE NOT NULL,
+        date_msg          = VARCHAR(50) NOT NULL,
+        period            = CHAR(6) NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        icr_table         = VARCHAR(24) NOT NULL,
+        h_table           = VARCHAR(24) NOT NULL,
+        h_reference       = CHAR(11) NOT NULL,
+        h_yesno           = CHAR(1) NOT NULL,
+        h_period          = INTEGER4 NOT NULL,
+        h_num             = INTEGER4 NOT NULL,
+        h_counter         = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        h_icr_code        = INTEGER1 NOT NULL
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msam_fr_icr_errors_2';
+    icr_table = 'temp_icr';
+    h_table = 'temp_icr_errors';
+    msa_date = 'now';
+
+    IF period = 'ALL'
+    THEN
+        period_msg = 'ALL PERIODS';
+    ELSEIF period = 'ALL14'
+    THEN
+        period_msg = 'ALL ANNUAL PERIODS';
+    ELSEIF period = 'ALL15'
+    THEN
+        period_msg = 'ALL QUARTERLY PERIODS';
+    ELSE
+        period_msg = 'PERIOD ' + VARCHAR(period);
+    ENDIF;
+
+    period_msg = period_msg + ' ' + date_msg;
+
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+    /*------------------------------------------------------------------
+    Create table of icr_contributor linked to contributor_period by
+    receipt_date for the contributors whose receipt_date falls
+    between the supplied dates.
+
+    This table will be used as the input to all subsequent ICR frames.
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Counting Errors / Receipt Dates . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table (h_table = :icr_table);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        IF period = 'ALL'
+        THEN
+            CREATE TABLE :icr_table
+            AS SELECT    a.contributor_reference,
+                         a.inquiry,
+                         a.period,
+                         a.contributor_industry,
+                         a.time,
+                         a.user_id,
+                         a.icr_code,
+                         b.form_taken_on,
+                         b.receipt_date,
+                         b.correct_date
+            FROM         icr_contributor a,
+                         contributor_period b
+            WHERE        a.contributor_reference = b.contributor_reference
+            AND          a.period = b.period
+            AND          b.receipt_date BETWEEN :from_date AND :to_date
+            AND          b.receipt_date <> '';
+
+        ELSEIF period = 'ALL14'
+        THEN
+
+            CREATE TABLE :icr_table
+            AS SELECT    a.contributor_reference,
+                         a.inquiry,
+                         a.period,
+                         a.contributor_industry,
+                         a.time,
+                         a.user_id,
+                         a.icr_code,
+                         b.form_taken_on,
+                         b.receipt_date,
+                         b.correct_date
+            FROM         icr_contributor a,
+                         contributor_period b
+            WHERE        a.contributor_reference = b.contributor_reference
+            AND          a.period = b.period
+            AND          b.receipt_date BETWEEN :from_date AND :to_date
+            AND          b.receipt_date <> ''
+            AND          a.inquiry = 14;
+
+        ELSEIF period = 'ALL15'
+        THEN
+
+            CREATE TABLE :icr_table
+            AS SELECT    a.contributor_reference,
+                         a.inquiry,
+                         a.period,
+                         a.contributor_industry,
+                         a.time,
+                         a.user_id,
+                         a.icr_code,
+                         b.form_taken_on,
+                         b.receipt_date,
+                         b.correct_date
+            FROM         icr_contributor a,
+                         contributor_period b
+            WHERE        a.contributor_reference = b.contributor_reference
+            AND          a.period = b.period
+            AND          b.receipt_date BETWEEN :from_date AND :to_date
+            AND          b.receipt_date <> ''
+            AND          a.inquiry = 15;
+
+        ELSE
+            CREATE TABLE :icr_table
+            AS SELECT    a.contributor_reference,
+                         a.inquiry,
+                         a.period,
+                         a.contributor_industry,
+                         a.time,
+                         a.user_id,
+                         a.icr_code,
+                         b.form_taken_on,
+                         b.receipt_date,
+                         b.correct_date
+            FROM         icr_contributor a,
+                         contributor_period b
+            WHERE        a.contributor_reference = b.contributor_reference
+            AND          a.period = b.period
+            AND          b.receipt_date BETWEEN :from_date AND :to_date
+            AND          b.receipt_date <> ''
+            AND          a.period = INT4(:period);
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing icr_contributor/contributor_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Create temporary table with totals of errors
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Counting Errors . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table (h_table = :h_table);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table
+        AS SELECT    icr_code,
+                     COUNT(icr_code) AS num
+        FROM         :icr_table
+        WHERE        icr_code <> 100
+        GROUP BY     icr_code;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in counting from ' + :icr_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Get text of Total ICR Errors
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting to Screen . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT   text AS total_icr_text
+        FROM     icr_error_text
+        WHERE    icr_code = 100;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading from icr_error_text'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows loaded from icr_error_text'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Load screen with default error messages
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting to Screen . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT   text,
+                 0 AS num,
+                 icr_code
+        FROM     icr_error_text
+        WHERE    icr_code <> 100
+        ORDER BY icr_code;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading from icr_error_text'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows loaded from icr_error_text'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Overwrite the screen's default zeroes with the totals figures from
+    the temporary table
+    ------------------------------------------------------------------*/
+
+    total_errors = 0;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT icr_code AS h_icr_code,
+               num AS h_num
+        FROM   :h_table
+        {
+            total_errors = total_errors + h_num;
+
+            UNLOADTABLE tf
+            {
+                IF h_icr_code = tf.icr_code
+                THEN
+                    tf.num = h_num;
+                    ENDLOOP;
+                ENDIF;
+            };
+        };
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Count the distinct forms
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Totals . . .';
+
+    total_forms = 0;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT DISTINCT(contributor_reference) AS h_reference,
+               period AS h_period
+        FROM   :icr_table
+        WHERE  icr_code <> 100
+        {
+            total_forms = total_forms + 1;
+        };
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing icr_contributor'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Count the distinct forms where ICR errors is the sole cause of
+    failure (icr_code = 100)
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Totals . . .';
+
+    total_icr = 0;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT DISTINCT(contributor_reference) AS h_reference,
+               period AS h_period
+        FROM   :icr_table
+        WHERE  icr_code = 100
+        {
+            total_icr = total_icr + 1;
+        };
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing icr_contributor'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'IndustrySummary' =
+{
+    IF total_errors = 0
+    THEN
+        MESSAGE 'There are no forms to list'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    ret_val = CALLFRAME msam_fr_icr_industry (
+              icr_table  = :icr_table,
+              period_msg = :period_msg);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'InqTotals' =
+{
+    IF period LIKE 'ALL%'
+    THEN
+        h_yesno = '';
+        WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+        DO
+            h_yesno = PROMPT 'Calculating the totals for more than' +
+                             ' one period is likely to take some' +
+                             ' time. Do you wish to continue?' +
+                             ' Type Y/N and press <return>'
+                      WITH STYLE = POPUP;
+            h_yesno = LOWERCASE(:h_yesno);
+        ENDWHILE;
+
+        IF h_yesno = 'n'
+        THEN
+            RESUME;
+        ENDIF;
+    ENDIF;
+
+    ret_val = CALLFRAME msam_fr_icr_inq_total (
+              period    = :period,
+              from_date = :from_date,
+              to_date   = :to_date);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+}
+
+'ListForms', KEY FRSKEY4 =
+{
+    IF total_errors = 0
+    THEN
+        MESSAGE 'There are no forms to list'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    ret_val = CALLFRAME msam_fr_icr_list (
+              period_msg = :period_msg,
+              icr_table  = :icr_table,
+              industry   = 'ALL');
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'End', KEY FRSKEY6 =
+{
+    MESSAGE 'Exiting Screen . . .';
+    ret_val = CALLPROC msa_fp_drop_table (h_table = :icr_table);
+    ret_val = CALLPROC msa_fp_drop_table (h_table = :h_table);
+    RETURN 0;
+}

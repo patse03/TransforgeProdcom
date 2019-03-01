@@ -1,0 +1,1176 @@
+INITIALIZE (p_table = VARCHAR(36) NOT NULL WITH DEFAULT)=
+
+DECLARE
+  h_frpr_name       = VARCHAR(36) NOT NULL WITH DEFAULT,
+  h_return          = INTEGER(1)  NOT NULL WITH DEFAULT,
+  h_dummy           = INGRESDATE  NOT NULL WITH DEFAULT,
+  h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+
+  lp_load_data        = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_error_check      = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT, 
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+
+  h_frpr_name       = 'msam_fr_view_cl_uncl';
+  h_retries_allowed = 10;
+
+  s_title = 'SELECTIVE EDITING STATUS UP TO AND INCLUDING ' 
+          + 'WEEK ' +VARCHAR(:g_max_week) +'.';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+  h_return = CALLPROC lp_load_data;
+
+  IF h_return = 1
+  THEN
+    /* Warning message handled by local procedure */
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    /* Error message handled by local procedure */
+    RETURN 9;
+  ENDIF;
+
+  RESUME menu;
+
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'Help', KEY FRSKEY1 = 
+{
+
+  CALLFRAME msam_fr_view_cl_uncl_f1 ();
+  /* Display only, no return value. */
+ 
+}
+
+
+'Refresh', KEY FRSKEY4 =
+{
+  h_return = CALLPROC lp_load_data;
+
+  IF h_return = 1
+  THEN
+    /* Warning message handled by local procedure */
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    /* Error message handled by local procedure */
+    RETURN 9;
+  ENDIF;
+
+  RESUME menu;
+}
+
+'Defaults', KEY FRSKEY11 =
+{
+  h_return = CALLFRAME msam_fr_view_defaults (p_table = :p_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in called frame. */
+    RETURN 9;
+  ENDIF;
+
+  RESUME menu;
+
+}
+
+
+'End', KEY FRSKEY14 =
+{
+  RETURN 0;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*====================================================================
+      Local procedure to populate screen with counts aplicable
+      to the period variable, initially set on live to the max period
+      available in contributor_period or to a fixed value if on test.
+======================================================================*/
+
+PROCEDURE lp_load_data =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  /*------------------------------------------------------------------------
+            Check period is after implementation of selective editing.
+  ------------------------------------------------------------------------*/
+
+  IF :g_period < 201100
+  THEN
+
+    MESSAGE 'WARNING: This screen cannot display data for any period '
+          + 'before 2011 as this was when selective editing '
+          + 'was introduced.'
+    WITH STYLE = POPUP;
+    RETURN 1;          
+
+  ENDIF;
+
+  MESSAGE 'Loading data for ' +VARCHAR(:g_period) +'...';
+
+  /*--------------------------------------------------------------
+        Dropping existing working tables.
+  --------------------------------------------------------------*/
+
+  lp_return = CALLPROC msa_fp_drop_table (p_table = 'tt_maninfo_dashboard');
+
+
+  IF lp_return != 0 
+  THEN
+    MESSAGE 'ERROR: Unable to drop first working table. Error code '
+          + VARCHAR(:lp_return) + '. Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  lp_return = CALLPROC msa_fp_drop_table (p_table = 'tt_maninfo_defaults');
+
+  IF lp_return != 0 
+  THEN
+    MESSAGE 'ERROR: Unable to drop second working table. Error code '
+          + VARCHAR(:lp_return) + '. Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  lp_return = CALLPROC msa_fp_drop_table (p_table = 'tt_maninfo_extras');
+
+  IF lp_return != 0 
+  THEN
+    MESSAGE 'ERROR: Unable to drop third working table. Error code '
+          + VARCHAR(:lp_return) + '. Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*--------------------------------------------------------------
+        Dropping existing temporary tables.
+  --------------------------------------------------------------*/
+
+  lp_return = CALLPROC msa_fp_drop_table (p_table = 'tt_maninfo_dash_1f');
+
+  IF lp_return != 0 
+  THEN
+    MESSAGE 'ERROR: Unable to drop first temp table. Error code '
+          + VARCHAR(:lp_return) + '. Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  lp_return = CALLPROC msa_fp_drop_table (p_table = 'tt_maninfo_dash_1q');
+
+  IF lp_return != 0 
+  THEN
+    MESSAGE 'ERROR: Unable to drop second temp table. Error code '
+          + VARCHAR(:lp_return) + '. Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  lp_return = CALLPROC msa_fp_drop_table (p_table = 'tt_maninfo_dash_2q');
+
+  IF lp_return != 0 
+  THEN
+    MESSAGE 'ERROR: Unable to drop third temp table. Error code '
+          + VARCHAR(:lp_return) + '. Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*--------------------------------------------------------------
+           Initialising form variables
+  --------------------------------------------------------------*/
+
+  MESSAGE 'Loading data for ' +VARCHAR(:g_period) +'..';
+
+  s_uaf = 0;     /* Uncleared A-zone Forms */
+  s_uaq = 0;     /* Uncleared A-zone Forms */
+
+  s_caf = 0;     /* Cleared A-zone Forms */
+  s_cbf = 0;     /* Cleared B-zone Forms */
+  s_ccf = 0;     /* Cleared C-zone Forms */
+  s_cdf = 0;     /* Cleared D-zone Forms */
+  s_ctf = 0;     /* Cleared Total  Forms */
+  s_caq = 0;     /* Cleared A-zone Questions */
+  s_cbq = 0;     /* Cleared B-zone Questions */
+  s_ccq = 0;     /* Cleared C-zone Questions */
+  s_cdq = 0;     /* Cleared D-zone Questions */
+  s_ctq = 0;     /* Cleared Total  Questions */
+
+  s_extunc1 = 0; /* Extra work Uncleared Form 1 */
+  s_extunc2 = 0; /* Extra work Uncleared Form 2 */
+  s_extunc3 = 0; /* Extra work Uncleared Form 3 */
+  s_extunc4 = 0; /* Extra work Uncleared Form 4 */
+  s_extunc5 = 0; /* Extra work Uncleared Form 5 */
+  s_extunc6 = 0; /* Extra work Uncleared Form 6 */
+  s_extunc7 = 0; /* Extra work Uncleared Form 7 */
+  s_extunc8 = 0; /* Extra work Uncleared Form 8 */
+  
+  s_extcle1 = 0; /* Extra work Cleared Form 1 */
+  s_extcle2 = 0; /* Extra work Cleared Form 2 */
+  s_extcle3 = 0; /* Extra work Cleared Form 3 */
+  s_extcle4 = 0; /* Extra work Cleared Form 4 */
+  s_extcle5 = 0; /* Extra work Cleared Form 5 */
+  s_extcle6 = 0; /* Extra work Cleared Form 6 */
+  s_extcle7 = 0; /* Extra work Cleared Form 7 */
+  s_extcle8 = 0; /* Extra work Cleared Form 8 */
+  
+  s_exttot1 = 0; /* Extra work Total Form 1 */
+  s_exttot2 = 0; /* Extra work Total Form 2 */
+  s_exttot3 = 0; /* Extra work Total Form 3 */
+  s_exttot4 = 0; /* Extra work Total Form 4 */
+  s_exttot5 = 0; /* Extra work Total Form 5 */
+  s_exttot6 = 0; /* Extra work Total Form 6 */
+  s_exttot7 = 0; /* Extra work Total Form 7 */
+  s_exttot8 = 0; /* Extra work Total Form 8 */
+
+  /*--------------------------------------------------------------
+           MAIN DASHBOARD TABLES
+  --------------------------------------------------------------*/
+
+  /*..................................................................
+           Create first temp table for constructing tt_maninfo_dashboard.
+           This one holds zone A forms uncleared only
+  ...................................................................*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    CREATE TABLE tt_maninfo_dash_1f   
+    AS
+    SELECT a.contributor_reference, 
+           a.zone
+    FROM   bto_reference_score a,
+           contributor_period  b
+    WHERE  a.contributor_reference = b.contributor_reference
+      AND  a.period = b.period
+      AND  a.period = :g_period
+      AND  a.zone = 'A'
+      AND  b.rec_week_no  > 0
+      AND  b.corr_week_no = 0
+      AND  b.contributor_industry =
+        (  SELECT c.contributor_industry
+           FROM   :p_table c
+           WHERE  c.contributor_industry = b.contributor_industry);
+  
+    lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF lp_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to create first temp table. Error code '
+          + VARCHAR(:lp_return) + '. Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*.................................................................
+     Create second temp table for constructing tt_maninfo_dashboard.
+     This one holds zone A and C questions on uncleared Zone A
+     forms only.
+  ..................................................................*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    CREATE TABLE tt_maninfo_dash_1q   
+    AS
+    SELECT a.contributor_reference, 
+           a.question,
+           a.zone,
+           b.zone AS form_zone
+    FROM   bto_question_score a,
+           tt_maninfo_dash_1f  b
+    WHERE  a.contributor_reference = b.contributor_reference
+      AND  a.period = :g_period
+      AND  a.zone IN ('A', 'C');
+
+    lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF lp_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to create second temp table. Error code '
+          + VARCHAR(:lp_return) + '. Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*..............................................................
+           Create third temp table for constructing tt_maninfo_dashboard.
+           This one holds zone A and C questions on cleared forms of
+           any zone.
+  ..............................................................*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    CREATE TABLE tt_maninfo_dash_2q   
+    AS
+    SELECT a.contributor_reference, 
+           a.question,
+           a.zone,
+           b.zone AS form_zone
+    FROM   bto_question_score  a,
+           bto_reference_score b,
+           contributor_period  c
+    WHERE  a.contributor_reference = b.contributor_reference
+      AND  a.contributor_reference = c.contributor_reference
+      AND  a.period = b.period
+      AND  a.period = c.period
+      AND  a.period = :g_period
+      AND  a.zone IN ('A', 'C')
+      AND  c.rec_week_no  > 0
+      AND  c.corr_week_no > 0
+      AND  c.contributor_industry =
+        (  SELECT d.contributor_industry
+           FROM   :p_table d
+           WHERE  d.contributor_industry = c.contributor_industry);
+
+    lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF lp_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to create third temp table. Error code '
+          + VARCHAR(:lp_return) + '. Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*..............................................................
+      Create first working table tt_maninfo_dashboard.
+  ..............................................................*/
+
+  MESSAGE 'Loading data for ' +VARCHAR(:g_period) +'...';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    CREATE TABLE tt_maninfo_dashboard ( cleared, zone, level, secount)
+    AS
+    SELECT 'U', zone, 'Form', COUNT(contributor_reference)
+    FROM   tt_maninfo_dash_1f
+    GROUP  BY zone
+    UNION
+    SELECT 'C', a.zone, 'Form',COUNT(a.contributor_reference)
+    FROM   bto_reference_score a,
+           contributor_period b
+    WHERE  a.contributor_reference = b.contributor_reference
+      AND  a.period = b.period
+      AND  a.period = :g_period
+      AND  b.rec_week_no  >0
+      AND  b.corr_week_no >0
+      AND  b.contributor_industry =
+        (  SELECT c.contributor_industry
+           FROM   :p_table c
+           WHERE  c.contributor_industry = b.contributor_industry)
+    GROUP  BY a.zone
+    UNION
+    SELECT 'U', form_zone AS zone, 'Ques', COUNT(question)
+    FROM   tt_maninfo_dash_1q
+    GROUP  BY form_zone
+    UNION
+    SELECT 'C', form_zone AS zone, 'Ques', COUNT(question)
+    FROM   tt_maninfo_dash_2q
+    GROUP  BY form_zone;
+  
+    lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF lp_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF lp_return != 0 
+  THEN
+    MESSAGE 'ERROR: Unable to create first working table. Error code '
+          + VARCHAR(:lp_return) + '. Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+  
+  /*..............................................................
+       Select count of unactioned zone A forms and uncleared 
+       questions on them. 
+   ..............................................................*/
+
+  MESSAGE 'Loading data for ' +VARCHAR(:g_period) +'....';
+
+  SELECT secount AS s_uaf 
+  FROM   tt_maninfo_dashboard
+  WHERE  cleared = 'U'
+    AND  zone = 'A' 
+    AND  level = 'Form';
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_uaf from first temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+
+  SELECT secount AS s_uaq
+  FROM   tt_maninfo_dashboard
+  WHERE  cleared = 'U'
+    AND  zone    = 'A' 
+    AND  level   = 'Ques';
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_uaq from first temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*..............................................................
+     Select count of actioned forms by zone, and a count of 
+     actioned questions on them. 
+  ..............................................................*/
+
+  MESSAGE 'Loading data for ' +VARCHAR(:g_period) +'.....';
+
+  SELECT secount AS s_caf 
+  FROM   tt_maninfo_dashboard
+  WHERE  cleared = 'C' 
+    AND  zone    = 'A' 
+    AND  level   = 'Form';
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_caf from first temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+
+  SELECT secount AS s_cbf 
+  FROM   tt_maninfo_dashboard
+  WHERE  cleared = 'C' 
+    AND  zone    = 'B' 
+    AND  level   = 'Form';
+  
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_cbf from first temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+
+  SELECT secount AS s_caq 
+  FROM   tt_maninfo_dashboard
+  WHERE  cleared = 'C' 
+    AND  zone    = 'A' 
+    AND  level   = 'Ques';
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_caq from first temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+
+  SELECT secount AS s_cbq 
+  FROM   tt_maninfo_dashboard
+  WHERE  cleared = 'C'
+    AND  zone    = 'B'
+    AND  level   = 'Ques';
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_cbq from first temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+
+  SELECT secount AS s_ccf
+    FROM tt_maninfo_dashboard
+  WHERE  cleared = 'C' 
+    AND  zone    = 'C' 
+    AND  level   = 'Form';
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_ccf from first temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+
+  SELECT secount AS s_cdf 
+  FROM   tt_maninfo_dashboard
+  WHERE  cleared = 'C' 
+    AND  zone    = 'D' 
+    AND  level   = 'Form';
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_cdf from first temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+
+  SELECT secount AS s_ccq 
+  FROM   tt_maninfo_dashboard
+  WHERE  cleared = 'C' 
+    AND  zone    = 'C' 
+    AND  level   = 'Ques';
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_ccq from first temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+
+  SELECT secount AS s_cdq 
+  FROM   tt_maninfo_dashboard
+  WHERE  cleared = 'C' 
+    AND  zone    = 'D' 
+    AND  level   = 'Ques';
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_cdq from first temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*......................................................................
+       Cleared totals calculation.
+  ......................................................................*/
+
+  s_ctf = s_caf + s_cbf + s_ccf + s_cdf;
+  s_ctq = s_caq + s_cbq + s_ccq + s_cdq;
+
+  /*------------------------------------------------------------------
+           EXTRA WORK
+  ------------------------------------------------------------------*/
+  /*..................................................................
+         1: Scanning Errors
+  ..................................................................*/
+
+  SELECT COUNT(a.contributor_reference) AS s_extunc1
+  FROM   bto_unscored a
+  WHERE  a.period = :g_period
+    AND  a.contributor_industry =
+      (  SELECT c.contributor_industry
+         FROM   :p_table c
+         WHERE  c.contributor_industry = a.contributor_industry);
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_extunc1 from second temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+  
+
+  SELECT COUNT(*) AS s_extcle1
+  FROM   bto_unscored_cleared
+  WHERE  period = :g_period
+    AND  contributor_industry IN (SELECT contributor_industry
+                                    FROM :p_table);
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_extcle1 from second temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+  
+  s_exttot1 = s_extunc1 + s_extcle1;
+
+  /*..................................................................
+           2: Out of scope
+  ..................................................................*/
+  
+  SELECT COUNT(a.contributor_reference) AS s_extunc2
+  FROM   bto_reference_score a
+  WHERE  a.period = :g_period
+    AND  a.marker = 'S'
+    AND  a.contributor_reference IN
+      ( SELECT b.contributor_reference
+        FROM   reclass_contrib b
+        WHERE  b.contributor_reference = a.contributor_reference
+          AND  b.period = a.period
+          AND  b.action = 'NON PROD'
+          AND  b.proposed_ind  > 99999
+          AND  b.current_ind =
+            (  SELECT c.contributor_industry
+               FROM   :p_table c
+               WHERE  c.contributor_industry = b.current_ind));
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable To set value of s_extunc2 from second temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+  
+  
+  SELECT COUNT(a.contributor_reference) AS s_extcle2
+  FROM   bto_reference_score a
+  WHERE  a.period = :g_period
+    AND  a.marker = 'S'
+    AND  a.contributor_reference IN
+      ( SELECT b.contributor_reference
+        FROM   reclass_contrib b
+        WHERE  b.contributor_reference = a.contributor_reference
+          AND  b.period = a.period
+          AND  b.action = 'NOT PROPOSED'
+          AND  b.proposed_ind  > 99999
+          AND  b.current_ind =
+            (  SELECT c.contributor_industry
+               FROM   :p_table c
+               WHERE  c.contributor_industry = b.current_ind));
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_extcle2 from second temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+  
+  s_exttot2 = s_extunc2 + s_extcle2;
+  
+  /*..................................................................
+           3: Reclass
+  ..................................................................*/
+  
+  SELECT COUNT(a.contributor_reference) AS s_extunc3
+  FROM   bto_reference_score a
+  WHERE  a.period = :g_period
+    AND  a.marker = 'R'
+    AND  a.contributor_reference IN 
+      ( SELECT b.contributor_reference
+        FROM   reclass_contrib b
+        WHERE  b.contributor_reference = a.contributor_reference
+          AND  b.period = a.period
+          AND  b.action IN ('WAITING','PROPOSED','NON PROD')
+          AND  b.proposed_ind  < 100000 
+          AND  b.current_ind =
+            (  SELECT c.contributor_industry
+               FROM   :p_table c
+               WHERE  c.contributor_industry = b.current_ind));
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_extunc3 from second temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+  
+  
+  SELECT COUNT(a.contributor_reference) AS s_extcle3
+  FROM   bto_reference_score a
+  WHERE  a.period = :g_period
+    AND  a.marker = 'R'
+    AND  a.contributor_reference IN 
+      ( SELECT b.contributor_reference
+        FROM   reclass_contrib b
+        WHERE  b.contributor_reference = a.contributor_reference
+          AND  b.period = a.period
+          AND  b.action IN ('ACCEPTED','REJECTED','NOT PROPOSED')
+          AND  b.proposed_ind  < 100000 
+          AND  b.current_ind =
+            (  SELECT c.contributor_industry
+               FROM   :p_table c
+               WHERE  c.contributor_industry = b.current_ind));
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_extcle3 from second temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+  
+  s_exttot3 = s_extunc3 + s_extcle3;
+  
+  /*..................................................................
+           4: Reref (Data Continuity) 
+  ..................................................................*/
+  
+  SELECT COUNT(a.contributor_reference) AS s_extunc4
+  FROM   bto_reference_score a,
+         contributor_period b
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.period = b.period
+    AND  a.period = :g_period
+    AND  a.marker = 'D'
+    AND  b.rec_week_no  > 0
+    AND  b.corr_week_no = 0
+    AND  b.contributor_industry =
+      (  SELECT c.contributor_industry
+         FROM   :p_table c
+         WHERE  c.contributor_industry = b.contributor_industry);
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_extunc4 from second temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+  
+  
+  SELECT COUNT(a.contributor_reference) AS s_extcle4
+  FROM   bto_reference_score a,
+         contributor_period b
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.period = b.period
+    AND  a.period = :g_period
+    AND  a.marker = 'D'
+    AND  b.rec_week_no  > 0
+    AND  b.corr_week_no > 0
+    AND  b.contributor_industry =
+      (  SELECT c.contributor_industry
+         FROM   :p_table c
+         WHERE  c.contributor_industry = b.contributor_industry);
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_extcle4 from second temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+  
+  s_exttot4 = s_extunc4 + s_extcle4;
+  
+  /*..................................................................
+           5: Address Change:
+  ..................................................................*/
+  
+  SELECT COUNT(a.contributor) AS s_extunc5
+  FROM bto_reference_acu a,
+       contributor_period b
+  WHERE a.contributor = b.contributor_reference
+    AND a.period      = b.period
+    AND a.period      = :g_period
+    AND a.acu         = 'A'
+    AND a.actioned    = 'N'
+    AND  b.contributor_industry =
+      (  SELECT c.contributor_industry
+         FROM   :p_table c
+         WHERE  c.contributor_industry = b.contributor_industry);
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_extunc5 from second temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+  
+  
+  SELECT COUNT(a.contributor) AS s_extcle5
+  FROM bto_reference_acu a,
+       contributor_period b
+  WHERE a.contributor = b.contributor_reference
+    AND a.period      = b.period
+    AND a.period      = :g_period
+    AND a.acu         = 'A'
+    AND a.actioned    = 'Y'
+    AND  b.contributor_industry =
+      (  SELECT c.contributor_industry
+         FROM   :p_table c
+         WHERE  c.contributor_industry = b.contributor_industry);
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_extcle5 from second temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+  
+  s_exttot5 = s_extunc5 + s_extcle5;
+  	
+  /*..................................................................
+           6: Comments
+  ..................................................................*/
+  
+  SELECT COUNT(a.contributor) AS s_extunc6
+  FROM bto_reference_acu a,
+       contributor_period b
+  WHERE a.contributor = b.contributor_reference
+    AND a.period      = b.period
+    AND a.period      = :g_period
+    AND a.acu         = 'C'
+    AND a.actioned    = 'N'
+    AND  b.contributor_industry =
+      (  SELECT c.contributor_industry
+         FROM   :p_table c
+         WHERE  c.contributor_industry = b.contributor_industry);
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_extunc6 from second temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+  
+  
+  SELECT COUNT(a.contributor) AS s_extcle6
+  FROM bto_reference_acu a,
+       contributor_period b
+  WHERE a.contributor = b.contributor_reference
+    AND a.period      = b.period
+    AND a.period      = :g_period
+    AND a.acu         = 'C'
+    AND a.actioned    = 'Y'
+    AND  b.contributor_industry =
+      (  SELECT c.contributor_industry
+         FROM   :p_table c
+         WHERE  c.contributor_industry = b.contributor_industry);
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_extcle6 from second temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+  
+  s_exttot6 = s_extunc6 + s_extcle6;
+  	
+  /*..................................................................
+           7: Attachments (Unexpected pages)
+  ..................................................................*/
+  
+  SELECT COUNT(a.contributor) AS s_extunc7
+  FROM bto_reference_acu a,
+       contributor_period b
+  WHERE a.contributor = b.contributor_reference
+    AND a.period      = b.period
+    AND a.period      = :g_period
+    AND a.acu         = 'U'
+    AND a.actioned    = 'N'
+    AND  b.contributor_industry =
+      (  SELECT c.contributor_industry
+         FROM   :p_table c
+         WHERE  c.contributor_industry = b.contributor_industry);
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_extunc7 from second temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+  
+  
+  SELECT COUNT(a.contributor) AS s_extcle7
+  FROM bto_reference_acu a,
+       contributor_period b
+  WHERE a.contributor = b.contributor_reference
+    AND a.period      = b.period
+    AND a.period      = :g_period
+    AND a.acu         = 'U'
+    AND a.actioned    = 'Y'
+    AND  b.contributor_industry =
+      (  SELECT c.contributor_industry
+         FROM   :p_table c
+         WHERE  c.contributor_industry = b.contributor_industry);
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_extcle7 from second temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+  
+  s_exttot7 = s_extunc7 + s_extcle7;
+  	
+  /*..................................................................
+           8: Enforcement Cases
+  ..................................................................*/
+  
+  SELECT COUNT(DISTINCT a.contributor_reference) AS s_extunc8
+  FROM   bto_enforcement a,
+         contributor_period b
+  WHERE  a.period = :g_period
+    AND  a.period = b.period
+    AND  a.contributor_reference = b.contributor_reference
+    AND  b.form_status IN ('1','2') 
+    AND  b.contributor_industry =
+      (  SELECT c.contributor_industry
+         FROM   :p_table c
+         WHERE  c.contributor_industry = b.contributor_industry);
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_extunc8 from second temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+  
+  
+  SELECT COUNT(DISTINCT a.contributor_reference) AS s_extcle8
+  FROM   bto_enforcement a,
+         contributor_period b
+  WHERE  a.period = :g_period
+    AND  a.period = b.period
+    AND  a.contributor_reference = b.contributor_reference
+    AND  b.form_status IN ('3','4') 
+    AND  b.contributor_industry =
+      (  SELECT c.contributor_industry
+         FROM   :p_table c
+         WHERE  c.contributor_industry = b.contributor_industry);
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_extcle8 from second temp table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+  
+  s_exttot8 = s_extunc8 + s_extcle8;
+  
+  
+  /*...........................................................................
+     9: Deselections.
+        Not part of selective editing but worth counting for display
+        as deselecting removes evidence of other extra work. 
+        Can only display cleared, no such thing as an uncleared deseletcion.
+  ...........................................................................*/
+  
+  
+  SELECT COUNT(a.contributor_reference) AS s_extcle9
+  FROM   removed_contrib_period a 
+  WHERE  a.period = :g_period
+    AND  a.contributor_industry =
+      (  SELECT c.contributor_industry
+         FROM   :p_table c
+         WHERE  c.contributor_industry = a.contributor_industry);
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_extcle9 from removal table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+  
+  s_exttot9 = s_extcle9;
+  
+  RETURN 0;
+}	
+
+/*=======================================================================
+    Local procedure to check sql for errors. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = ':h_frpr_name');
+
+  RETURN :lp_return;
+
+}
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+

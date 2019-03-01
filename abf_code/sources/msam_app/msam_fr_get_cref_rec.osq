@@ -1,0 +1,465 @@
+INITIALIZE (p_mode     = INTEGER1    NOT NULL WITH DEFAULT,
+            p_industry = INTEGER4    NOT NULL WITH DEFAULT) =
+
+DECLARE 
+  h_retries_allowed   = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries           = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not      = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name         = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_return            = INTEGER1    NOT NULL WITH DEFAULT,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_retries_allowed   = 3;
+  h_frpr_name         = 'msam_fr_get_cref_rec';
+
+  SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+  /*------------------------------------------------------------------
+     1: Non responders.
+  ------------------------------------------------------------------*/
+
+  IF p_mode = 1
+  THEN
+
+    s_title = 'NON RESPONDERS IN ' +VARCHAR(:p_industry) +'.';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+    
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      tf =
+
+      SELECT   a.contributor_reference,
+               b.add_name1,
+               a.receipt_date
+      FROM     contributor_period a,
+               contributor b
+      WHERE    a.contributor_reference = b.contributor_reference
+        AND    a.contributor_industry  = :p_industry
+        AND    a.period                = :g_period
+        AND    a.form_status           = 0
+      ORDER BY contributor_reference;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 1
+    THEN
+      MESSAGE 'WARNING: No non-responders found '
+            + 'for industry ' +VARCHAR(:p_industry) +'. '
+            + 'If you think that this is incorrect, please contact IM.'
+      WITH STYLE = POPUP;
+      RETURN 0;
+    ELSEIF h_return > 1
+    THEN
+      MESSAGE 'ERROR: Failed to display non-responders '
+            + 'for industry ' +VARCHAR(:p_industry) +'. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    2: Receipted but Not Taken On
+  ------------------------------------------------------------------*/
+
+  IF p_mode = 2
+  THEN
+
+    s_title = 'FORMS RECEIPTED BUT NOT TAKEN ON IN ' +VARCHAR(:p_industry) +'.';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+    
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      tf =
+
+      SELECT   a.contributor_industry,
+               a.contributor_reference,
+               b.add_name1,
+               a.receipt_date
+      FROM     contributor_period a,
+               contributor b
+      WHERE    a.contributor_reference = b.contributor_reference
+        AND    a.contributor_industry  = :p_industry
+        AND    a.period                = :g_period
+        AND    a.form_status           = 1
+      UNION
+      SELECT   a.contributor_industry,
+               a.contributor_reference,
+               b.add_name1,
+               a.receipt_date
+      FROM     contributor_period a,
+               contributor b
+      WHERE    a.contributor_reference = b.contributor_reference
+        AND    a.contributor_industry  = :p_industry
+        AND    a.period                = :g_period
+        AND    a.receipt_date         != ''
+        AND    a.form_taken_on         = 'N'
+      ORDER BY contributor_reference;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 1
+    THEN
+      MESSAGE 'WARNING: No receipt only forms found '
+            + 'for industry ' +VARCHAR(:p_industry) +'. '
+            + 'If you think that this is incorrect, please contact IM.'
+      WITH STYLE = POPUP;
+      RETURN 0;
+    ELSEIF h_return > 1
+    THEN
+      MESSAGE 'ERROR: Failed to display receipt only forms '
+            + 'for industry ' +VARCHAR(:p_industry) +'. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     3: Receipted & Taken On but Not Cleared
+  ------------------------------------------------------------------*/
+
+  IF p_mode = 3
+  THEN
+
+    s_title = 'FORMS TAKEN ON BUT NOT CLEARED IN ' +VARCHAR(:p_industry) +'.';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+    
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      tf =
+
+      SELECT   a.contributor_reference,
+               b.add_name1,
+               a.receipt_date
+      FROM     contributor_period a,
+               contributor b
+      WHERE    a.contributor_reference = b.contributor_reference
+        AND    a.contributor_industry  = :p_industry
+        AND    a.period                = :g_period
+        AND    a.form_status           IN (2,3)
+      ORDER BY contributor_reference;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 1
+    THEN
+      MESSAGE 'WARNING: No uncleared forms found '
+            + 'for industry ' +VARCHAR(:p_industry) +'. '
+            + 'If you think that this is incorrect, please contact IM.'
+      WITH STYLE = POPUP;
+      RETURN 0;
+    ELSEIF h_return > 1
+    THEN
+      MESSAGE 'ERROR: Failed to display uncleared forms '
+            + 'for industry ' +VARCHAR(:p_industry) +'. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+
+  /*------------------------------------------------------------------
+     4: Taken On and Cleared
+  ------------------------------------------------------------------*/
+
+  IF p_mode = 4
+  THEN
+
+    s_title = 'FORMS CLEARED IN ' +VARCHAR(:p_industry) +'.';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+    
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      tf =
+
+      SELECT   a.contributor_reference,
+               b.add_name1,
+               a.receipt_date
+      FROM     contributor_period a,
+               contributor b
+      WHERE    a.contributor_reference = b.contributor_reference
+        AND    a.contributor_industry  = :p_industry
+        AND    a.period                = :g_period
+        AND    a.form_status           = 4
+      ORDER BY contributor_reference;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 1
+    THEN
+      MESSAGE 'WARNING: No cleared forms found '
+            + 'for industry ' +VARCHAR(:p_industry) +'. '
+            + 'If you think that this is incorrect, please contact IM.'
+      WITH STYLE = POPUP;
+      RETURN 0;
+    ELSEIF h_return > 1
+    THEN
+      MESSAGE 'ERROR: Failed to cleared only forms '
+            + 'for industry ' +VARCHAR(:p_industry) +'. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+
+  /*------------------------------------------------------------------
+     5: Cleared up to and including the previous week.
+  ------------------------------------------------------------------*/
+
+  IF p_mode = 5
+  THEN
+
+    s_title = 'FORMS CLEARED LAST WEEK IN ' +VARCHAR(:p_industry) +'.';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+    
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      tf =
+
+      SELECT   a.contributor_reference,
+               b.add_name1,
+               a.receipt_date
+      FROM     contributor_period a,
+               contributor b
+      WHERE    a.contributor_reference = b.contributor_reference
+        AND    a.contributor_industry  = :p_industry
+        AND    a.period                = :g_period
+        AND    a.corr_week_no          < :g_max_week
+        AND    a.form_status           = 4
+      ORDER BY contributor_reference;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 1
+    THEN
+      MESSAGE 'WARNING: No preciously cleared forms found '
+            + 'for industry ' +VARCHAR(:p_industry) +'. '
+            + 'If you think that this is incorrect, please contact IM.'
+      WITH STYLE = POPUP;
+      RETURN 0;
+    ELSEIF h_return > 1
+    THEN
+      MESSAGE 'ERROR: Failed to display preciously cleared forms '
+            + 'for industry ' +VARCHAR(:p_industry) +'. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     6: Euro contributors.
+  ------------------------------------------------------------------*/
+
+  IF p_mode = 6
+  THEN
+
+    s_title = 'ALL EURO CURRENCY CONTRIBUTORS FOR ' +VARCHAR(:g_period) +'.';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+    
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      tf =
+
+      SELECT   a.contributor_industry,
+               a.contributor_reference,
+               b.add_name1,
+               a.receipt_date
+      FROM     contributor_period a,
+               contributor b
+      WHERE    a.contributor_reference = b.contributor_reference
+        AND    a.period                = :g_period
+        AND    a.currency              = 'E'
+      ORDER BY contributor_industry, contributor_reference;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to display Euro currency forms '
+            + 'for industry ' +VARCHAR(:p_industry) +'. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    7: All SICs Receipted but Not Taken On
+  ------------------------------------------------------------------*/
+
+  IF p_mode = 7
+  THEN
+
+    s_title = 'ALL FORMS RECEIPTED BUT NOT TAKEN ON.';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+    
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      tf =
+
+      SELECT   a.contributor_industry,
+               a.contributor_reference,
+               b.add_name1,
+               a.receipt_date
+      FROM     contributor_period a,
+               contributor b
+      WHERE    a.contributor_reference = b.contributor_reference
+        AND    a.period                = :g_period
+        AND    a.form_status           = 1
+      ORDER BY contributor_industry, contributor_reference;
+
+      h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 1
+    THEN
+      MESSAGE 'WARNING: No receipt only forms found. '
+            + 'If you think that this is incorrect, please contact IM.'
+      WITH STYLE = POPUP;
+      RETURN 0;
+    ELSEIF h_return > 1
+    THEN
+      MESSAGE 'ERROR: Failed to display receipt only forms. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'BACK', KEY FRSKEY12 =
+{
+  RETURN 0;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

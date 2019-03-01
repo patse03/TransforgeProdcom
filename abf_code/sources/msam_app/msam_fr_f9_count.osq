@@ -1,0 +1,382 @@
+INITIALIZE (p_table = VARCHAR(32) NOT NULL WITH DEFAULT) =
+
+DECLARE 
+  h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name       = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_return          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_return2         = INTEGER4    NOT NULL WITH DEFAULT,
+  h_table           = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_industry        = INTEGER4    NOT NULL WITH DEFAULT,
+  h_count0          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_count1          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_count2          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_count3          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_count4          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_count5          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_count6          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_f9_count        = INTEGER4    NOT NULL WITH DEFAULT,
+
+  lp_error_check      = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  s_title = 'VALIDATION ATTEMPT COUNTS BY INDUSTRY';
+
+  h_retries_allowed = 3;
+  h_frpr_name       = 'msam_fr_f9_count';
+  h_table           = 'tt_f9_counts';
+
+  SET_FORMS FIELD '' (MODE(tf1) = 'READ', 
+                      MODE(tf2) = 'READ');
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+  /*----------------------------------------------------------------------
+       Drop and create working table.
+  ----------------------------------------------------------------------*/
+  MESSAGE'Creating working table...';
+  
+  h_return = CALLPROC msa_fp_drop_table (p_table = :h_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table 
+  AS
+  SELECT contributor_industry AS industry,
+         INT4(0) AS count0,
+         INT4(0) AS count1,
+         INT4(0) AS count2,
+         INT4(0) AS count3,
+         INT4(0) AS count4,
+         INT4(0) AS count5,
+         INT4(0) AS count6
+  FROM   :p_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to create working table ' +:h_table +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+       Double loop to process counts and update table.
+  ----------------------------------------------------------------------*/
+
+  SELECT   industry AS h_industry
+  FROM     :h_table
+  ORDER BY h_industry
+
+  BEGIN
+
+    MESSAGE 'Processing Industry ' +VARCHAR(:h_industry) + '...' ;
+
+    h_count0 = 0;
+    h_count1 = 0;
+    h_count2 = 0;
+    h_count3 = 0;
+    h_count4 = 0;
+    h_count5 = 0;
+    h_count6 = 0;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      SELECT f9_count AS h_f9_count
+      FROM   contributor_period
+      WHERE  period = :g_period
+        AND  contributor_industry = :h_industry
+        AND  receipt_date != ''
+      BEGIN   
+
+        IF h_f9_count = 0
+	THEN
+	  h_count0 = :h_count0 + 1;
+
+        ELSEIF h_f9_count = 1
+        THEN
+    	  h_count1 = :h_count1 + 1;
+
+        ELSEIF h_f9_count = 2
+        THEN
+    	  h_count2 = :h_count2 + 1;
+
+        ELSEIF h_f9_count = 3
+        THEN
+    	  h_count3 = :h_count3 + 1;
+
+        ELSEIF h_f9_count = 4
+        THEN
+    	  h_count4 = :h_count4 + 1;
+
+        ELSEIF h_f9_count = 5
+        THEN
+    	  h_count5 = :h_count5 + 1;
+
+        ELSE
+    	  h_count6 = :h_count6 + 1;
+
+        ENDIF;
+
+      END;
+    
+      h_return2 = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+    
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+    
+    ENDWHILE;
+    
+    IF h_return2 > 1
+    THEN
+      MESSAGE 'ERROR: Failed to select loop from contributor period table. '
+            + 'Error code ' +VARCHAR(:h_return2) +'. '
+            + 'Please contact IM immediately.' 
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+    UPDATE :h_table
+    SET    count0 = :h_count0,
+           count1 = :h_count1,
+           count2 = :h_count2,
+           count3 = :h_count3,
+           count4 = :h_count4,
+           count5 = :h_count5,
+           count6 = :h_count6
+    WHERE  industry = :h_industry;
+    
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+    
+    IF h_return2 != 0
+    THEN
+      MESSAGE 'ERROR: Failed to update working table with counts '
+            + 'for industry ' +VARCHAR(:h_industry) +'. '
+            + 'Error code ' +VARCHAR(:h_return2) +'. '
+            + 'Please contact IM immediately.' 
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select data for main loop '
+          + 'from table ' +VARCHAR(:h_table) +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.' 
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+       Display data by industry on first table field.
+  ----------------------------------------------------------------------*/
+
+  tf1 = 
+
+  SELECT industry,
+         count0 + count1 + count2 + count3 + 
+         count4 + count5 + count6 AS tot_rec,
+    	 count0 AS check_0,
+    	 count1 AS check_1,
+    	 count2 AS check_2,
+    	 count3 AS check_3,
+    	 count4 AS check_4,
+    	 count5 AS check_5,
+    	 count6 AS check_6
+  FROM   :h_table	  
+  ORDER BY industry;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select data for first table field '
+          + 'from table ' +VARCHAR(:h_table) +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.' 
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+       Display totals on second table field.
+  ----------------------------------------------------------------------*/
+
+  tf2 = 
+
+  SELECT   SUM(count0 + count1 + count2 + count3 + 
+               count4 + count5 + count6) AS tot_rec,
+    	   SUM(count0) AS check_0,
+    	   SUM(count1) AS check_1,
+    	   SUM(count2) AS check_2,
+    	   SUM(count3) AS check_3,
+    	   SUM(count4) AS check_4,
+    	   SUM(count5) AS check_5,
+    	   SUM(count6) AS check_6
+  FROM     :h_table;	  
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select totals for second table field '
+          + 'from table ' +VARCHAR(:h_table) +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.' 
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  RESUME FIELD tf1;
+
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'Print', KEY FRSKEY8 =
+{
+
+  MESSAGE 'Preparing Report . . .';
+
+  h_return = CALLPROC msa_cp_callsys 
+           ( 'report ' 
+           + :g_database 
+           + ' ''(h_table = "' + :h_table + '"' 
+           + ',user_name = "' + :g_user_name + '"' 
+           + ',period = ' + VARCHAR(:g_period) 
+           + ')'' -i$REPORTS/msam_rw_f9_count.rw' 
+           + ' > report.output 2> report.output');
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to prepare report for printing. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.' 
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ELSE  
+
+    /*--------------------------------------------------------------
+         Send report to printer.
+    --------------------------------------------------------------*/
+
+    h_return2 = CALLPROC msa_cp_callsys 
+             ( 'lines=`wc -l < msam_rw_f9_count.rpt`;' 
+             + 'lines=`expr ${lines} - 1`;' 
+             + 'head -${lines} msam_rw_f9_count.rpt | ' 
+             + 'lp -o12p -d' + :g_printer 
+             + ' >> report.output 2>> report.output');
+
+    IF h_return2 != 0
+    THEN
+      MESSAGE 'ERROR: Failed to send report to printer ' +:g_printer +'. '
+            + 'Error code ' +VARCHAR(:h_return2) + '. '
+            + 'Please contact IM immediately.' 
+      WITH STYLE = POPUP;
+      RETURN 9;
+
+    ELSE
+      MESSAGE 'NOTE: Report successfully sent to printer ' +:g_printer + '.'
+      WITH STYLE = POPUP;
+    ENDIF;
+
+  ENDIF;
+
+}
+
+
+'End', KEY FRSKEY14 =
+{
+  MESSAGE 'Exiting Screen . . .';
+
+  h_return = CALLPROC msa_fp_drop_table (p_table = :h_table);
+
+  RETURN 0;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

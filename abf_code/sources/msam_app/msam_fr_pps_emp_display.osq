@@ -1,0 +1,423 @@
+iNITIALIZE ( p_table    = VARCHAR(36) NOT NULL WITH DEFAULT) =
+
+DECLARE 
+  h_retries_allowed     = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries             = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not        = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name           = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_return              = INTEGER2    NOT NULL WITH DEFAULT,
+  h_return2             = INTEGER2    NOT NULL WITH DEFAULT,
+  h_tot_target_forms    = INTEGER4    NOT NULL WITH DEFAULT,
+  h_overs_target_forms  = INTEGER4    NOT NULL WITH DEFAULT,
+  h_sample_target_forms = INTEGER4    NOT NULL WITH DEFAULT,
+  h_tot_recd_forms      = INTEGER4    NOT NULL WITH DEFAULT,
+  h_overs_recd_forms    = INTEGER4    NOT NULL WITH DEFAULT,
+  h_sample_recd_forms   = INTEGER4    NOT NULL WITH DEFAULT,
+  h_target_reg_emp      = INTEGER4    NOT NULL WITH DEFAULT,
+  h_retd_reg_emp        = INTEGER4    NOT NULL WITH DEFAULT,
+  h_regemp              = INTEGER4    NOT NULL WITH DEFAULT,
+  h_form_rec            = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_cutoff              = INTEGER4    NOT NULL WITH DEFAULT,
+  h_industry            = INTEGER4    NOT NULL WITH DEFAULT,
+  h_week                = INTEGER1    NOT NULL WITH DEFAULT,
+  h_counter             = INTEGER4    NOT NULL WITH DEFAULT,
+  h_table               = VARCHAR(25) NOT NULL WITH DEFAULT,
+  h_check_table         = VARCHAR(25) NOT NULL WITH DEFAULT,
+
+  lp_error_check      = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name       = 'msam_fr_pps_emp_display';
+  h_table           = 'tt_receipt_status';
+  h_retries_allowed = 3;
+
+  s_title = 'RECEIPTING STATUS UP TO AND INCLUDING WEEK ' 
+          + SQUEEZE(VARCHAR(:g_max_week));  
+
+  SET_FORMS FIELD '' (MODE(tf_display) = 'READ');
+  SET_FORMS FIELD '' (MODE(tf_totals) = 'READ');
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+     Create working table.
+  ----------------------------------------------------------------------*/
+  MESSAGE 'Selecting Data . . .';
+
+  h_return = CALLPROC msa_fp_drop_table (p_table = :h_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled by exteranl procedure */
+    RETURN h_return;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    CREATE TABLE :h_table
+    AS 
+    SELECT a.industry,
+           INT4(0) AS tot_target_forms,
+           INT4(0) AS overs_target_forms,
+           INT4(0) AS sample_target_forms,
+           INT4(0) AS tot_recd_forms,
+           INT4(0) AS overs_recd_forms,
+           INT4(0) AS sample_recd_forms,
+           INT4(0) AS target_reg_emp,
+           INT4(0) AS retd_reg_emp
+    FROM   industry a
+    WHERE  a.industry =
+        (  SELECT c.contributor_industry
+           FROM   :p_table c
+           WHERE  c.contributor_industry = a.industry);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select scoped industries from industry table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP; 
+    RETURN 9;
+  ENDIF;
+
+  /*--------------------------------------------------------------
+     Update working table with totals. 
+  --------------------------------------------------------------*/
+
+  SELECT    industry AS h_industry
+  FROM      :h_table
+  ORDER BY  industry
+  BEGIN
+
+    MESSAGE 'Processing Industry ' +VARCHAR(:h_industry) +'...';
+
+    h_target_reg_emp      = 0;
+    h_retd_reg_emp        = 0;
+    h_tot_target_forms    = 0;
+    h_overs_target_forms  = 0;
+    h_sample_target_forms = 0;
+    h_tot_recd_forms      = 0;
+    h_overs_recd_forms    = 0;
+    h_sample_recd_forms   = 0;
+
+    SELECT a.register_emp  AS h_regemp,
+           a.form_received AS h_form_rec,
+           a.rec_week_no   AS h_week,
+           b.emp_cutoff    AS h_cutoff
+    FROM   contributor_period a,
+           industry_period b
+    WHERE  a.period  = :g_period
+      AND  a.period  = b.period
+      AND  a.contributor_industry = :h_industry
+      AND  a.contributor_industry = b.industry
+    BEGIN   
+
+      h_tot_target_forms = :h_tot_target_forms + 1;
+      h_target_reg_emp = h_target_reg_emp + :h_regemp;
+
+      IF :h_regemp >= :h_cutoff
+      THEN
+        h_overs_target_forms = :h_overs_target_forms + 1;
+      ELSE
+        h_sample_target_forms = h_sample_target_forms + 1;
+      ENDIF;
+
+      IF :h_week <= :g_max_week
+      THEN
+
+        IF :h_form_rec != 'N'
+        THEN
+
+          h_tot_recd_forms = :h_tot_recd_forms + 1;
+          h_retd_reg_emp = :h_retd_reg_emp + :h_regemp;
+
+          IF :h_regemp >= :h_cutoff
+          THEN
+            h_overs_recd_forms = :h_overs_recd_forms + 1;
+          ELSE
+            h_sample_recd_forms = :h_sample_recd_forms + 1;
+          ENDIF;
+
+        ENDIF;
+
+      ENDIF;
+
+    END;
+
+    UPDATE :h_table
+    SET    tot_target_forms    = :h_tot_target_forms,
+           overs_target_forms  = :h_overs_target_forms,
+           sample_target_forms = :h_sample_target_forms,
+           tot_recd_forms      = :h_tot_recd_forms,
+           overs_recd_forms    = :h_overs_recd_forms,
+           sample_recd_forms   = :h_sample_recd_forms,
+           target_reg_emp      = :h_target_reg_emp,
+           retd_reg_emp        = :h_retd_reg_emp
+    WHERE  industry = :h_industry;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      MESSAGE 'ERROR: Failed to select update working table with counts. '
+            + 'Error code ' +VARCHAR(:h_return2) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP; 
+      h_return2 = CALLPROC msa_fp_drop_table (p_table = :h_table);
+      /* No need to worry about return, already exiting. */
+      RETURN 9;
+    ENDIF;
+
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select industries for totaling loops. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP; 
+    h_return = CALLPROC msa_fp_drop_table (p_table = :h_table);
+    /* No need to worry about return, already exiting. */
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+       Populate display table.
+  ----------------------------------------------------------------------*/
+  
+  tf_display =
+
+  SELECT a.industry,
+         a.tot_target_forms,
+         a.overs_target_forms,
+         a.sample_target_forms,
+         a.tot_recd_forms,
+         a.overs_recd_forms,
+         a.sample_recd_forms,
+         (100.0 * a.tot_recd_forms) / FLOAT4(a.tot_target_forms)
+         AS perc_total_forms,
+         (100.0 * a.overs_recd_forms) / FLOAT4(a.overs_target_forms)
+         AS perc_overs_forms,
+         (100.0 * a.sample_recd_forms) / FLOAT4(a.sample_target_forms)
+         AS perc_sample_forms,
+         a.target_reg_emp,
+         a.retd_reg_emp,
+         (100.0 * a.retd_reg_emp) / FLOAT4(a.target_reg_emp)
+         AS perc_emp
+  FROM   :h_table a
+  WHERE  a.industry =
+          (  SELECT c.contributor_industry
+             FROM   :p_table c
+             WHERE  c.contributor_industry = a.industry)
+  ORDER BY industry;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select data from working table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP; 
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Totals
+  ------------------------------------------------------------------*/
+
+  SELECT SUM(a.tot_target_forms)    AS h_tot_target_forms,
+         SUM(a.overs_target_forms)  AS h_overs_target_forms,
+         SUM(a.sample_target_forms) AS h_sample_target_forms,
+         SUM(a.tot_recd_forms)      AS h_tot_recd_forms,
+         SUM(a.overs_recd_forms)    AS h_overs_recd_forms,
+         SUM(a.sample_recd_forms)   AS h_sample_recd_forms,
+         SUM(a.target_reg_emp)      AS h_target_reg_emp,
+         SUM(a.retd_reg_emp)        AS h_retd_reg_emp
+  FROM   :h_table a
+  WHERE  a.industry =
+          (  SELECT c.contributor_industry
+             FROM   :p_table c
+             WHERE  c.contributor_industry = a.industry);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select summary data from working table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP; 
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Insert the Totals
+  ------------------------------------------------------------------*/
+
+  INSERTROW tf_totals [0] (
+            industry            = 'TOTAL',
+            tot_target_forms    = :h_tot_target_forms,
+            overs_target_forms  = :h_overs_target_forms,
+            sample_target_forms = :h_sample_target_forms,
+            tot_recd_forms      = :h_tot_recd_forms,
+            overs_recd_forms    = :h_overs_recd_forms,
+            sample_recd_forms   = :h_sample_recd_forms,
+            perc_total_forms    = (100.0 * :h_tot_recd_forms /
+                                  FLOAT4(:h_tot_target_forms)),
+            perc_overs_forms    = (100.0 * :h_overs_recd_forms /
+                                  FLOAT4(:h_overs_target_forms)),
+            perc_sample_forms   = (100.0 * :h_sample_recd_forms /
+                                  FLOAT4(:h_sample_target_forms)),
+            target_reg_emp      = :h_target_reg_emp,
+            retd_reg_emp        = :h_retd_reg_emp,
+            perc_emp            = (100.0 * :h_retd_reg_emp /
+                                  FLOAT4(:h_target_reg_emp)));
+
+  REDISPLAY;
+}
+
+/*************************** FIELD ACTIVATIONS ****************************/
+
+BEFORE FIELD 'tf_totals.industry' =
+{
+    RESUME FIELD tf_display;
+}
+
+FIELD 'tf_display.perc_emp' =
+{
+    RESUME FIELD tf_display;
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'Print', KEY FRSKEY4 =
+{
+  MESSAGE 'Preparing Report . . .';
+
+  h_return = CALLPROC msa_cp_callsys 
+           ( 'report ' 
+            + :g_database 
+            + ' ''(user_name = "' + :g_user_name + '"' 
+            + ',week_no = ' + VARCHAR(:g_max_week) 
+            + ',inquiry = 14 ,period = ' + VARCHAR(:g_period) 
+            + ')'' -i$REPORTS/msam_rw_pps_emp_display.rw' 
+            + ' > report.output 2> report.output');
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to produce report for printing. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ELSE
+    /*--------------------------------------------------------------
+        Send report to printer.
+    --------------------------------------------------------------*/
+
+    h_return = CALLPROC msa_cp_callsys 
+             ( 'lines=`wc -l < msam_rw_pps_emp_display.rpt`;' 
+             + 'lines=`expr ${lines} - 1`;' 
+             + 'head -${lines} msam_rw_pps_emp_display.rpt | ' 
+             + 'lp -o12l -d' + :g_printer 
+             + ' >> report.output 2>> report.output');
+
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to send report to printer '+:g_printer +'. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ELSE
+      MESSAGE 'NOTE: Message successfully sent to printer ' +:g_printer +'.'
+      WITH STYLE = POPUP;
+    ENDIF;
+
+  ENDIF;
+}
+
+'End', KEY FRSKEY14 = 
+{
+    RETURN 0;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

@@ -1,0 +1,186 @@
+/*--------------------------------------------------------------
+                  msam_fp_cleared_rerefs
+--------------------------------------------------------------*/
+
+PROCEDURE msam_fp_cleared_rerefs (
+
+        period              = INTEGER4 NOT NULL,
+        inquiry             = INTEGER4 NOT NULL,
+        week_no             = INTEGER4 NOT NULL,
+        sc_group            = VARCHAR(5) NOT NULL,
+        temp_table          = CHAR(25) NOT NULL) =
+
+DECLARE ret_val             = INTEGER1 NOT NULL,
+        h_counter           = INTEGER1 NOT NULL,
+        h_retries_allowed   = INTEGER1 NOT NULL,
+        h_retries           = INTEGER1 NOT NULL,
+        h_retry_or_not      = CHAR(5) NOT NULL,
+        h_table1            = VARCHAR(25) NOT NULL,
+        h_frpr_name         = VARCHAR(25) NOT NULL
+{
+
+    h_retries_allowed = 3;
+    h_frpr_name = 'msam_fp_cleared_rerefs';
+    h_table1 = 'reref_table';
+
+
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = :h_table1);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table1 (
+                     contributor_reference  CHAR(11) NOT NULL,
+                     industry               INTEGER4 NOT NULL,
+                     period                 INTEGER4 NOT NULL,
+                     week_no                INTEGER1 NOT NULL,
+                     date                   DATE NOT NULL,
+                     user_id                VARCHAR(8) NOT NULL,
+                     reason                 VARCHAR(200) NOT NULL);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in selecting to create ' + :h_table1
+        WITH STYLE = POPUP;
+
+        ret_val = CALLPROC msa_fp_drop_table (
+                  h_table = :h_table1);
+        RETURN 9;
+
+    ENDIF;
+
+    /*--------------------------------------------------------------
+       Insert into reref table
+    --------------------------------------------------------------*/
+
+    MESSAGE 'Inserting rows . . .';
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+	    IF :sc_group <> 'ALL'
+	    THEN
+                INSERT INTO :h_table1 (
+                            contributor_reference,
+                            industry,
+                            period,
+                            week_no,
+                            date,
+                            user_id,
+                            reason)
+                SELECT      a.contributor_reference,
+                            a.contributor_industry,
+                            a.period,
+                            b.corr_week_no AS week_no,
+                            b.correct_date,
+                            a.user_id,
+                            a.reason
+                FROM        reref_contributors a,
+	    		    contributor_period b
+                WHERE       a.period = :period
+                AND         a.period = b.period
+	        AND         a.contributor_reference = b.contributor_reference
+	        AND         b.corr_week_no <= :week_no
+	        AND         b.correct_date <> ''
+                AND         a.contributor_industry IN (
+			    SELECT industry 
+			    FROM   :temp_table);
+	    ELSE
+                INSERT INTO :h_table1 (
+                            contributor_reference,
+                            industry,
+                            period,
+                            week_no,
+                            date,
+                            user_id,
+                            reason)
+                SELECT      a.contributor_reference,
+                            a.contributor_industry,
+                            a.period,
+                            b.corr_week_no AS week_no,
+                            b.correct_date,
+                            a.user_id,
+                            a.reason
+                FROM        reref_contributors a,
+	    		    contributor_period b
+                WHERE       a.period = :period
+                AND         a.period = b.period
+	        AND         a.contributor_reference = b.contributor_reference
+	        AND         b.corr_week_no <= :week_no
+	        AND         b.correct_date <> ''
+                AND         a.contributor_industry IN (
+			    SELECT industry 
+			    FROM   industry
+			    WHERE  inquiry = :inquiry);
+	    ENDIF;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in inserting from reref_contributors'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No rows inserted from reref_contributors'
+            WITH STYLE = POPUP;
+            RETURN 0;
+        ENDIF;
+
+
+    RETURN 0;
+}

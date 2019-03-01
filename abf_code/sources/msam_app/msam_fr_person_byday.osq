@@ -1,0 +1,336 @@
+
+INITIALIZE (
+        period            = INTEGER4 NOT NULL,
+	user_id           = CHAR(8) NOT NULL,
+	weekno            = INTEGER1 NOT NULL,
+        h_counter         = INTEGER4 NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_max_rows        = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        h_table1          = VARCHAR(24) NOT NULL,
+        h_count           = INTEGER1 NOT NULL,
+        h_days            = INTEGER1 NOT NULL,
+        day_order         = INTEGER1 NOT NULL,
+        h_no_forms_cleared= INTEGER4 NOT NULL,
+	h_day             = VARCHAR(9) NOT NULL,
+        h_first_day       = VARCHAR(9) NOT NULL,
+        h_last_day        = VARCHAR(9) NOT NULL,
+        lp_load_table     = PROCEDURE RETURNING INTEGER
+
+{    
+    h_retries_allowed = 3;
+    h_frpr_name = 'msam_fr_person_byday';
+    h_max_rows = CALLPROC ARRAYALLROWS(g_industry_array);
+    h_days = 5;
+    h_table1 = 'by_day_response1';
+
+
+
+/*--------------
+Load array
+---------------*/
+    ret_val = CALLPROC ARRAYCLEAR(g_day_array);
+
+    h_count = 0;
+
+    SELECT day AS h_day,
+	   day_order
+    FROM   days_of_week
+    ORDER BY day_order 
+    {
+        h_count = h_count + 1;
+        g_day_array[:h_count].day = h_day;
+
+    };
+    
+    ret_val = CALLPROC msa_fp_drop_table (
+	      h_table = :h_table1);
+
+    IF ret_val <> 0
+    THEN
+	RETURN ret_val;
+    ENDIF;
+    
+    CREATE TABLE :h_table1
+    AS SELECT day,
+              day_order,
+              INT4(0) AS no_forms_cleared
+    FROM days_of_week;
+
+    ret_val = CALLPROC check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit = 'Y',
+              h_frpr_name = :h_frpr_name,
+              h_rollback = 'N');
+
+    IF ret_val = 9
+    THEN
+        MESSAGE 'System error creating ' + :h_table1
+        WITH STYLE = POPUP;
+        ret_val = CALLPROC msa_fp_drop_table (
+                  h_table = :h_table1);
+        RETURN 9;
+    ENDIF;
+
+    h_count = 0;
+
+    SELECT day as h_day,
+	   day_order 
+    FROM   :h_table1
+    ORDER BY day_order
+    {
+	h_count = h_count + 1;
+
+	SELECT COUNT(a.contributor_reference) AS h_no_forms_cleared
+        FROM   contributor_period a
+        WHERE  a.contributor_industry = :industry
+        AND    a.user_id <> 'prodlive'
+	AND    a.user_id = :user_id
+        AND    a.period = :period
+	AND    a.corr_week_no = :weekno
+        AND    a.correct_date IN(
+	       SELECT (date(start_date) + (varchar(:h_count) + ' days'))
+	       FROM   weekno_dates
+	       WHERE  period = :period
+	       AND    week = :weekno);
+
+        ret_val = CALLPROC check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_frpr_name = :h_frpr_name,
+                  h_rollback = 'N');
+
+        IF ret_val = 9
+        THEN
+            MESSAGE 'System error selecting counts from contributor_period for day ' + ascii(:h_count) 
+            WITH STYLE = POPUP;
+            ret_val = CALLPROC msa_fp_drop_table (
+                      h_table = :h_table1);
+            RETURN 9;
+        ENDIF;
+
+        UPDATE :h_table1
+        SET    no_forms_cleared = :h_no_forms_cleared
+        WHERE  day = :g_day_array[:h_count].day;
+
+        ret_val = CALLPROC check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_frpr_name = :h_frpr_name,
+                  h_rollback = 'N');
+
+        IF ret_val = 9
+        THEN
+            MESSAGE 'System error updating counts from contributor_period for day ' + ascii(:h_count) 
+            WITH STYLE = POPUP;
+            ret_val = CALLPROC msa_fp_drop_table (
+                      h_table = :h_table1);
+            RETURN 9;
+        ENDIF;
+
+};
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    RESUME FIELD tf;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'PreviousIndustry' =
+{
+    IF :h_counter = 1
+    THEN
+        MESSAGE 'No more Industries'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_counter = :h_counter - 1;
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'NextIndustry' =
+{
+    IF :h_counter = :h_max_rows
+    THEN
+        MESSAGE 'No more Industries'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_counter = :h_counter + 1;
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}
+
+/*---------------------------------------------------------------------
+                  L O C A L   P R O C E D U R E
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_table () =
+{
+    industry = :g_industry_array[:h_counter].industry;
+    ind_message = 'Industry ' + VARCHAR(:h_counter) + 
+		    ' of ' + VARCHAR(:h_max_rows);
+
+    /*modify :h_table1
+    to btree on day_order;
+
+        ret_val = CALLPROC check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_frpr_name = :h_frpr_name,
+                  h_rollback = 'N');
+
+        IF ret_val = 9
+        THEN
+            MESSAGE 'System error  modifying table ' + :h_table1
+            WITH STYLE = POPUP;
+            ret_val = CALLPROC msa_fp_drop_table (
+                      h_table = :h_table1);
+            RETURN 9;
+        ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf = 
+        SELECT   day,
+		 no_forms_cleared
+	FROM     :h_table1 ;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  H_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading from ' + :h_table1
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows loaded from ' + :h_table1
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+*/
+
+
+    h_count = 0;
+
+    SELECT day as h_day,
+	   day_order 
+    FROM   :h_table1
+    ORDER BY day_order
+    {
+	h_count = h_count + 1;
+
+	SELECT COUNT(a.contributor_reference) AS h_no_forms_cleared
+        FROM   contributor_period a
+        WHERE  a.contributor_industry = :industry
+        AND    a.user_id <> 'prodlive'
+	AND    a.user_id = :user_id
+        AND    a.period = :period
+	AND    a.corr_week_no = :weekno
+        AND    a.correct_date IN(
+	       SELECT (date(start_date) + (varchar(:h_count) + ' days'))
+	       FROM   weekno_dates
+	       WHERE  period = :period
+	       AND    week = :weekno);
+
+
+        ret_val = CALLPROC check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_frpr_name = :h_frpr_name,
+                  h_rollback = 'N');
+
+        IF ret_val = 9
+        THEN
+            MESSAGE 'System error selecting counts from contributor_period for day ' + ascii(:h_count) 
+            WITH STYLE = POPUP;
+            ret_val = CALLPROC msa_fp_drop_table (
+                      h_table = :h_table1);
+            RETURN 9;
+        ENDIF;
+
+        UPDATE :h_table1
+        SET    no_forms_cleared = :h_no_forms_cleared
+        WHERE  day = :g_day_array[:h_count].day;
+
+        ret_val = CALLPROC check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_frpr_name = :h_frpr_name,
+                  h_rollback = 'N');
+
+        IF ret_val = 9
+        THEN
+            MESSAGE 'System error updating counts from contributor_period for day ' + ascii(:h_count) 
+            WITH STYLE = POPUP;
+            ret_val = CALLPROC msa_fp_drop_table (
+                      h_table = :h_table1);
+            RETURN 9;
+        ENDIF;
+
+};
+        tf = 
+        SELECT   day,
+		 no_forms_cleared
+	FROM     :h_table1 ;
+
+
+    RETURN 0;
+}

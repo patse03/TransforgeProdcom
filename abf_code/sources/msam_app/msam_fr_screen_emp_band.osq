@@ -1,0 +1,219 @@
+
+/*----------------------------------------------------------------------
+                     msam_fr_screen_emp_band 
+
+----------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries          = INTEGER1 NOT NULL,
+        h_retries_allowed  = INTEGER1 NOT NULL,
+        h_retry_or_not     = CHAR(5)  NOT NULL,
+        h_frpr_name        = VARCHAR(25)  NOT NULL,
+        prev_period        = INTEGER4 NOT NULL,
+        char_period        = CHAR(6) NOT NULL,
+        table_name         = CHAR(24) NOT NULL,
+        temp_table         = CHAR(24) NOT NULL,
+        ret_val            = INTEGER  NOT NULL
+
+{
+    msa_date = 'now';
+    h_frpr_name = 'msam_fr_screen_emp_band';
+    h_retries_allowed = 3;
+}
+
+FIELD 'inquiry' =
+{
+    /*------------------------------------------------------------------
+    Field validated & the maximum period available to the user is
+    picked up and output to the screen
+    ------------------------------------------------------------------*/
+
+    IF inquiry <> 14 AND inquiry <> 15 
+    THEN
+        MESSAGE 'Inquiry must be 14 or 15'
+        WITH STYLE = POPUP;
+        RESUME FIELD inquiry;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT IFNULL(MAX(period),0) AS period
+        FROM   inquiry_period
+        WHERE  inquiry = :inquiry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in selecting from inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Error finding latest period on inquiry_period'
+        WITH STYLE = POPUP;
+        RESUME FIELD inquiry;
+    ENDIF;
+
+    IF period = 0 
+    THEN
+        MESSAGE 'No data available for this inquiry - please check'
+        WITH STYLE = POPUP;
+        RESUME FIELD inquiry;
+    ENDIF;
+
+    RESUME FIELD period;
+}
+
+FIELD 'period' =
+{
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT week_no
+        FROM   inquiry_period
+        WHERE  inquiry = :inquiry 
+        AND    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Error finding latest week on inquiry_period'
+        WITH STYLE = POPUP;
+        RESUME FIELD inquiry;
+    ENDIF;
+
+    RESUME FIELD week_no;
+
+}
+
+FIELD 'week_no' =
+{
+    /*------------------------------------------------------------------
+        Last two characters of PERIOD CHECKED if user requests quarterly
+        inquiry
+    ------------------------------------------------------------------*/
+
+    IF inquiry = 15 
+    THEN
+        IF period < 10000 
+        THEN
+            char_period = '00' + ASCII(:period)
+        ELSEIF period < 100000 
+        THEN
+            char_period = '0' + ASCII(:period)
+        ELSE
+            char_period = ASCII(:period)
+        ENDIF ;
+ 
+        IF RIGHT(char_period,2) <> '03' AND
+           RIGHT(char_period,2) <> '06' AND
+           RIGHT(char_period,2) <> '09' AND
+           RIGHT(char_period,2) <> '12'
+        THEN
+            MESSAGE 'You have asked for Quarterly details' +
+                    ' but have not entered a quarterly period, please' +
+                    ' check' 
+            WITH STYLE = POPUP;
+            RESUME FIELD period;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Call the display program
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msam_fp_screen_band_emp (
+              period      = :period,
+              inquiry     = :inquiry,
+              week_no     = :week_no);
+
+    IF ret_val <> 0 
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLFRAME msam_fr_emp_band_display (
+              period      = :period,
+              inquiry     = :inquiry,
+              week_no     = :week_no);
+
+    IF ret_val <> 0 
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = 'emp_response');
+
+    msa_date = 'now';
+
+    RESUME FIELD inquiry;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    msa_date = 'now';
+    HELP_FORMS(SUBJECT = 'help',
+	       FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}

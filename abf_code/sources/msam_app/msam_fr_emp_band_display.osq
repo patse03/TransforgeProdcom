@@ -1,0 +1,573 @@
+/******************************************************************************
+
+    Displays response rate by employment strata.
+
+******************************************************************************/
+
+INITIALIZE (p_table = VARCHAR(32) NOT NULL WITH DEFAULT) =
+
+DECLARE 
+  h_retries_allowed       = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries               = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not          = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name             = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_num_rows              = INTEGER4    NOT NULL WITH DEFAULT,
+  h_rowcount              = INTEGER4    NOT NULL WITH DEFAULT,
+  h_counter               = INTEGER4    NOT NULL WITH DEFAULT,
+  h_return                = INTEGER4    NOT NULL WITH DEFAULT,
+  h_return2               = INTEGER4    NOT NULL WITH DEFAULT,
+  h_contributor_reference = CHAR(11)    NOT NULL WITH DEFAULT,
+  h_sizeband              = INTEGER4    NOT NULL WITH DEFAULT,
+  h_form_rec              = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_tot_ret               = INTEGER4    NOT NULL WITH DEFAULT,
+  h_tot_sel               = INTEGER4    NOT NULL WITH DEFAULT,
+  h_perc_ret              = FLOAT8      NOT NULL WITH DEFAULT,
+  h_industry              = INTEGER4    NOT NULL WITH DEFAULT,
+  h_week                  = INTEGER1    NOT NULL WITH DEFAULT,
+  h_table_1               = VARCHAR(25) NOT NULL WITH DEFAULT,
+  h_table_2               = VARCHAR(25) NOT NULL WITH DEFAULT,
+  
+  lp_error_check          = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_full_error_check     = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+
+  h_frpr_name         = 'msam_fr_emp_response';
+  h_retries_allowed   = 3;
+  h_table_1           = 'tt_emp_response_1';
+  h_table_2           = 'tt_emp_response_2';
+
+  s_title = 'CURRENT RESPONSE RATE BY EMPLOYMENT BAND';
+
+  SET_FORMS FIELD '' (MODE(tf_display) = 'READ');
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+  /*------------------------------------------------------------------------
+     Drop working tables.
+  ------------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_drop_table (p_table = :h_table_1);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure */
+    RETURN 9;
+  ENDIF;
+
+  h_return = CALLPROC msa_fp_drop_table (p_table = :h_table_2);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure */
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+     Create first working table.
+  ------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    CREATE TABLE :h_table_1
+    AS 
+    SELECT a.contributor_reference,
+           INT4(0) AS sizeband,
+           '         ' as strata,
+           a.rec_week_no as weekno,
+           a.register_emp,
+           a.form_received
+    FROM   contributor_period a
+    WHERE  a.period = :g_period
+      AND  a.contributor_industry =
+        (  SELECT c.contributor_industry
+           FROM   :p_table c
+           WHERE c.contributor_industry = a.contributor_industry);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to create working table ' +:h_table_1 +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  h_rowcount = :h_num_rows;
+
+  MODIFY :h_table_1 TO BTREE ON contributor_reference;
+ 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to modify structure of table ' +:h_table_1 +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+      
+
+  /*------------------------------------------------------------------------
+     9 Bulk updates is quicker than a loop in this instance.
+  ------------------------------------------------------------------------*/
+
+  MESSAGE 'Processing data, please wait...';
+
+  /*....................................................................
+     Update first strata.
+  ....................................................................*/
+  
+  UPDATE :h_table_1
+  SET    sizeband = 1,
+         strata   = '0-9'
+  WHERE  register_emp < 10;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to process strata update 1. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+
+  /*....................................................................
+     Update second strata.
+  ....................................................................*/
+  
+  UPDATE :h_table_1
+  SET    sizeband = 2, 
+         strata   = '10-19'
+  WHERE  register_emp > 9 AND register_emp < 20;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to process strata update 2. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+
+  /*....................................................................
+     Update third strata.
+  ....................................................................*/
+  
+  UPDATE :h_table_1
+  SET    sizeband = 3,
+         strata   = '20-49'
+  WHERE  register_emp > 19 AND register_emp < 50;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to process strata update 3. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+
+  /*....................................................................
+     Update fourth strata.
+  ....................................................................*/
+  
+  UPDATE :h_table_1
+  SET    sizeband = 4,
+         strata   = '50-99'
+  WHERE  register_emp > 49 AND register_emp < 100;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to process strata update 4. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+
+  /*....................................................................
+     Update fifth strata.
+  ....................................................................*/
+  
+  UPDATE :h_table_1
+  SET    sizeband = 5,
+         strata   = '100-249'
+  WHERE  register_emp > 99 AND register_emp < 250;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to process strata update 5. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+
+  /*....................................................................
+     Update sixth strata.
+  ....................................................................*/
+  
+  UPDATE :h_table_1
+  SET    sizeband = 6,
+         strata   = '250-499'
+  WHERE  register_emp > 249 AND register_emp < 500;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to process strata update 6. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+
+  /*....................................................................
+     Update seventh strata.
+  ....................................................................*/
+  
+  UPDATE :h_table_1
+  SET    sizeband = 7,
+         strata   = '500-999'
+  WHERE  register_emp > 499 AND register_emp < 1000;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to process strata update 7. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+
+  /*....................................................................
+     Update eighth strata.
+  ....................................................................*/
+  
+  UPDATE :h_table_1
+  SET    sizeband = 8,
+         strata   = '1000-9999'
+  WHERE  register_emp > 999 AND register_emp < 10000;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to process strata update 8. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+
+  /*....................................................................
+     Update ninth strata.
+  ....................................................................*/
+  
+  UPDATE :h_table_1
+  SET    sizeband = 9,
+         strata   = '10000+'
+  WHERE register_emp > 9999; 
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to process strata update 9. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  /*------------------------------------------------------------------------
+     Create second working table.
+  ------------------------------------------------------------------------*/
+
+  CREATE TABLE :h_table_2
+  AS 
+  SELECT DISTINCT sizeband,
+         strata,
+         INT4(0)   AS tot_sel,
+         INT4(0)   AS tot_ret,
+         float8(0) AS perc_ret
+  FROM  :h_table_1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to create working table ' +:h_table_2 +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :h_table_2 TO BTREE ON sizeband;
+ 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to modify structure of table ' +:h_table_2 +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+      
+  /*--------------------------------------------------------------
+     Loop to update totals.
+  --------------------------------------------------------------*/
+
+  SELECT  sizeband AS h_sizeband
+  FROM    :h_table_2
+  ORDER BY sizeband
+  BEGIN
+
+    MESSAGE 'Processing strata ' +VARCHAR(:h_sizeband) +'...';
+
+    h_tot_sel  = 0;
+    h_tot_ret  = 0;
+    h_perc_ret = 0;
+
+    SELECT form_received AS h_form_rec,
+           weekno        AS h_week
+    FROM   :h_table_1 
+    WHERE  sizeband  = :h_sizeband
+    BEGIN
+      h_tot_sel = :h_tot_sel + 1;
+
+      IF :h_week <= :g_max_week
+      THEN
+
+        IF :h_form_rec != 'N'
+        THEN
+          h_tot_ret = :h_tot_ret + 1;
+        ENDIF;
+
+      ENDIF;
+
+    END;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      MESSAGE 'ERROR: Failed to select data for totalling loop ' 
+            + VARCHAR(:h_sizeband) +'. '
+            + 'Error code ' +VARCHAR(:h_return2) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+    UPDATE :h_table_2
+    SET    tot_sel  = :h_tot_sel,
+           tot_ret  = :h_tot_ret
+    WHERE  sizeband = :h_sizeband;
+
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return2 != 0
+    THEN
+      MESSAGE 'ERROR: Failed to update working table following totalling loop ' 
+            + VARCHAR(:h_sizeband) +'. '
+            + 'Error code ' +VARCHAR(:h_return2) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select strata for totalling loop. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+           
+  /*--------------------------------------------------------------
+     Calculate response rates. 
+  --------------------------------------------------------------*/
+
+  UPDATE :h_table_2
+  SET    perc_ret    = tot_ret * 100 / tot_sel;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to calculate response rates on working table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+           
+  /*--------------------------------------------------------------
+     Display data from second working table in table field.
+  --------------------------------------------------------------*/
+
+  tf_display =
+
+  SELECT strata,
+         tot_sel,
+         tot_ret,
+         (tot_sel - tot_ret) as tot_non_resp,
+         perc_ret,
+         sizeband
+  FROM   :h_table_2
+  ORDER  BY sizeband;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to display employment response data on screen. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+           
+  REDISPLAY;
+}
+
+/*************************** FIELD ACTIVATIONS ****************************/
+
+FIELD 'tf_display.perc_ret' =
+{
+  RESUME FIELD tf_display;
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'End', KEY FRSKEY14 = 
+{
+  RETURN 0;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_num_row         = BYREF(:h_num_rows), 
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

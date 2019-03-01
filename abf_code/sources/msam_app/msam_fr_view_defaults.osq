@@ -1,0 +1,448 @@
+INITIALIZE (p_table = VARCHAR(36) NOT NULL WITH DEFAULT)=
+
+DECLARE
+  h_frpr_name       = VARCHAR(36) NOT NULL WITH DEFAULT,
+  h_return          = INTEGER(1)  NOT NULL WITH DEFAULT,
+  h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+
+  lp_load_data        = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_error_check      = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT, 
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+
+  h_frpr_name       = 'msam_fr_view_defaults';
+  h_retries_allowed = 10;
+
+  h_return = CALLPROC lp_load_data;
+
+  IF h_return = 1
+  THEN
+    /* Warning message handled by local procedure */
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    /* Error message handled by local procedure */
+    RETURN 9;
+  ENDIF;
+
+  RESUME menu;
+
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'Back', KEY FRSKEY12 =
+{
+  RETURN 0;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*====================================================================
+      Local procedure to populate screen with counts aplicable
+      to the period variable, initially set on live to the max period
+      available in contributor_period or to a fixed value if on test.
+======================================================================*/
+
+PROCEDURE lp_load_data =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  MESSAGE 'Loading data. Please wait...';
+
+  /*--------------------------------------------------------------
+           Initialising form variables
+  --------------------------------------------------------------*/
+
+  s_defunc1 = 0; /* Defaulted Uncleared Question 1 */
+  s_defunc3 = 0; /* Defaulted Uncleared Question 3 */
+  s_defunc4 = 0; /* Defaulted Uncleared Question 4 */
+  s_defunc6 = 0; /* Defaulted Uncleared Question 6 */
+  s_defunc8 = 0; /* Defaulted Uncleared Question 8 */
+  s_defunc9 = 0; /* Defaulted Uncleared Question 9 */
+  
+  s_defcle1 = 0; /* Defaulted Cleared Question 1 */
+  s_defcle3 = 0; /* Defaulted Cleared Question 3 */
+  s_defcle4 = 0; /* Defaulted Cleared Question 4 */
+  s_defcle6 = 0; /* Defaulted Cleared Question 6 */
+  s_defcle8 = 0; /* Defaulted Cleared Question 8 */
+  s_defcle9 = 0; /* Defaulted Cleared Question 9 */
+  
+  s_deftot1 = 0; /* Defaulted Total Question 1 */
+  s_deftot3 = 0; /* Defaulted Total Question 1 */
+  s_deftot4 = 0; /* Defaulted Total Question 1 */
+  s_deftot6 = 0; /* Defaulted Total Question 1 */
+  s_deftot8 = 0; /* Defaulted Total Question 1 */
+  s_deftot9 = 0; /* Defaulted Total Question 1 */
+  
+  /*-------------------------------------------------------------------------
+           DEFAULT SCORES BREAKDOWN
+  -------------------------------------------------------------------------*/
+
+  lp_return = CALLPROC msa_fp_drop_table (p_table = 'tt_maninfo_defaults');
+
+  IF lp_return != 0
+  THEN
+    MESSAGE 'ERROR: Unable to drop third working table. Error code '
+          + VARCHAR(:lp_return) + '. Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    CREATE TABLE tt_maninfo_defaults
+    AS
+    SELECT 'U'               AS cleared,
+           a.code            AS code,
+           COUNT(a.question) AS secount
+    FROM   bto_question_score a,
+           contributor_period b
+    WHERE  a.contributor_reference = b.contributor_reference
+      AND  a.period = b.period
+      AND  a.period = :g_period 
+      AND  b.rec_week_no  > 0
+      AND  b.corr_week_no = 0
+      AND  b.contributor_industry = 
+        (  SELECT c.contributor_industry
+           FROM   :p_table c
+           WHERE c.contributor_industry = b.contributor_industry)
+    GROUP  BY a.code
+  
+    UNION
+  
+    SELECT 'C'               AS cleared,
+           a.code            AS code,
+           COUNT(a.question) AS secount
+    FROM   bto_question_score a, 
+           contributor_period b
+    WHERE  a.contributor_reference = b.contributor_reference
+      AND  a.period = b.period
+      AND  a.period = :g_period  
+      AND  b.rec_week_no  > 0
+      AND  b.corr_week_no > 0
+      AND  b.contributor_industry = 
+        (  SELECT c.contributor_industry
+           FROM   :p_table c
+           WHERE c.contributor_industry = b.contributor_industry)
+    GROUP  BY a.code;
+
+    lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF lp_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF lp_return != 0 
+  THEN
+    MESSAGE 'ERROR: Unable to create third working table. Error code '
+          + VARCHAR(:lp_return) + '. Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+  
+  /*..................................................................
+             1: Written Ins.
+  ..................................................................*/
+  
+  SELECT secount AS s_defunc1 
+  FROM tt_maninfo_defaults
+  WHERE cleared = 'U' 
+    AND code    = 1;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_defunc1 from third working table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  
+  SELECT secount AS s_defcle1 
+  FROM   tt_maninfo_defaults
+  WHERE  cleared = 'C' 
+    AND  code    = 1;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_defcle1 from third working table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  s_deftot1 = s_defunc1 + s_defcle1;
+  
+  /*..................................................................
+     2: Pre Selective Editing. 
+     ( Now off spectrum.)       
+  ..................................................................*/
+
+  /*..................................................................
+           3: Key Response.
+  ..................................................................*/
+  
+  SELECT secount AS s_defunc3 
+  FROM tt_maninfo_defaults
+  WHERE cleared = 'U' 
+    AND code = 3;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_defunc3 from third working table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  
+  SELECT secount AS s_defcle3 
+  FROM tt_maninfo_defaults
+  WHERE cleared = 'C' 
+    AND code = 3;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_defcle3 from third working table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  s_deftot3 := s_defunc3 + s_defcle3;
+  
+  /*..................................................................
+             4: Special Marker.
+  ..................................................................*/
+  
+  SELECT secount AS s_defunc4 
+  FROM tt_maninfo_defaults
+  WHERE cleared = 'U' 
+    AND code = 4;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_defunc4 from third working table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  
+  SELECT secount AS s_defcle4 
+  FROM tt_maninfo_defaults
+  WHERE cleared = 'C' 
+    AND code = 4;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_defcle4 from third working table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  s_deftot4 := s_defunc4 + s_defcle4;
+  
+  /*..................................................................
+     5: Response to new question.
+     (Removed as renedered obsolete my newly selected exercise.)
+  ..................................................................*/
+  
+  /*..................................................................
+             6,7: Gross question total is zero not available.
+  ..................................................................*/
+  
+  SELECT secount AS s_defunc6 
+  FROM tt_maninfo_defaults
+  WHERE cleared = 'U' 
+    AND (code = 6 OR code = 7);
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_defunc6 from third working table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  
+  SELECT secount AS s_defcle6 
+  FROM tt_maninfo_defaults
+  WHERE cleared = 'C' 
+    AND (code = 6 OR code = 7);
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_defcle6 from third working table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  s_deftot6 := s_defunc6 + s_defcle6;
+  
+  /*..................................................................
+            8: New question left blank.
+  ..................................................................*/
+  
+  SELECT secount AS s_defunc8 
+  FROM tt_maninfo_defaults
+  WHERE cleared = 'U' 
+    AND code = 8;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_defunc8 from third working table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  
+  SELECT secount AS s_defcle8 
+  FROM tt_maninfo_defaults
+  WHERE cleared = 'C' 
+    AND code = 8;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_defcle8 from third working table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  s_deftot8 := s_defunc8 + s_defcle8;
+  
+  /*..................................................................
+             9: Batch aggregation.
+  ..................................................................*/
+  
+  SELECT secount AS s_defunc9 
+  FROM tt_maninfo_defaults
+  WHERE cleared = 'U' 
+    AND code = 9;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_defunc9 from third working table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  
+  SELECT secount AS s_defcle9 
+  FROM tt_maninfo_defaults
+  WHERE cleared = 'C' 
+    AND code = 9;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to set value of s_defcle9 from third working table. '
+          + 'Error code ' +VARCHAR(:lp_return) + '. '
+          + 'Please call IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+  
+  s_deftot9 := s_defunc9 + s_defcle9;
+  
+}	
+  
+/*=======================================================================
+    Local procedure to check sql for errors. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = ':h_frpr_name');
+
+  RETURN :lp_return;
+
+}
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+

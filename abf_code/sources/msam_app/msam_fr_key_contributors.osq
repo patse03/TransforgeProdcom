@@ -1,0 +1,638 @@
+/******************************************************************************
+     Key Contributors by Industry 
+******************************************************************************/
+
+INITIALIZE (p_table = VARCHAR(32) NOT NULL WITH DEFAULT)=
+
+DECLARE 
+  h_return            = INTEGER4     NOT NULL WITH DEFAULT,
+  h_return2           = INTEGER4     NOT NULL WITH DEFAULT,
+  h_pages             = INTEGER4     NOT NULL WITH DEFAULT,
+  h_retries           = INTEGER1     NOT NULL WITH DEFAULT,
+  h_retries_allowed   = INTEGER1     NOT NULL WITH DEFAULT,
+  h_retry_or_not      = CHAR(5)      NOT NULL WITH DEFAULT,
+  h_yesno             = CHAR(1)      NOT NULL WITH DEFAULT,
+  h_mode              = CHAR(3)      NOT NULL WITH DEFAULT,
+  h_table             = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_command           = VARCHAR(200) NOT NULL WITH DEFAULT,
+  h_file              = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_field_name        = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_rows              = INTEGER4     NOT NULL WITH DEFAULT,
+  h_frpr_name         = VARCHAR(30)  NOT NULL WITH DEFAULT,
+  h_field             = VARCHAR(30)  NOT NULL WITH DEFAULT,
+  h_rowcount          = INTEGER4     NOT NULL WITH DEFAULT,
+  h_response          = FLOAT8       NOT NULL WITH DEFAULT,
+
+  lp_load_data        = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_error_check      = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+  h_retries_allowed   = 3;
+  h_frpr_name = 'msam_fr_key_contributors';
+  h_table = 'tt_key_despatch';
+  h_mode = 'ALL';
+
+  s_count     = 0;
+  s_receipted = 0;
+  s_response  = 0.0;
+  s_title     = 'KEY RESPONDERS';
+
+  SET_FORMS FIELD '' (MODE(tf) = 'READ',
+
+                      INVISIBLE (s_receipted) = 0,
+                      REVERSE   (s_receipted) = 1,
+
+                      INVISIBLE (s_response)  = 0,
+                      REVERSE   (s_response)  = 1,
+
+                      INVISIBLE (s_cleared)   = 0,
+                      REVERSE   (s_cleared)   = 1,
+
+                      INVISIBLE (s_clearance) = 0,
+                      REVERSE   (s_clearance) = 1);
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0; 
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+  /*------------------------------------------------------------------
+      Create table of all contributors for required industry/period
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Selecting Data . . .';
+
+  h_return = CALLPROC msa_fp_drop_table (h_table = :h_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled by extarenal procedure */
+    RETURN 9;
+  ENDIF;
+
+  MESSAGE 'Creating List of Contributors . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+  DO
+
+    h_retries = :h_retries + 1;
+
+    CREATE TABLE :h_table
+    AS 
+    SELECT a.contributor_reference,
+           a.contributor_industry,
+           '                                   ' AS add_name1,
+           '  ' AS country,
+           'K'  AS key_disp,
+           a.keyresp,
+           a.register_emp,
+           a.receipt_date,
+           a.form_status
+    FROM   contributor_period a
+    WHERE  a.period        = :g_period
+      AND  a.keyresp       = 1
+      AND  a.contributor_industry =
+        (  SELECT c.contributor_industry
+           FROM   :p_table c
+           WHERE  c.contributor_industry = a.contributor_industry);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: There are no contributors that fit the given criteria.'
+    WITH STYLE = POPUP;
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select data for given criteria. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Modify
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Modifying Table . . .';
+
+  MODIFY :h_table TO BTREE UNIQUE 
+      ON contributor_industry, contributor_reference ;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to modify storage structure of ' +h_table +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+       Add contributor name
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Updating Contributor List . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+  DO
+    h_retries = :h_retries + 1;
+
+    UPDATE  :h_table a
+    FROM    contributor b
+    SET     add_name1 = b.add_name1
+    WHERE   a.contributor_reference = b.contributor_reference;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to update ' +h_table +' with contributor names. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+       Load data to screen in default mode.
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC lp_load_data ();
+
+  IF h_return = 1 
+  THEN
+
+    /* Warning message handled by local procedure */
+
+    h_mode = 'ALL';
+
+    h_return2 = CALLPROC lp_load_data ();
+
+    IF h_return2 != 0
+    THEN
+      /* Error message handled by local procedure */
+      RETURN 9;
+    ENDIF;
+    
+  ELSEIF h_return > 1
+  THEN
+    /* Error message handled by local procedure */
+    RETURN 9;
+  ENDIF;
+  
+  RESUME FIELD tf;
+
+}
+
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'Mode', KEY FRSKEY4 =
+{
+
+  IF h_mode = 'ALL'
+  THEN
+    h_mode = 'NON';
+  ELSE
+   h_mode = 'ALL';
+  ENDIF;
+
+  h_return = CALLPROC lp_load_data();
+
+  IF h_return = 1 
+  THEN
+    /* Warning message handled by local procedure */
+
+    h_mode = 'ALL';
+
+    h_return2 = CALLPROC lp_load_data ();
+
+    IF h_return2 != 0
+    THEN
+      /* Error message handled by local procedure */
+      RETURN 9;
+    ENDIF;
+
+  ELSEIF h_return > 1
+  THEN
+    /* Error message handled by local procedure */
+    RETURN 9;
+  ENDIF;
+
+  IF h_mode = 'ALL'
+  THEN
+    s_title = 'KEY RESPONDERS';
+    SET_FORMS FIELD '' ( INVISIBLE (s_receipted) = 0,
+                         REVERSE   (s_receipted) = 1,
+
+                         INVISIBLE (s_response)  = 0,
+                         REVERSE   (s_response)  = 1,
+  
+                         INVISIBLE (s_cleared)   = 0,
+                         REVERSE   (s_cleared)   = 1,
+
+                         INVISIBLE (s_clearance) = 0,
+                         REVERSE   (s_clearance) = 1);
+  ELSE
+    s_title = 'NON-RESPONDERS';
+    SET_FORMS FIELD '' ( INVISIBLE (s_receipted) = 1,
+                         REVERSE   (s_receipted) = 0,
+
+                         INVISIBLE (s_response)  = 1,
+                         REVERSE   (s_response)  = 0,
+  
+                         INVISIBLE (s_cleared)   = 1,
+                         REVERSE   (s_cleared)   = 0,
+
+                         INVISIBLE (s_clearance) = 1,
+                         REVERSE   (s_clearance) = 0);
+      REDISPLAY;
+  ENDIF;
+
+  REDISPLAY;
+
+  RESUME FIELD tf; 
+  
+}
+
+'Expand', KEY FRSKEY5 =
+{
+
+  IF g_scope = 'GROUP'
+  OR g_scope = 'ALL'
+  THEN
+    MESSAGE 'WARNING: The EXPAND function can only be used when '
+          + 'a specific industry has been selected as Scope.'
+    WITH STYLE = POPUP;
+  ELSE
+     
+    h_return = CALLFRAME msam_fr_key_unclear;
+
+    IF h_return != 0
+    THEN
+      RETURN :h_return;
+    ENDIF;
+
+  ENDIF;
+
+  REDISPLAY;
+       
+  RESUME FIELD tf; 
+
+}
+
+
+'Print', KEY FRSKEY8 =
+{
+  IF s_count = 0
+  THEN
+    MESSAGE 'WARNING: There is no data to print.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  MESSAGE 'Preparing Report . . .';
+
+  h_return = CALLPROC msa_cp_callsys 
+           ( 'report ' + :g_database 
+           + ' ''(h_table = "' + :h_table + '"' 
+           + ',user_name = "' + :g_user_name + '"' 
+           + ',inquiry = 14' 
+           + ',period = ' + VARCHAR(:g_period) 
+           + ')'' -i$REPORTS/msaeb_rw_despatch_key.rw' 
+           + ' > report.output 2> report.output');
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to produce report for printing. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immidiately.'
+    WITH STYLE = POPUP;
+  ELSE
+
+    /*--------------------------------------------------------------
+         Prompt if print will be 5 pages or more
+    --------------------------------------------------------------*/
+
+    h_pages = (:s_count / 71) + 1;
+
+    IF :h_pages >= 5
+    THEN
+
+      h_yesno = '';
+
+      WHILE h_yesno != 'Y' AND h_yesno != 'N'
+      DO
+
+         h_yesno = PROMPT 'NOTE: This report will require ' 
+                        + VARCHAR(:h_pages) + ' '
+                        + 'pages. Do you wish to continue? [Y/N] : '
+                   WITH STYLE = POPUP;
+
+         h_yesno = UPPER(h_yesno);
+
+      ENDWHILE;
+
+      IF h_yesno = 'N'
+      THEN
+        RESUME;
+      ENDIF;
+
+    ENDIF;
+
+    /*--------------------------------------------------------------
+         Remove last line - so a blank end page is not printed
+    --------------------------------------------------------------*/
+
+    h_return = CALLPROC msa_cp_callsys 
+             ( 'lines=`wc -l < msaeb_rw_despatch_key.rpt`;' 
+             + 'lines=`expr ${lines} - 1`;' 
+             + 'head -${lines} msaeb_rw_despatch_key.rpt | ' 
+             + 'lp -o16p -d' + :g_printer 
+             + ' >> report.output 2>> report.output');
+
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to send report to printer ' +:g_printer +'. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immidiately.'
+      WITH STYLE = POPUP;
+    ELSE
+      MESSAGE 'SUCCESS: Report produced and sent to printer ' +:g_printer +'.'
+      WITH STYLE = POPUP;
+    ENDIF;
+
+  ENDIF;
+}
+
+'Questions', KEY FRSKEY11 =
+{
+
+  INQUIRE_FORMS FORM (h_field = FIELD);
+
+  IF :h_field != 'tf'
+  THEN
+    MESSAGE 'WARNING: Please highlight the required contributor and try again.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+  IF :h_rows = 0
+  THEN
+    MESSAGE 'WARNING: Please highlight the required contributor and try again.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  h_return = CALLFRAME msam_fr_view_key_qst 
+                     ( p_contributor_reference = :tf.contributor_reference);
+
+  IF h_return > 0
+  THEN
+    /* Error message handled in external procedure */
+    RETURN :h_return;
+  ENDIF;
+
+  RESUME FIELD tf;
+
+}
+
+'End', KEY FRSKEY14 =
+{
+  h_return = CALLPROC msa_fp_drop_table (h_table = :h_table);
+
+  RETURN 0;
+}
+
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*============================================================================
+   Local procedure to load data to screen dependant on mode, and
+   populate or blank summary fields. 
+============================================================================*/
+
+PROCEDURE lp_load_data ()=
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+  /*------------------------------------------------------------------
+       Set up screen table
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Selecting to Screen . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    IF h_mode = 'ALL' 
+    THEN
+
+      tf =
+
+      SELECT   contributor_reference,
+               contributor_industry,
+               add_name1,
+               register_emp,
+               receipt_date,
+               key_disp
+      FROM     :h_table
+      ORDER BY contributor_industry,
+               contributor_reference;
+
+    ELSE /* "NON" */
+
+      tf =
+
+      SELECT   contributor_reference,
+               contributor_industry,
+               add_name1,
+               register_emp,
+               receipt_date,
+               key_disp
+      FROM     :h_table
+      WHERE    receipt_date = ''
+      ORDER BY contributor_industry,
+               contributor_reference;
+     
+    ENDIF; 
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  s_count = :h_rowcount;
+
+  IF h_return = 1
+  THEN
+    /* Overall no rows would have dealt with earlier */
+    MESSAGE 'WARNING: There are no non-responders to display.'
+    WITH STYLE = POPUP;
+    RETURN 1;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to load data to screen. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*--------------------------------------------------------------------------
+     If mode is "ALL" then calculate response rate. 
+     Otherwise, blank it.
+  --------------------------------------------------------------------------*/
+  
+  IF h_mode = 'ALL'
+  THEN
+
+    SELECT COUNT(contributor_reference) AS s_receipted
+    FROM   :h_table
+    WHERE  receipt_date != '';
+
+    h_return = lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN 
+      MESSAGE 'ERROR: Failed to count receipted key responders. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immidiately.'
+      WITH STYLE = POPUP; 
+      RETURN 9;
+    ENDIF;
+
+    SELECT COUNT(contributor_reference) AS s_cleared
+    FROM   :h_table
+    WHERE  form_status = 4;
+
+    h_return = lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN 
+      MESSAGE 'ERROR: Failed to count cleared key responders. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immidiately.'
+      WITH STYLE = POPUP; 
+      RETURN 9;
+    ENDIF;
+
+    REDISPLAY; 
+
+    IF :s_count > 0
+    THEN
+      s_response  = (100.00/:s_count) * :s_receipted;
+      s_clearance = (100.00/:s_count) * :s_cleared;
+    ELSE
+      s_response  = 0.0;
+      s_clearance = 0.0;
+    ENDIF;
+
+    REDISPLAY; 
+
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_num_row         = BYREF(:h_rowcount),
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+
+

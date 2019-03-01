@@ -1,0 +1,623 @@
+/*----------------------------------------------------------------------
+                      msam_fr_rec_not_on_2
+
+         This frame provides the user with counts of
+              forms receipted but NOT taken on
+----------------------------------------------------------------------*/
+
+INITIALIZE (
+        sc_group              = VARCHAR(5) NOT NULL,
+        temp_table            = VARCHAR(30) NOT NULL) =
+
+DECLARE h_retries_allowed     = INTEGER1 NOT NULL,
+        h_retries             = INTEGER1 NOT NULL,
+        h_retry_or_not        = CHAR(5) NOT NULL,
+        h_frpr_name           = VARCHAR(24) NOT NULL,
+        prev_week_no          = INTEGER4 NOT NULL,
+        form_taken_on         = CHAR(1) NOT NULL,
+        receipt_date          = DATE NOT NULL,
+        correct_date          = DATE NOT NULL,
+        corr_week_no          = INTEGER4 NOT NULL,
+        ret_val               = INTEGER NOT NULL,
+        h_report_table        = VARCHAR(30) NOT NULL,
+        h_rec_nto             = INTEGER4 NOT NULL,
+        h_rec_nts             = INTEGER4 NOT NULL,
+        h_rec_nco             = INTEGER4 NOT NULL,
+        h_rec_ncs             = INTEGER4 NOT NULL,
+        h_rec_c               = INTEGER4 NOT NULL,
+        h_pw_c                = INTEGER4 NOT NULL,
+        h_non_resp            = INTEGER4 NOT NULL,
+        h_target              = INTEGER4 NOT NULL,
+        h_industry            = INTEGER4 NOT NULL,
+        h_regemp              = INTEGER4 NOT NULL,
+        h_cutoff              = INTEGER4 NOT NULL,
+        h_counter             = INTEGER4 NOT NULL,
+        h_day                 = CHAR(2) NOT NULL,
+        h_month               = CHAR(2) NOT NULL,
+        h_year                = CHAR(4) NOT NULL,
+        h_command             = VARCHAR(100) NOT NULL,
+        h_table               = VARCHAR(24) NOT NULL,
+        h_file                = VARCHAR(50) NOT NULL
+
+{
+    prev_week_no = week_no - 1;
+    h_retries_allowed   = 3;
+    h_frpr_name = 'msam_fr_rec_not_on_2';
+    h_report_table = 'msam_rw_not_on_table';
+    h_table = 'not_taken_on';
+
+    SET_FORMS FIELD '' (MODE(tf_display) = 'READ',
+                        MODE(tf_totals) = 'READ');
+    msa_date ='now';
+
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Create table of industries
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        MESSAGE 'Selecting Data . . .';
+
+        IF :sc_group <> 'ALL'
+        THEN
+            CREATE TABLE :h_table
+            AS SELECT    industry,
+                         INT4(0) AS rec_nto,
+                         INT4(0) AS rec_nts,
+                         INT4(0) AS rec_nco,
+                         INT4(0) AS rec_ncs,
+                         INT4(0) AS rec_c,
+                         INT4(0) AS pw_c,
+                         INT4(0) AS non_resp,
+                         INT4(0) AS target
+            FROM         :temp_table;
+        ELSE
+            CREATE TABLE :h_table
+            AS SELECT    industry,
+                         INT4(0) AS rec_nto,
+                         INT4(0) AS rec_nts,
+                         INT4(0) AS rec_nco,
+                         INT4(0) AS rec_ncs,
+                         INT4(0) AS rec_c,
+                         INT4(0) AS pw_c,
+                         INT4(0) AS non_resp,
+                         INT4(0) AS target
+            FROM         industry
+            WHERE        inquiry = :inquiry;
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No industries retrieved'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Counts for each industry
+    ------------------------------------------------------------------*/
+
+    h_counter = 0;
+
+    SELECT   industry AS h_industry
+    FROM     :h_table
+    ORDER BY h_industry
+    {
+        h_counter = :h_counter + 1;
+
+        h_rec_nto   = 0;
+        h_rec_nto   = 0;
+        h_rec_nts   = 0;
+        h_rec_nco   = 0;
+        h_rec_ncs   = 0;
+        h_rec_c     = 0;
+        h_pw_c      = 0;
+        h_non_resp  = 0;
+        h_target    = 0;
+
+        MESSAGE 'Processing Industry No. ' +ASCII(h_counter)+ ' . . .';
+
+        SELECT a.form_taken_on,
+               a.receipt_date,
+               a.correct_date,
+               a.corr_week_no,
+               a.register_emp AS h_regemp,
+               b.emp_cutoff   AS h_cutoff
+        FROM   contributor_period a,
+               industry_period b
+        WHERE  a.period = :period
+        AND    a.rec_week_no <= :week_no
+        AND    a.contributor_industry = :h_industry
+        AND    a.contributor_industry = b.industry
+        AND    a.period = b.period
+        {
+
+            IF receipt_date <> '' AND form_taken_on = 'N'
+            THEN
+                IF :h_regemp >= :h_cutoff
+                THEN
+                    h_rec_nto = h_rec_nto + 1;
+                ELSE
+                    h_rec_nts = h_rec_nts + 1;
+                ENDIF;
+            ENDIF;
+
+            IF form_taken_on <> 'N' AND correct_date = ''
+            THEN
+                IF :h_regemp >= :h_cutoff
+                THEN
+                    h_rec_nco = h_rec_nco + 1;
+                ELSE
+                    h_rec_ncs = h_rec_ncs + 1;
+                ENDIF;
+            ENDIF;
+
+            IF correct_date <> ''
+            THEN
+                h_rec_c = h_rec_c + 1;
+            ENDIF;
+
+            IF correct_date <> '' AND corr_week_no <= :prev_week_no
+            THEN
+                h_pw_c = h_pw_c + 1;
+            ENDIF;
+
+            IF receipt_date = ''
+            THEN
+                h_non_resp = h_non_resp + 1;
+            ENDIF;
+
+            h_target = h_target + 1;
+
+        };
+
+        UPDATE :h_table
+        SET    rec_nto   = :h_rec_nto,
+               rec_nts   = :h_rec_nts,
+               rec_nco   = :h_rec_nco,
+               rec_ncs   = :h_rec_ncs,
+               rec_c     = :h_rec_c,
+               pw_c      = :h_pw_c,
+               non_resp  = :h_non_resp,
+               target    = :h_target
+        WHERE  industry  = :h_industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            MESSAGE 'System error in updating counts'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+    };
+
+    /*------------------------------------------------------------------
+      Main Select
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Totals . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf_display =
+
+        SELECT industry,
+               rec_nto,
+               rec_nts,
+               rec_nco,
+               rec_ncs,
+               rec_c,
+               pw_c,
+               non_resp,
+               target,
+               FLOAT4(rec_c) / target * 100 AS perc
+        FROM   :h_table;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows loaded from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Insert the Totals
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf_totals =
+
+        SELECT   'TOTAL'       AS industry,
+                 SUM(rec_nto)  AS rec_nto,
+                 SUM(rec_nts)  AS rec_nts,
+                 SUM(rec_nco)  AS rec_nco,
+                 SUM(rec_ncs)  AS rec_ncs,
+                 SUM(rec_c)    AS rec_c,
+                 SUM(pw_c)     AS pw_c,
+                 SUM(non_resp) AS non_resp,
+                 SUM(target)   AS target,
+                 FLOAT4(0)     AS perc
+        FROM     :h_table;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in totalling from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows retrieved in totalling from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    UNLOADTABLE tf_totals
+    {
+        IF :tf_totals.target <> 0
+        THEN
+            tf_totals.perc = FLOAT4(:tf_totals.rec_c) /
+                             :tf_totals.target * 100;
+        ENDIF;
+    };
+}
+
+BEFORE FIELD 'tf_totals.industry' =
+{
+    RESUME FIELD tf_display;
+}
+
+FIELD 'tf_display.target' =
+{
+    RESUME FIELD tf_display;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    msa_date ='now';
+    HELP_FORMS( SUBJECT = 'HELP',
+                FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+}
+
+'Print' =
+{
+    MESSAGE 'Preparing Report . . .';
+    msa_date = 'now';
+
+    ret_val = CALLPROC msa_cp_callsys (
+              'report ' +
+              :g_database +
+              ' ''(user_name = "' + :g_user_name + '"' +
+              ',week_no = ' + VARCHAR(:week_no) +
+              ',inquiry = ' + VARCHAR(:inquiry) +
+              ',period = ' + VARCHAR(:period) +
+              ')'' -i$REPORTS/msam_rw_not_on_display.rw' +
+              ' > report.output 2> report.output');
+
+    IF ret_val <> 0
+    THEN
+        MESSAGE 'Error producing report'
+        WITH STYLE = POPUP;
+    ELSE
+        /*--------------------------------------------------------------
+         Remove last line - so a blank end page is not printed
+        --------------------------------------------------------------*/
+
+        ret_val = CALLPROC msa_cp_callsys (
+              'lines=`wc -l < msam_rw_not_on_display.rpt`;' +
+              'lines=`expr ${lines} - 1`;' +
+              'head -${lines} msam_rw_not_on_display.rpt | ' +
+              'lp -o12p -d' + :g_printer +
+              ' >> report.output 2>> report.output');
+
+        IF ret_val <> 0
+        THEN
+            MESSAGE 'Error sending report to printer ' +
+                    :g_printer
+            WITH STYLE = POPUP;
+        ELSE
+            MESSAGE 'Report sent to printer ' + :g_printer + ' OK'
+            WITH STYLE = POPUP;
+        ENDIF;
+    ENDIF;
+
+}
+
+'NotTakenOn' =
+{
+    MESSAGE 'Selecting Data . . .';
+
+    ret_val = CALLFRAME msam_fr_get_cref_rec (
+              calling_frame = 'NotTakenOn',
+              period        = :period,
+              industry      = :tf_display.industry);
+
+    msa_date ='now';
+}
+
+'NotCleared' =
+{
+    MESSAGE 'Selecting Data . . .';
+
+    ret_val = CALLFRAME msam_fr_get_cref_rec (
+              calling_frame = 'NotCleared',
+              period        = :period,
+              industry      = :tf_display.industry);
+
+    msa_date ='now';
+}
+
+'Cleared' =
+{
+    MESSAGE 'Selecting Data . . .';
+
+    ret_val = CALLFRAME msam_fr_get_cref_rec (
+              calling_frame = 'Cleared',
+              period        = :period,
+              industry      = :tf_display.industry);
+
+    msa_date ='now';
+}
+
+'PrevWeekCleared' =
+{
+    MESSAGE 'Selecting Data . . .';
+
+    ret_val = CALLFRAME msam_fr_get_cref_rec (
+              calling_frame = 'PrevWeekCleared',
+              period        = :period,
+              prev_week_no  = :prev_week_no,
+              industry      = :tf_display.industry);
+
+    msa_date ='now';
+}
+
+'NonResponders' =
+{
+    MESSAGE 'Selecting Data . . .';
+
+    ret_val = CALLFRAME msam_fr_get_cref (
+              calling_frame = 'PrevWeekCleared',
+              period        = :period,
+              industry      = :tf_display.industry);
+
+    msa_date ='now';
+}
+
+'CopyToFile' =
+{
+    /*------------------------------------------------------------------
+      Copies table to an ASCII text file
+    ------------------------------------------------------------------*/
+
+    IF :g_access_level < 95
+    THEN
+        MESSAGE 'Sorry, but your access level isn''t high' +
+                ' enough to use this option'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    CALLPROC msa_fp_todays_date (
+             h_day   = BYREF(:h_day),
+             h_month = BYREF(:h_month),
+             h_year  = BYREF(:h_year));
+
+    h_file = 'rec' + VARCHAR(RIGHT(:h_year,2)) + VARCHAR(:h_month) +
+             '.' + :h_day;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        COPY TABLE :h_table (
+                   industry = c5, comma = d1,
+                   rec_nto = c6, comma = d1,
+                   rec_nts = c6, comma = d1,
+                   rec_nco = c6, comma = d1,
+                   rec_ncs = c6, comma = d1,
+                   rec_c = c6, comma = d1,
+                   pw_c = c6, comma = d1,
+                   non_resp = c6, comma = d1,
+                   target = c0nl)
+        INTO :h_file;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in copying table ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows were copied from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Lose spaces
+    ------------------------------------------------------------------*/
+
+    h_command = 'whitespace ' + :h_file;
+
+    ret_val = CALLPROC msa_cp_callsys (:h_command);
+    IF ret_val <> 0
+    THEN
+        MESSAGE 'Failure in removing whitespace from output file'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Move text file to ~prodftp
+    ------------------------------------------------------------------*/
+
+    IF g_database = 'prodlivedb'
+    THEN
+        h_command = '/home/prodcom/admin/prodlive/cp_runasuser "' +
+                    'cp ' + :h_file + ' /home/prodcom/prodftp"';
+    ELSE
+        h_command = '/home/prodcom/admin/produser/cp_runasuser "' +
+                    'cp ' + :h_file + ' /home/prodcom/prodftp"';
+    ENDIF;
+
+    ret_val = CALLPROC msa_cp_callsys (:h_command);
+
+    IF ret_val = 0
+    THEN
+        MESSAGE 'The records in this table have been copied to a' +
+                ' comma-delimited ASCII text file called ''' +
+                :h_file + '''.' + X'0D0D' +
+                'Please access it by logging into prodftp' +
+                ' (PRODCOM''s File Transfer username).'
+        WITH STYLE = POPUP;
+    ELSE
+        MESSAGE 'Unable to copy the ASCII file to ~prodftp'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    h_command = '\rm ' + :h_file;
+    ret_val = CALLPROC msa_cp_callsys (:h_command);
+    msa_date = 'now';
+
+}
+
+'End', KEY FRSKEY6 =
+{
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    RETURN 0;
+}

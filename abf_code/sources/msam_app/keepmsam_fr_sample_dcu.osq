@@ -1,0 +1,870 @@
+INITIALIZE (
+
+        inquiry           = INTEGER4 NOT NULL,
+        temp_table        = VARCHAR(24) NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_table           = VARCHAR(24) NOT NULL,
+        h_category        = CHAR(1) NOT NULL,
+        h_type            = CHAR(1) NOT NULL,
+        h_non_mkr         = CHAR(1) NOT NULL,
+        h_register_emp    = INTEGER4 NOT NULL,
+        h_cutoff          = INTEGER4 NOT NULL,
+        h_industry        = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        stratum1          = INTEGER4 NOT NULL,
+        stratum2          = INTEGER4 NOT NULL,
+        stratum3          = INTEGER4 NOT NULL,
+        stratum4          = INTEGER4 NOT NULL,
+        stratum5          = INTEGER4 NOT NULL,
+        under             = INTEGER4 NOT NULL,
+        pps               = INTEGER4 NOT NULL,
+        over              = INTEGER4 NOT NULL,
+        stratum1_new      = INTEGER4 NOT NULL,
+        stratum2_new      = INTEGER4 NOT NULL,
+        stratum3_new      = INTEGER4 NOT NULL,
+        stratum4_new      = INTEGER4 NOT NULL,
+        stratum5_new      = INTEGER4 NOT NULL,
+        stratum1_non      = INTEGER4 NOT NULL,
+        stratum2_non      = INTEGER4 NOT NULL,
+        stratum3_non      = INTEGER4 NOT NULL,
+        stratum4_non      = INTEGER4 NOT NULL,
+        stratum5_non      = INTEGER4 NOT NULL,
+        under_non         = INTEGER4 NOT NULL,
+        pps_non           = INTEGER4 NOT NULL,
+        over_non          = INTEGER4 NOT NULL,
+        under_non         = INTEGER4 NOT NULL,
+        pps_new           = INTEGER4 NOT NULL,
+        over_new          = INTEGER4 NOT NULL,
+        lp_load_table     = PROCEDURE RETURNING INTEGER
+
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msam_fr_sample_dcu';
+    h_table = 'temp_sample2';
+    form_message = 'All Contributors';
+    h_type = 'A';
+    h_non_mkr = 'N';
+    msa_date = 'now';
+    MESSAGE 'Selecting Data . . .';
+
+    SET_FORMS FIELD '' (MODE(tf) = 'READ',
+                        MODE(tf2) = 'READ');
+
+    /*------------------------------------------------------------------
+    Create base table to hold data
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = :h_table);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table (
+                     industry   INTEGER4 NOT NULL,
+                     cutoff     INTEGER4 NOT NULL,
+                     s_type     CHAR(1) NOT NULL,
+                     non_mkr    CHAR(1) NOT NULL,
+                     under      INTEGER4 NOT NULL,
+                     pps        INTEGER4 NOT NULL,
+                     over       INTEGER4 NOT NULL,
+                     stratum1   INTEGER4 NOT NULL,
+                     stratum2   INTEGER4 NOT NULL,
+                     stratum3   INTEGER4 NOT NULL,
+                     stratum4   INTEGER4 NOT NULL,
+                     stratum5   INTEGER4 NOT NULL);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows created on ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    One industry at a time
+    ------------------------------------------------------------------*/
+
+    SELECT   a.industry AS h_industry,
+             b.emp_cutoff AS h_cutoff
+    FROM     :temp_table a,
+             industry_period b
+    WHERE    a.industry = b.industry
+    AND      b.period = :period
+    ORDER BY h_industry
+    {
+
+        MESSAGE 'Processing Industry ' +
+                VARCHAR(:h_industry) + ' . . .';
+
+        stratum1 = 0;
+        stratum2 = 0;
+        stratum3 = 0;
+        stratum4 = 0;
+        stratum5 = 0;
+        under = 0;
+        pps = 0;
+        over = 0;
+        stratum1_new = 0;
+        stratum2_new = 0;
+        stratum3_new = 0;
+        stratum4_new = 0;
+        stratum5_new = 0;
+        under_new = 0;
+        pps_new = 0;
+        over_new = 0;
+
+        SELECT register_emp AS h_register_emp,
+               output_category AS h_category,
+	       receipt_date
+        FROM   contributor_period
+        WHERE  contributor_industry = :h_industry
+        AND    period = :period
+        AND    inquiry = :inquiry
+        {
+            IF h_category = 'C' OR h_category = 'G' OR h_category = 'W'
+            THEN
+                IF h_register_emp <= 9
+                THEN
+                    under_new = under_new + 1;
+                    stratum1_new = stratum1_new + 1;
+                ELSEIF h_register_emp <= 19
+                THEN
+                    stratum2_new = stratum2_new + 1;
+                ELSEIF h_register_emp <= 49
+                THEN
+                    stratum3_new = stratum3_new + 1;
+                ELSEIF h_register_emp <= 99
+                THEN
+                    stratum4_new = stratum4_new + 1;
+                ELSE
+                    stratum5_new = stratum5_new + 1;
+                ENDIF;
+
+                IF h_register_emp >= 10 AND h_register_emp < h_cutoff
+                THEN
+                    pps_new = pps_new + 1;
+                ELSEIF h_register_emp >= h_cutoff
+                THEN
+                    over_new = over_new + 1;
+                ENDIF;
+
+            ENDIF;
+
+            IF h_register_emp <= 9
+            THEN
+                under = under + 1;
+                stratum1 = stratum1 + 1;
+	        IF receipt_date = ''
+	    then increment the variables
+	    endif;
+            ELSEIF h_register_emp <= 19
+            THEN
+                stratum2 = stratum2 + 1;
+            ELSEIF h_register_emp <= 49
+            THEN
+                stratum3 = stratum3 + 1;
+            ELSEIF h_register_emp <= 99
+            THEN
+                stratum4 = stratum4 + 1;
+            ELSE
+                stratum5 = stratum5 + 1;
+            ENDIF;
+
+            IF h_register_emp >= 10 AND h_register_emp < h_cutoff
+            THEN
+                pps = pps + 1;
+            ELSEIF h_register_emp >= h_cutoff
+            THEN
+                over = over + 1;
+            ENDIF;
+        };
+
+        /*--------------------------------------------------------------
+        Insert the TOTALS and the NEWs
+        --------------------------------------------------------------*/
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            INSERT INTO :h_table (
+                        industry,
+                        cutoff,
+                        s_type,
+                        non_mkr,
+                        under,
+                        pps,
+                        over,
+                        stratum1,
+                        stratum2,
+                        stratum3,
+                        stratum4,
+                        stratum5)
+            VALUES (    :h_industry,
+                        :h_cutoff,
+                        'A',
+			'N',
+                        :under,
+                        :pps,
+                        :over,
+                        :stratum1,
+                        :stratum2,
+                        :stratum3,
+                        :stratum4,
+                        :stratum5);
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error inserting into ' + :h_table
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No rows inserted into ' + :h_table
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            INSERT INTO :h_table (
+                        industry,
+                        cutoff,
+                        s_type,
+			non_mkr,
+                        under,
+                        pps,
+                        over,
+                        stratum1,
+                        stratum2,
+                        stratum3,
+                        stratum4,
+                        stratum5)
+            VALUES (    :h_industry,
+                        :h_cutoff,
+                        'N',
+                        'N',
+                        :under_new,
+                        :pps_new,
+                        :over_new,
+                        :stratum1_new,
+                        :stratum2_new,
+                        :stratum3_new,
+                        :stratum4_new,
+                        :stratum5_new);
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error inserting ' + :h_table
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No rows inserted into ' + :h_table
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+    };
+
+    ret_val = CALLPROC check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        MESSAGE 'System error in select loop'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+
+
+    /*------------------------------------------------------------------
+    One industry at a time for Non_responders
+    ------------------------------------------------------------------*/
+    /*******************************************************
+    commented out this is not right. For dummy selection there
+    will never be any response and figures are just duplicated.
+    Maybe the h_non_mkr is not working in the report writer call (PRINT).
+
+
+    SELECT   a.industry AS h_industry,
+             b.emp_cutoff AS h_cutoff
+    FROM     :temp_table a,
+             industry_period b
+    WHERE    a.industry = b.industry
+    AND      b.period = :period
+    ORDER BY h_industry
+    {
+
+        MESSAGE 'Processing Industry ' +
+                VARCHAR(:h_industry) + ' . . .';
+
+        stratum1 = 0;
+        stratum2 = 0;
+        stratum3 = 0;
+        stratum4 = 0;
+        stratum5 = 0;
+        under = 0;
+        pps = 0;
+        over = 0;
+        stratum1_new = 0;
+        stratum2_new = 0;
+        stratum3_new = 0;
+        stratum4_new = 0;
+        stratum5_new = 0;
+        under_new = 0;
+        pps_new = 0;
+        over_new = 0;
+
+        SELECT register_emp AS h_register_emp,
+               output_category AS h_category
+        FROM   contributor_period
+        WHERE  contributor_industry = :h_industry
+        AND    period = :period
+        AND    inquiry = :inquiry
+	AND    receipt_date = ''
+        {
+            IF h_category = 'C' OR h_category = 'G' OR h_category = 'W'
+            THEN
+                IF h_register_emp <= 9
+                THEN
+                    under_new = under_new + 1;
+                    stratum1_new = stratum1_new + 1;
+                ELSEIF h_register_emp <= 19
+                THEN
+                    stratum2_new = stratum2_new + 1;
+                ELSEIF h_register_emp <= 49
+                THEN
+                    stratum3_new = stratum3_new + 1;
+                ELSEIF h_register_emp <= 99
+                THEN
+                    stratum4_new = stratum4_new + 1;
+                ELSE
+                    stratum5_new = stratum5_new + 1;
+                ENDIF;
+
+                IF h_register_emp >= 10 AND h_register_emp < h_cutoff
+                THEN
+                    pps_new = pps_new + 1;
+                ELSEIF h_register_emp >= h_cutoff
+                THEN
+                    over_new = over_new + 1;
+                ENDIF;
+
+            ENDIF;
+
+            IF h_register_emp <= 9
+            THEN
+                under = under + 1;
+                stratum1 = stratum1 + 1;
+            ELSEIF h_register_emp <= 19
+            THEN
+                stratum2 = stratum2 + 1;
+            ELSEIF h_register_emp <= 49
+            THEN
+                stratum3 = stratum3 + 1;
+            ELSEIF h_register_emp <= 99
+            THEN
+                stratum4 = stratum4 + 1;
+            ELSE
+                stratum5 = stratum5 + 1;
+            ENDIF;
+
+            IF h_register_emp >= 10 AND h_register_emp < h_cutoff
+            THEN
+                pps = pps + 1;
+            ELSEIF h_register_emp >= h_cutoff
+            THEN
+                over = over + 1;
+            ENDIF;
+        };
+
+*****************************************************************/
+
+        /*--------------------------------------------------------------
+        Insert the TOTALS and the NEWs for Non_responders
+        --------------------------------------------------------------*/
+
+/*****************************************************************
+As above
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            INSERT INTO :h_table (
+                        industry,
+                        cutoff,
+                        s_type,
+                        non_mkr,
+                        under,
+                        pps,
+                        over,
+                        stratum1,
+                        stratum2,
+                        stratum3,
+                        stratum4,
+                        stratum5)
+            VALUES (    :h_industry,
+                        :h_cutoff,
+                        'A',
+			'Y',
+                        :under,
+                        :pps,
+                        :over,
+                        :stratum1,
+                        :stratum2,
+                        :stratum3,
+                        :stratum4,
+                        :stratum5);
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error inserting NRs into ' + :h_table
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No NR rows inserted into ' + :h_table
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            INSERT INTO :h_table (
+                        industry,
+                        cutoff,
+                        s_type,
+			non_mkr,
+                        under,
+                        pps,
+                        over,
+                        stratum1,
+                        stratum2,
+                        stratum3,
+                        stratum4,
+                        stratum5)
+            VALUES (    :h_industry,
+                        :h_cutoff,
+                        'N',
+                        'Y',
+                        :under_new,
+                        :pps_new,
+                        :over_new,
+                        :stratum1_new,
+                        :stratum2_new,
+                        :stratum3_new,
+                        :stratum4_new,
+                        :stratum5_new);
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error inserting NRs ' + :h_table
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No NRs rows inserted into ' + :h_table
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+    };
+
+    ret_val = CALLPROC check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        MESSAGE 'System error in NR select loop'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+***************************************************************/
+
+   /*--------------------------------------------------------------
+        Call local procedure 
+   --------------------------------------------------------------*/
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'AllOrNew' =
+{
+    IF form_message = 'All Contributors'
+    THEN
+        form_message = 'New Contributors';
+        h_type = 'N';
+        h_non_mkr = 'N';
+    ELSE
+        form_message = 'All Contributors';
+        h_type = 'A';
+        h_non_mkr = 'N';
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'AllOrNewNon' =
+{
+    IF form_message = 'All Non_Resp Contributors'
+    THEN
+        form_message = 'New Non_Resp Contributors';
+        h_type = 'N';
+        h_non_mkr = 'Y';
+    ELSE
+        form_message = 'All Non_Resp Contributors';
+        h_type = 'A';
+        h_non_mkr = 'Y';
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'Print' =
+{
+    MESSAGE 'Preparing Report . . .';
+    msa_date = 'now';
+
+    ret_val = CALLPROC msa_cp_callsys (
+              'report ' +
+              :g_database +
+              ' ''(h_table = "' + :h_table + '"' +
+              ',user_name = "' + :g_user_name + '"' +
+              ',period = ' + VARCHAR(:period) +
+              ',h_type = "' + :h_type + '"' +
+              ',h_non_mkr = "' + :h_non_mkr + '"' +
+              ')'' -i$REPORTS/msam_rw_sample_dcu.rw' +
+              ' > report.output 2> report.output');
+
+    IF ret_val <> 0
+    THEN
+        MESSAGE 'Error producing report'
+        WITH STYLE = POPUP;
+    ELSE
+        /*--------------------------------------------------------------
+         Remove last line - so a blank end page is not printed
+        --------------------------------------------------------------*/
+
+        ret_val = CALLPROC msa_cp_callsys (
+              'lines=`wc -l < msam_rw_sample_dcu.rpt`;' +
+              'lines=`expr ${lines} - 1`;' +
+              'head -${lines} msam_rw_sample_dcu.rpt | ' +
+              'lp -o16p -d' + :g_printer +
+              ' >> report.output 2>> report.output');
+
+        IF ret_val <> 0
+        THEN
+            MESSAGE 'Error sending report to printer ' +
+                    :g_printer
+            WITH STYLE = POPUP;
+        ELSE
+            MESSAGE 'Report sent to printer ' +
+                    :g_printer + ' OK'
+            WITH STYLE = POPUP;
+        ENDIF;
+    ENDIF;
+}
+
+'End', KEY FRSKEY6 =
+{
+    MESSAGE 'Exiting Sample Allocation Screen . . .';
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = :h_table);
+
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                   L O C A L   P R O C E D U R E  1
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_table () =
+{
+    MESSAGE 'Selecting to Screen . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT   industry,
+                 cutoff,
+                 under,
+                 pps,
+                 over,
+                 stratum1,
+                 stratum2,
+                 stratum3,
+                 stratum4,
+                 stratum5,
+                 under + pps + over AS total
+        FROM     :h_table
+        WHERE    s_type = :h_type
+	AND      non_mkr = :h_non_mkr
+        ORDER BY industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error loading from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows loaded from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf2 =
+
+        SELECT   'TOTAL' AS title,
+                 SUM(under) AS under,
+                 SUM(pps) AS pps,
+                 SUM(over) AS over,
+                 SUM(stratum1) AS stratum1,
+                 SUM(stratum2) AS stratum2,
+                 SUM(stratum3) AS stratum3,
+                 SUM(stratum4) AS stratum4,
+                 SUM(stratum5) AS stratum5,
+                 SUM(under) + SUM(pps) + SUM(over) AS total
+        FROM     :h_table
+        WHERE    s_type = :h_type
+	AND      non_mkr = :h_non_mkr;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error loading total from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No total rows loaded from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+    msa_date = 'now';
+    RETURN 0;
+}
+

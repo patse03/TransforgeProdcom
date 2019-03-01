@@ -1,0 +1,156 @@
+INITIALIZE ()=
+DECLARE		h_retries_allowed = INTEGER1 NOT NULL,	
+		h_retries	= INTEGER1 NOT NULL,
+		h_retry_or_not	= CHAR(5) NOT NULL,
+		h_rows		= INTEGER2 NOT NULL,
+		h_frpr_name	= VARCHAR(24) NOT NULL,
+		ret_val		= INTEGER1 NOT NULL,
+		h_inquiry	= INTEGER1 NOT NULL,
+		h_table1	= VARCHAR(24) NOT NULL,
+		h_rec_min   = ingresdate not null,       
+		h_rec_max   = ingresdate not null,       
+		h_count     = integer4 not null,	
+		h_exists    = integer4 not null,	
+		h_user_name = varchar(24) not null,
+		h_period    = integer4 not null	
+
+{
+   h_frpr_name = 'msam_fr_view_key_rec';
+   h_retries_allowed = 3;
+   msa_date = 'now';
+   h_table1 = 'temp_working_industries';
+
+   h_rows = 0;
+
+   h_retry_or_not	= 'RETRY';
+   h_retries		= 0;
+
+   WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+   DO
+	h_retries = :h_retries + 1;
+
+	SELECT MIN(receipt_date) AS h_rec_min,
+		MAX(receipt_date) AS h_rec_max,
+		MAX(period) AS h_period
+		FROM contributor_period;
+
+        ret_val = CALLPROC check_inq_ing (
+		h_num_row_ck	= 1,
+		h_commit	= 'Y',
+		h_rollback	= 'N',
+		h_retries	= :h_retries,
+		h_retries_allowed = :h_retries_allowed,
+		h_frpr_name	= :h_frpr_name);
+
+	IF ret_val <> 7       
+	THEN
+		h_retry_or_not = '';
+	ENDIF;
+
+   ENDWHILE;
+
+   IF ret_val <> 7       
+   THEN
+	RETURN 7;
+   ELSEIF ret_val = 9
+   THEN
+	MESSAGE 'SYSTEM error in accessing contributor_period'
+	WITH STYLE = POPUP;
+	RETURN 9;
+   ELSEIF ret_val = 1
+   THEN
+	MESSAGE 'No data found on contributor_period ! Please inform IM'
+	WITH STYLE = POPUP;
+	RETURN 9;
+   ENDIF;
+
+	rec_from := h_rec_max;
+	rec_to := h_rec_max;
+
+select user_name as h_user_name
+from iidbconstants;
+
+select count(table_name) as h_exists
+from iitables
+where table_name = 'working_industries'
+and table_owner = :h_user_name;
+
+if h_exists > 0
+then drop working_industries;
+endif;
+
+create table working_industries(industry integer4 not null);
+
+SET_FORMS FIELD ''(MODE(key_tab)='READ');
+
+key_tab =
+	select contributor_reference,
+	contributor_industry,
+	period,
+	form_taken_on,
+	receipt_date
+	from contributor_period
+	where keyresp = 1
+	and receipt_date =  :h_rec_max
+	order by receipt_date desc;
+
+INQUIRE_INGRES(row_count = ROWCOUNT);
+}
+'Go'=
+{
+delete from working_industries;
+
+UNLOADTABLE ind_tab
+{
+insert into working_industries(industry)
+values (:ind_tab.industry);
+};
+
+select count(industry) as h_count
+from working_industries
+where industry != 0;
+
+if rec_from is null or rec_from = '' then rec_from = h_rec_min; endif;
+if rec_to is null or rec_to = '' then rec_to = h_rec_max; endif;
+
+if h_count > 0 then
+key_tab =
+	select contributor_reference,
+	contributor_industry,
+	period,
+	form_taken_on,
+	receipt_date
+	from contributor_period
+	where keyresp = 1
+	and contributor_industry in
+		(select industry from working_industries)
+	and receipt_date >=  :rec_from
+	and receipt_date <=  :rec_to
+	order by receipt_date desc;
+else
+key_tab =
+	select contributor_reference,
+	contributor_industry,
+	period,
+	form_taken_on,
+	receipt_date
+	from contributor_period
+	where keyresp = 1
+	and receipt_date >=  :rec_from
+	and receipt_date <=  :rec_to
+	order by receipt_date desc;
+endif;
+
+INQUIRE_INGRES(row_count = ROWCOUNT);
+}
+
+'Clear industries'=
+{
+delete from working_industries;
+ind_tab = select industry from working_industries;
+}
+
+'End', KEY FRSKEY6=
+{
+RETURN 0;
+}

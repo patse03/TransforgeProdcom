@@ -1,0 +1,155 @@
+INITIALIZE ( p_table = VARCHAR(24) NOT NULL WITH DEFAULT,
+             p_code  = INTEGER1    NOT NULL WITH DEFAULT,
+             p_text  = VARCHAR(40) NOT NULL WITH DEFAULT) =
+
+DECLARE 
+  h_reference       = CHAR(11)     NOT NULL WITH DEFAULT,
+  h_frpr_name       = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_table           = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_return          = INTEGER1     NOT NULL WITH DEFAULT,
+ 
+  tf.error_code     = INTEGER1     NOT NULL WITH DEFAULT,
+  tf.correct_date   = DATE         NOT NULL WITH DEFAULT,
+
+  lp_error_check      = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+
+  h_frpr_name = 'msam_fr_icr_list';
+  h_table = 'tt_icr_refs_mode_' +VARCHAR(:p_code);
+
+  s_title = 'ICR ERRORS: ' + UPPER(:p_text);
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+  /*------------------------------------------------------------------
+    Create temporary table with icr errors as specified.
+  ------------------------------------------------------------------*/
+
+  MESSAGE' Selecting data for display...';
+
+  h_return = CALLPROC msa_fp_drop_table (h_table = :h_table);
+
+  IF h_return != 0
+  /* Error message handled by exteranl procedure */
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  IF p_code = 0
+  THEN
+
+    CREATE TABLE :h_table
+    AS 
+    SELECT contributor_reference,
+           receipt_date,
+           correct_date,
+           error_code,
+           error_text,
+           ' ' AS cleared
+    FROM   :p_table
+
+   ELSE 
+
+    CREATE TABLE :h_table
+    AS 
+    SELECT contributor_reference,
+           receipt_date,
+           correct_date,
+           error_code,
+           error_text,
+           ' ' AS cleared
+    FROM   :p_table
+    WHERE  error_code = :p_code; 
+
+  ENDIF;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to create third working table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Load data to table field.
+  ------------------------------------------------------------------*/
+
+  tf =
+
+  SELECT contributor_reference,
+         receipt_date,
+         cleared,
+         error_text,
+         error_code,
+         correct_date
+  FROM   :h_table
+  ORDER BY receipt_date desc, contributor_reference;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to load data to screen. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Replace the virtual column correct_date with 'C's 
+  ------------------------------------------------------------------*/
+
+  UNLOADTABLE tf 
+  BEGIN
+
+    IF tf.correct_date != '' 
+    THEN
+      tf.cleared = 'C';
+    ENDIF;
+
+  END;
+
+  RESUME FIELD tf;
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'Back', KEY FRSKEY14 =
+{
+  MESSAGE 'Tidying up...';
+  h_return = CALLPROC msa_fp_drop_table (p_table = :h_table);
+  RETURN 0;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

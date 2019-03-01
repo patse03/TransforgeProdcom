@@ -1,0 +1,405 @@
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+	h_rows            = INTEGER2 NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+	h_inquiry         = INTEGER1 NOT NULL,
+	h_table1          = VARCHAR(24) NOT NULL,
+	h_industry        = INTEGER4 NOT NULL,
+	h_count1          = INTEGER4 NOT NULL,
+	h_count2          = INTEGER4 NOT NULL
+
+{
+    h_frpr_name = 'msam_fr_key_resp_count';
+    h_retries_allowed = 3;
+    msa_date = 'now';
+    h_table1 = 'temp_key_industry';
+    SET_FORMS FIELD '' (MODE(tf1) = 'READ', 
+                        MODE(tf2) = 'READ');
+    h_rows = 0;
+}
+
+
+FIELD period =
+{
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT inquiry AS h_inquiry
+        FROM   inquiry_period
+        WHERE  period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This period does not exist'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+    RESUME FIELD sc_group;
+}
+
+
+FIELD sc_group = 
+{
+    IF sc_group != 'ALL'
+    AND sc_group NOT LIKE '/[0-9/]/[0-9/]/[0-9/]/[0-9/]/[0-9/]' ESCAPE '/'
+    THEN 
+        MESSAGE 'Please type ALL or a 5 digit Sub Class' 
+        WITH STYLE = POPUP;
+        RESUME FIELD sc_group;
+    ENDIF;
+
+   MESSAGE 'Checking Industry . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = :h_table1);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        IF sc_group = 'ALL'
+        THEN
+    	    CREATE TABLE :h_table1 AS
+            SELECT       industry,
+	                 INT4(0) AS count1,
+	                 INT4(0) AS count2
+	    FROM         industry
+            WHERE        inquiry = :h_inquiry;
+        ELSE
+	    CREATE TABLE :h_table1 AS
+            SELECT       industry,
+	                 INT4(0) AS count1,
+	                 INT4(0) AS count2
+	    FROM         industry
+            WHERE        industry = INT4(:sc_group);
+        ENDIF;	
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating ' + :h_table1       
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Industry not found on industry table'
+        WITH STYLE = POPUP;
+        RESUME FIELD sc_group;
+    ENDIF;
+
+    SELECT   industry AS h_industry
+    FROM     :h_table1
+    ORDER BY h_industry
+
+    {
+        MESSAGE 'Processing Industry ' + VARCHAR(:h_industry) + ' . . .' ;
+
+        h_count1 = 0;
+        h_count2 = 0;
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            SELECT count(contributor_reference) AS h_count1
+            FROM   contributor_period
+            WHERE  period = :period
+            AND    inquiry = :h_inquiry
+            AND    contributor_industry = :h_industry
+            AND    keyresp = 1;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+    
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+    
+            SELECT count(contributor_reference) AS h_count2
+            FROM   contributor_period
+            WHERE  period = :period
+            AND    inquiry = :h_inquiry
+            AND    contributor_industry = :h_industry
+            AND    keyresp = 1
+            AND    receipt_date = '';
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+    
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+    
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+    
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing table ' + h_table1
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+    
+        
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+    
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+    
+            h_retries = :h_retries + 1;
+    
+            UPDATE :h_table1
+            SET    count1 = :h_count1,
+                   count2 = :h_count2
+            WHERE  industry = :h_industry;
+    
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+    
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+    
+        ENDWHILE;
+    
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+    
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing ' + h_table1
+            WITH STYLE = POPUP;
+            RETURN 9;
+    
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'Error while updating ' + h_table1
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+    };
+
+    ret_val = CALLPROC check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        MESSAGE 'System error in select loop'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf1 = 
+        SELECT   industry AS sc_group,
+    	         count1 AS tot_count,
+    	         count2 AS nr_count
+        FROM     :h_table1	  
+        ORDER BY sc_group,
+    	         tot_count,
+    	         nr_count;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_num_row         = BYREF(:h_rows),
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error while selecting from ' + h_table1
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows selected from ' + h_table1
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf2 = 
+        SELECT   sum(count1) AS tot_sel,
+    	         sum(count2) AS non_resp
+        FROM     :h_table1	  
+        ORDER BY tot_sel,
+    	         non_resp;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error while selecting from ' + h_table1
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows selected from ' + h_table1
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    RESUME FIELD tf1;
+}
+
+
+
+'Clear' =
+{
+    CLEAR FIELD period,
+                sc_group,
+	        tf1,
+	        tf2;
+
+    msa_date = 'now';
+    h_rows = 0;
+
+    RESUME FIELD period;
+
+}
+
+'End', KEY FRSKEY6 =
+{
+    MESSAGE 'Exiting Screen . . .';
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = :h_table1);
+    RETURN 0;
+}

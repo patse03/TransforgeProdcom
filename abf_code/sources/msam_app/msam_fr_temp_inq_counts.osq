@@ -1,0 +1,747 @@
+
+/*----------------------------------------------------------------------
+  Entire Inquiry response rates for 3 periods
+----------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        h_counter         = INTEGER1 NOT NULL,
+        h_max_week        = INTEGER1 NOT NULL,
+        period1           = INTEGER4 NOT NULL,
+        period2           = INTEGER4 NOT NULL,
+        period3           = INTEGER4 NOT NULL,
+        p1emp             = INTEGER4 NOT NULL,
+        p1forms           = INTEGER4 NOT NULL,
+        p2emp             = INTEGER4 NOT NULL,
+        p2forms           = INTEGER4 NOT NULL,
+        p3emp             = INTEGER4 NOT NULL,
+        p3forms           = INTEGER4 NOT NULL,
+        h_p1recfrmtot     = INTEGER4 NOT NULL,
+        h_p1recemptot     = INTEGER4 NOT NULL,
+        h_p2recfrmtot     = INTEGER4 NOT NULL,
+        h_p2recemptot     = INTEGER4 NOT NULL,
+        h_p3recfrmtot     = INTEGER4 NOT NULL,
+        h_p3recemptot     = INTEGER4 NOT NULL,
+        h_p1clrfrmtot     = INTEGER4 NOT NULL,
+        h_p1clremptot     = INTEGER4 NOT NULL,
+        h_p2clrfrmtot     = INTEGER4 NOT NULL,
+        h_p2clremptot     = INTEGER4 NOT NULL,
+        h_p3clrfrmtot     = INTEGER4 NOT NULL,
+        h_p3clremptot     = INTEGER4 NOT NULL,
+        h_reg_emp         = INTEGER4 NOT NULL,
+        h_rweek           = INTEGER1 NOT NULL,
+        h_cweek           = INTEGER1 NOT NULL,
+        h_period          = INTEGER4 NOT NULL,
+        h_out_cat         = CHAR(1) NOT NULL,
+        h_receipt_date    = DATE NOT NULL,
+        h_correct_date    = DATE NOT NULL,
+        h_table           = VARCHAR(20) NOT NULL,
+        arr               = ARRAY OF TYPE OF TABLE FIELD tf
+{
+    msa_date = 'now';
+    h_retries_allowed = 3;
+    h_frpr_name = 'msam_fr_temp_inq_counts';
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+    h_table = 'inq_progress';
+
+}
+
+FIELD inquiry =
+{
+    IF inquiry <> 14 AND inquiry <> 15
+    THEN
+        MESSAGE 'Inquiry should be 14 or 15'
+        WITH STYLE = POPUP;
+        RESUME FIELD inquiry;
+    ENDIF;
+
+    RESUME FIELD period;
+}
+
+FIELD period =
+{
+    MESSAGE 'Checking Period . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT period
+        FROM   inquiry_period
+        WHERE  period = :period
+        AND    inquiry = :inquiry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This Period is not valid for this Inquiry'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    ret_val = CALLPROC msa_fp_prev_periods (
+              inquiry      = :inquiry,
+              period       = :period,
+              prev_period1 = BYREF(:period2),
+              prev_period2 = BYREF(:period1));
+
+    period3 = :period;
+
+    /*------------------------------------------------------------------
+      Set up screen display fields
+    ------------------------------------------------------------------*/
+
+    period1_mess1 = :period1;
+    period1_mess2 = :period1;
+    period2_mess1 = :period2;
+    period2_mess2 = :period2;
+    period3_mess1 = :period3;
+    period3_mess2 = :period3;
+
+    CLEAR FIELD tf;
+    REDISPLAY;
+
+    /*------------------------------------------------------------------
+      Set up the array and blank it
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC arrayclear(arr);
+
+    IF :inquiry = 14
+    THEN
+        h_max_week = 53;
+    ELSE
+        h_max_week = 40;
+    ENDIF;
+
+    h_counter = 0;
+
+    MESSAGE 'Setting Up the Array . . .';
+
+    WHILE h_counter < :h_max_week
+    DO
+        INSERTROW arr [:h_counter] (
+                  week      = :h_counter,
+                  p1recfrm = 0,
+                  p1clrfrm = 0,
+                  p2recfrm = 0,
+                  p2clrfrm = 0,
+                  p3recfrm = 0,
+                  p3clrfrm = 0,
+                  p1recemp = 0,
+                  p1clremp = 0,
+                  p2recemp = 0,
+                  p2clremp = 0,
+                  p3recemp = 0,
+                  p3clremp = 0);
+
+        h_counter = :h_counter + 1;
+
+    ENDWHILE;
+
+    /*------------------------------------------------------------------
+      Load up contributor_period data
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Data for ' + VARCHAR(:period1) + ', ' +
+            VARCHAR(:period2) + ' and ' + VARCHAR(:period3) + ' . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT register_emp AS h_reg_emp,
+               rec_week_no  AS h_rweek,
+               corr_week_no AS h_cweek,
+               period       AS h_period,
+               receipt_date AS h_receipt_date,
+               correct_date AS h_correct_date,
+               output_category AS h_out_cat
+        FROM   contributor_period
+        WHERE  inquiry = :inquiry
+        AND    period IN (:period1,:period2,:period3)
+        {
+            IF :h_period = :period1
+            THEN
+                p1emp = :p1emp + :h_reg_emp;
+                p1forms = :p1forms + 1;
+
+                IF (:h_out_cat ='C' OR :h_out_cat = 'G' OR :h_out_cat = 'W') AND :h_rweek <> 0 AND :h_receipt_date <> ''
+                THEN
+                    arr[:h_rweek].p1recfrm = arr[:h_rweek].p1recfrm + 1;
+                ELSEIF :h_out_cat <> 'C' AND :h_out_cat <> 'G' AND :h_out_cat <> 'W' AND :h_rweek <> 0 AND :h_receipt_date <> ''
+                THEN
+                    arr[:h_rweek].p1recemp = arr[:h_rweek].p1recemp + 1;
+                ENDIF;
+
+                IF :h_cweek <> 0 AND :h_correct_date <> ''
+                THEN
+                    arr[:h_cweek].p1clrfrm = arr[:h_cweek].p1clrfrm + 1;
+                    arr[:h_cweek].p1clremp = arr[:h_cweek].p1clremp + :h_reg_emp;
+                ENDIF;
+
+            ELSEIF :h_period = :period2
+            THEN
+                p2emp = :p2emp + :h_reg_emp;
+                p2forms = :p2forms + 1;
+
+                IF (:h_out_cat ='C' OR :h_out_cat = 'G' OR :h_out_cat = 'W') AND :h_rweek <> 0 AND :h_receipt_date <> ''
+                THEN
+                    arr[:h_rweek].p2recfrm = arr[:h_rweek].p2recfrm + 1;
+                ELSEIF :h_out_cat <> 'C' AND :h_out_cat <> 'G' AND :h_out_cat <> 'W' AND :h_rweek <> 0 AND :h_receipt_date <> ''
+                THEN
+                    arr[:h_rweek].p2recemp = arr[:h_rweek].p2recemp + 1;
+                ENDIF;
+
+                IF :h_cweek <> 0 AND :h_correct_date <> ''
+                THEN
+                    arr[:h_cweek].p2clrfrm = arr[:h_cweek].p2clrfrm + 1;
+                    arr[:h_cweek].p2clremp = arr[:h_cweek].p2clremp + :h_reg_emp;
+                ENDIF;
+
+            ELSE
+
+                p3emp = :p3emp + :h_reg_emp;
+                p3forms = :p3forms + 1;
+
+                IF (:h_out_cat ='C' OR :h_out_cat = 'G' OR :h_out_cat = 'W') AND :h_rweek <> 0 AND :h_receipt_date <> ''
+                THEN
+                    arr[:h_rweek].p3recfrm = arr[:h_rweek].p3recfrm + 1;
+                ELSEIF :h_out_cat <> 'C' AND :h_out_cat <> 'G' AND :h_out_cat <> 'W' AND :h_rweek <> 0 AND :h_receipt_date <> ''
+                THEN
+                    arr[:h_rweek].p3recemp = arr[:h_rweek].p3recemp + 1;
+                ENDIF;
+
+                IF :h_cweek <> 0 AND :h_correct_date <> ''
+                THEN
+                    arr[:h_cweek].p3clrfrm = arr[:h_cweek].p3clrfrm + 1;
+                    arr[:h_cweek].p3clremp = arr[:h_cweek].p3clremp + :h_reg_emp;
+                ENDIF;
+
+            ENDIF;
+        };
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing contributor_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No data found on contributor_period'
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Create Table
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = :h_table);
+
+    MESSAGE 'Creating Table . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table (
+                     week         INTEGER1 NOT NULL,
+                     p1recfrm     INTEGER4 NOT NULL,
+                     p1clrfrm     INTEGER4 NOT NULL,
+                     p2recfrm     INTEGER4 NOT NULL,
+                     p2clrfrm     INTEGER4 NOT NULL,
+                     p3recfrm     INTEGER4 NOT NULL,
+                     p3clrfrm     INTEGER4 NOT NULL,
+                     p1recemp     INTEGER4 NOT NULL,
+                     p1clremp     INTEGER4 NOT NULL,
+                     p2recemp     INTEGER4 NOT NULL,
+                     p2clremp     INTEGER4 NOT NULL,
+                     p3recemp     INTEGER4 NOT NULL,
+                     p3clremp     INTEGER4 NOT NULL,
+                     p1emp        INTEGER4 NOT NULL,
+                     p2emp        INTEGER4 NOT NULL,
+                     p3emp        INTEGER4 NOT NULL,
+                     p1forms      INTEGER4 NOT NULL,
+                     p2forms      INTEGER4 NOT NULL,
+                     p3forms      INTEGER4 NOT NULL,
+                     p1recfrmtot  INTEGER4 NOT NULL,
+                     p1recemptot  INTEGER4 NOT NULL,
+                     p2recfrmtot  INTEGER4 NOT NULL,
+                     p2recemptot  INTEGER4 NOT NULL,
+                     p3recfrmtot  INTEGER4 NOT NULL,
+                     p3recemptot  INTEGER4 NOT NULL,
+                     p1clrfrmtot  INTEGER4 NOT NULL,
+                     p1clremptot  INTEGER4 NOT NULL,
+                     p2clrfrmtot  INTEGER4 NOT NULL,
+                     p2clremptot  INTEGER4 NOT NULL,
+                     p3clrfrmtot  INTEGER4 NOT NULL,
+                     p3clremptot  INTEGER4 NOT NULL);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Load up table with array data
+    ------------------------------------------------------------------*/
+
+    UNLOADTABLE arr
+    {
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            INSERT INTO :h_table (
+                        week,
+                        p1recfrm,
+                        p1clrfrm,
+                        p2recfrm,
+                        p2clrfrm,
+                        p3recfrm,
+                        p3clrfrm,
+                        p1recemp,
+                        p1clremp,
+                        p2recemp,
+                        p2clremp,
+                        p3recemp,
+                        p3clremp,
+                        p1emp,
+                        p2emp,
+                        p3emp,
+                        p1forms,
+                        p2forms,
+                        p3forms,
+                        p1recemptot,
+                        p1recfrmtot,
+                        p2recemptot,
+                        p2recfrmtot,
+                        p3recemptot,
+                        p3recfrmtot,
+                        p1clremptot,
+                        p1clrfrmtot,
+                        p2clremptot,
+                        p2clrfrmtot,
+                        p3clremptot,
+                        p3clrfrmtot)
+            VALUES (    :arr.week + 1,
+                        :arr.p1recfrm,
+                        :arr.p1clrfrm,
+                        :arr.p2recfrm,
+                        :arr.p2clrfrm,
+                        :arr.p3recfrm,
+                        :arr.p3clrfrm,
+                        :arr.p1recemp,
+                        :arr.p1clremp,
+                        :arr.p2recemp,
+                        :arr.p2clremp,
+                        :arr.p3recemp,
+                        :arr.p3clremp,
+                        :p1emp,
+                        :p2emp,
+                        :p3emp,
+                        :p1forms,
+                        :p2forms,
+                        :p3forms,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0,
+                        0);
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in inserting into ' + :h_table
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No rows inserted into ' + :h_table
+            WITH STYLE = POPUP;
+            RETURN 1;
+        ENDIF;
+    };
+
+    /*------------------------------------------------------------------
+      Total the cleared/receipted forms/employment for the three periods
+      to keep a running total: i.e. add week1 to week2 to week3, etc
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Totalling Data . . .';
+
+    h_counter = 1;
+
+    WHILE :h_counter <= :h_max_week
+    DO
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            SELECT SUM(p1recfrm) AS h_p1recfrmtot,
+                   SUM(p1clrfrm) AS h_p1clrfrmtot,
+                   SUM(p2recfrm) AS h_p2recfrmtot,
+                   SUM(p2clrfrm) AS h_p2clrfrmtot,
+                   SUM(p3recfrm) AS h_p3recfrmtot,
+                   SUM(p3clrfrm) AS h_p3clrfrmtot,
+                   SUM(p1recemp) AS h_p1recemptot,
+                   SUM(p1clremp) AS h_p1clremptot,
+                   SUM(p2recemp) AS h_p2recemptot,
+                   SUM(p2clremp) AS h_p2clremptot,
+                   SUM(p3recemp) AS h_p3recemptot,
+                   SUM(p3clremp) AS h_p3clremptot
+            FROM   :h_table
+            WHERE  week <= :h_counter;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in selecting from ' + :h_table
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ENDIF;
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            UPDATE :h_table
+            SET    p1recfrmtot = :h_p1recfrmtot,
+                   p1clrfrmtot = :h_p1clrfrmtot,
+                   p2recfrmtot = :h_p2recfrmtot,
+                   p2clrfrmtot = :h_p2clrfrmtot,
+                   p3recfrmtot = :h_p3recfrmtot,
+                   p3clrfrmtot = :h_p3clrfrmtot,
+                   p1recemptot = :h_p1recemptot,
+                   p1clremptot = :h_p1clremptot,
+                   p2recemptot = :h_p2recemptot,
+                   p2clremptot = :h_p2clremptot,
+                   p3recemptot = :h_p3recemptot,
+                   p3clremptot = :h_p3clremptot
+            WHERE  week = :h_counter;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in updating ' + :h_table
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ENDIF;
+
+        h_counter = :h_counter + 1;
+
+    ENDWHILE;
+
+    /*------------------------------------------------------------------
+      Load the Percentages onto the screen
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Loading Screen Table . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        /*SELECT   week,
+                 p1recfrmtot AS p1recfrm,
+                 p1clrfrmtot * 100.0 / p1forms AS p1clrfrm,
+                 p2recfrmtot AS p2recfrm,
+                 p2clrfrmtot * 100.0 / p2forms AS p2clrfrm,
+                 p3recfrmtot AS p3recfrm,
+                 p3clrfrmtot * 100.0 / p3forms AS p3clrfrm,
+                 p1recemptot AS p1recemp,
+                 p1clremptot * 100.0 / p1emp   AS p1clremp,
+                 p2recemptot AS p2recemp,
+                 p2clremptot * 100.0 / p2emp   AS p2clremp,
+                 p3recemptot AS p3recemp,
+                 p3clremptot * 100.0 / p3emp   AS p3clremp
+        FROM     :h_table
+        ORDER BY week;
+*/
+        SELECT   week,
+                 p1recfrmtot AS p1recfrm,
+                 p1recfrmtot * 100.0 /p1forms AS p1clrfrm,
+                 p2recfrmtot AS p2recfrm,
+                 p2recfrmtot * 100.0 / p2forms AS p2clrfrm,
+                 p3recfrmtot AS p3recfrm,
+                 p3recfrmtot * 100.0 / p3forms AS p3clrfrm,
+                 p1recemptot AS p1recemp,
+                 p1recemptot * 100.0 / p1forms   AS p1clremp,
+                 p2recemptot AS p2recemp,
+                 p2recemptot * 100.0 / p2forms   AS p2clremp,
+                 p3recemptot AS p3recemp,
+                 p3recemptot * 100.0 / p3forms   AS p3clremp
+        FROM     :h_table
+        ORDER BY week;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+
+    /*------------------------------------------------------------------
+      Set up screen display fields for totals
+    ------------------------------------------------------------------*/
+
+    totformsnew1 = :p1forms;
+    totformsnew2 = :p2forms;
+    totformsnew3 = :p3forms;
+    totformsex1 = :p1forms;
+    totformsex2 = :p2forms;
+    totformsex3 = :p3forms;
+
+    REDISPLAY;
+
+    RESUME FIELD tf;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Print' =
+{
+    MESSAGE 'Preparing Report . . .';
+    msa_date = 'now';
+
+    ret_val = CALLPROC msa_cp_callsys (
+              'report ' +
+              :g_database +
+              ' ''(user_name = "' + :g_user_name + '"' +
+              ',inquiry = ' + VARCHAR(:inquiry) +
+              ',p1 = ' + VARCHAR(:period1) +
+              ',p2 = ' + VARCHAR(:period2) +
+              ',p3 = ' + VARCHAR(:period3) +
+              ')'' -i$REPORTS/msam_rw_inq_progress.rw' +
+              ' > report.output 2> report.output');
+
+    IF ret_val <> 0
+    THEN
+        MESSAGE 'Error producing report'
+        WITH STYLE = POPUP;
+    ELSE
+        /*--------------------------------------------------------------
+         Remove last line - so a blank end page is not printed
+        --------------------------------------------------------------*/
+
+        ret_val = CALLPROC msa_cp_callsys (
+              'lines=`wc -l < msam_rw_inq_progress.rpt`;' +
+              'lines=`expr ${lines} - 1`;' +
+              'head -${lines} msam_rw_inq_progress.rpt | ' +
+              'lp -o12l -d' + :g_printer +
+              ' >> report.output 2>> report.output');
+
+        IF ret_val <> 0
+        THEN
+            MESSAGE 'Error sending report to printer ' +
+                    :g_printer
+            WITH STYLE = POPUP;
+        ELSE
+            MESSAGE 'Report sent to printer ' + :g_printer + ' OK'
+            WITH STYLE = POPUP;
+        ENDIF;
+    ENDIF;
+}
+
+'End', KEY FRSKEY6 =
+{
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = :h_table);
+
+    RETURN 0;
+}

@@ -1,0 +1,429 @@
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_yesno           = CHAR(1) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        h_return          = INTEGER1 NOT NULL,
+        h_industry        = INTEGER4 NOT NULL,
+        h_hold_industry   = INTEGER4 NOT NULL,
+        h_weekno          = INTEGER1 NOT NULL,
+        user_id           = CHAR(8) NOT NULL,
+        h_cleared         = INTEGER4 NOT NULL,
+        h_pw_cleared      = INTEGER4 NOT NULL
+
+{
+    h_frpr_name = 'msam_fr_person_progress1';
+    h_retries_allowed = 3;
+    msa_date = 'now';
+    inquiry = 14;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(inquiry) = 0,
+                        REVERSE(inquiry) = 0,
+                        UNDERLINE(inquiry) = 1,
+                        DISPLAYONLY(period) = 0,
+                        REVERSE(period) = 0,
+                        UNDERLINE(period) = 1,
+                        DISPLAYONLY(weekno) = 0,
+                        REVERSE(weekno) = 0,
+                        UNDERLINE(weekno) = 1);
+}
+
+FIELD inquiry =
+{
+    IF inquiry != 14
+    THEN
+        MESSAGE 'Inquiry must be 14'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT MAX(period) AS period
+        FROM   inquiry_period
+        WHERE  inquiry = :inquiry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows found on inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(inquiry) = 1,
+                        REVERSE(inquiry) = 1,
+                        UNDERLINE(inquiry) = 0);
+
+    RESUME FIELD period;
+}
+
+FIELD period =
+{
+    MESSAGE 'Checking Period . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT week_no AS weekno
+        FROM   inquiry_period
+        WHERE  period = :period
+        AND    inquiry = :inquiry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This Period does not exist for this Inquiry'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(period) = 1,
+                        REVERSE(period) = 1,
+                        UNDERLINE(period) = 0);
+
+    h_weekno = :weekno;
+    RESUME FIELD weekno;
+}
+
+FIELD weekno =
+{
+    IF weekno < 1 OR weekno > :h_weekno
+    THEN
+        MESSAGE 'Valid Weeks are in the range 1 to ' + VARCHAR(:h_weekno)
+        WITH STYLE = POPUP;
+        RESUME FIELD weekno;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(weekno) = 1,
+                        REVERSE(weekno) = 1,
+                        UNDERLINE(weekno) = 0);
+
+    REDISPLAY;
+
+    ret_val = CALLFRAME msam_fr_person_select (
+              user_id   = BYREF(:user_id),
+              user_name = BYREF(:user_name));
+
+    IF ret_val <> 0
+    THEN
+        RESUME FIELD weekno;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(user_name) = 1,
+                        REVERSE(user_name) = 1,
+                        UNDERLINE(user_name) = 0);
+
+    REDISPLAY;
+
+    /*------------------------------------------------------------------
+     Drops temp table ready for creation
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = 'temp_person_progress');
+
+    IF ret_val != 0
+    THEN
+        MESSAGE 'ERROR: Unable to drop temp_person_progress prior to '
+	      + 'recreation. Error code ' +VARCHAR(ret_val) +'. '
+	      + 'Please contact I.M. immediately.'
+        WITH STYLE = POPUP;
+        RETURN ret_val;
+    ENDIF;
+
+
+
+    /*------------------------------------------------------------------
+     Create table to hold personal clearance details
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Data . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      CREATE TABLE temp_person_progress 
+      AS
+      SELECT   DISTINCT contributor_industry AS industry,
+               0 AS cleared,
+    	       0 AS pw_cleared
+      FROM     contributor_period
+      WHERE    corr_week_no BETWEEN 1 AND :weekno
+      AND      period = :period
+      AND      user_id = :user_id;
+
+      ret_val = CALLPROC check_inq_ing (
+                h_num_row_ck      = 1,
+                h_commit          = 'Y',
+                h_rollback        = 'N',
+                h_retries         = :h_retries,
+                h_retries_allowed = :h_retries_allowed,
+                h_frpr_name       = :h_frpr_name);
+
+      IF ret_val <> 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 1
+    THEN
+      MESSAGE 'WARNING: Unable to find data for these criteria on the '
+            + 'contributor period table. Either try different '
+            + 'criteria or if you think there should be data for '
+            + 'display, please contact I.M.'
+      WITH STYLE = POPUP;
+      RETURN 1;
+    ELSEIF ret_val > 1
+    THEN
+      MESSAGE 'ERROR: Unable to create temp_person_progress. '
+            + 'Error code ' +VARCHAR(ret_val) +'. '
+	    + 'Please contact I.M. immediately.'
+      WITH STYLE = POPUP;
+      RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Calculate count variables and update table accordingly
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      SELECT industry AS h_industry 
+      FROM    temp_person_progress
+
+      BEGIN
+
+        h_cleared = 0;
+        h_pw_cleared = 0; 
+
+        SELECT COUNT(contributor_reference) AS h_pw_cleared
+        FROM   contributor_period 
+        WHERE  corr_week_no BETWEEN 1 AND :weekno
+          AND  period = :period
+          AND  user_id = :user_id
+          AND  contributor_industry = :h_industry;
+
+        h_return = CALLPROC check_inq_ing (
+                   h_num_row_ck      = 1,
+                   h_commit          = 'Y',
+                   h_rollback        = 'N',
+                   h_retries         = :h_retries,
+                   h_retries_allowed = :h_retries_allowed,
+                   h_frpr_name       = :h_frpr_name);
+
+        IF h_return > 1
+        THEN
+          MESSAGE 'ERROR: Unable to select count 1 from temp_person_progress. '
+                + 'Error code ' +VARCHAR(:h_return) +'. '
+                + 'Please contact I.M. immediately.'
+          WITH STYLE = POPUP;
+          RETURN h_return;
+        ENDIF;
+
+        SELECT COUNT(contributor_reference) AS h_cleared
+        FROM   contributor_period 
+        WHERE  corr_week_no = :weekno
+          AND  period = :period
+          AND  user_id = :user_id
+          AND  contributor_industry = :h_industry;
+     
+        h_return = CALLPROC check_inq_ing (
+                   h_num_row_ck      = 1,
+                   h_commit          = 'Y',
+                   h_rollback        = 'N',
+                   h_retries         = :h_retries,
+                   h_retries_allowed = :h_retries_allowed,
+                   h_frpr_name       = :h_frpr_name);
+
+        IF h_return > 1
+        THEN
+          MESSAGE 'ERROR: Unable to select count 2 from temp_person_progress. '
+                + 'Error code ' +VARCHAR(:h_return) +'. '
+                + 'Please contact I.M. immediately.'
+          WITH STYLE = POPUP;
+          RETURN h_return;
+        ENDIF;
+
+        UPDATE temp_person_progress
+	   SET cleared    = :h_cleared,
+	       pw_cleared = :h_pw_cleared
+	WHERE  industry = :h_industry;
+
+        h_return = CALLPROC check_inq_ing (
+                   h_num_row_ck      = 1,
+                   h_commit          = 'Y',
+                   h_rollback        = 'N',
+                   h_retries         = :h_retries,
+                   h_retries_allowed = :h_retries_allowed,
+                   h_frpr_name       = :h_frpr_name);
+
+        IF h_return != 0
+        THEN
+          MESSAGE 'ERROR: Unable to update temp_person_progress with  '
+                + 'data for ' +VARCHAR(:h_industry) +'. '
+                + 'Error code ' +VARCHAR(:h_return) +'. '
+                + 'Please contact I.M. immediately.'
+          WITH STYLE = POPUP;
+          RETURN 9;
+        ENDIF;
+
+      END;
+
+      IF ret_val <> 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 1
+    THEN
+      MESSAGE 'WARNING: Unable to find any industries on the '
+            + 'temp_person_progress table. Please contact I.M.'
+      WITH STYLE = POPUP;
+      RETURN 1;
+    ELSEIF ret_val > 1
+    THEN
+      MESSAGE 'ERROR: Unable to update temp_person_progress. '
+            + 'Error code ' +VARCHAR(ret_val) +'. '
+	    + 'Please contact I.M. immediately.'
+      WITH STYLE = POPUP;
+      RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Display the results
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLFRAME msam_fr_person_progress2 (
+              user_name = :user_name,
+              user_id   = :user_id,
+              weekno    = :weekno,
+	      period    = :period,
+              h_table   = 'temp_person_progress');
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CLEAR FIELD ALL;
+    msa_date = 'now';
+    SET_FORMS FIELD '' (DISPLAYONLY(inquiry) = 0,
+                        REVERSE(inquiry) = 0,
+                        UNDERLINE(inquiry) = 1,
+                        DISPLAYONLY(period) = 0,
+                        REVERSE(period) = 0,
+                        UNDERLINE(period) = 1,
+                        DISPLAYONLY(weekno) = 0,
+                        REVERSE(weekno) = 0,
+                        UNDERLINE(weekno) = 1);
+    RESUME FIELD inquiry;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Clear' =
+{
+    CLEAR FIELD ALL;
+    msa_date = 'now';
+    SET_FORMS FIELD '' (DISPLAYONLY(inquiry) = 0,
+                        REVERSE(inquiry) = 0,
+                        UNDERLINE(inquiry) = 1,
+                        DISPLAYONLY(period) = 0,
+                        REVERSE(period) = 0,
+                        UNDERLINE(period) = 1,
+                        DISPLAYONLY(weekno) = 0,
+                        REVERSE(weekno) = 0,
+                        UNDERLINE(weekno) = 1);
+    RESUME FIELD inquiry;
+
+}
+
+'End', KEY FRSKEY6 =
+{
+    MESSAGE 'Exiting Screen . . .';
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = 'temp_person_progress');
+    RETURN 0;
+}

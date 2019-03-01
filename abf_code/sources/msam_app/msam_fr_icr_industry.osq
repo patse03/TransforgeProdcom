@@ -1,0 +1,295 @@
+
+INITIALIZE (
+
+        icr_table         = VARCHAR(24) NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_reference       = CHAR(11) NOT NULL,
+        h_forms           = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        h_industry        = INTEGER4 NOT NULL,
+        h_no_errors       = INTEGER4 NOT NULL,
+        h_period          = INTEGER4 NOT NULL,
+        h_table           = VARCHAR(24) NOT NULL
+
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msam_fr_icr_industry';
+    h_table = 'temp_icr_industry';
+    msa_date = 'now';
+
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+    /*------------------------------------------------------------------
+    Create table with count of errors
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Data . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table (h_table = :h_table);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table
+        AS SELECT    DISTINCT contributor_industry,
+                     COUNT(*) AS no_errors,
+                     INT4(0) AS no_forms
+        FROM         :icr_table
+        WHERE        icr_code <> 100
+        GROUP BY     contributor_industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing ' + :icr_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Count the number of forms
+    ------------------------------------------------------------------*/
+
+    total_forms = 0;
+    total_errors = 0;
+
+    SELECT contributor_industry AS h_industry,
+           no_errors AS h_no_errors
+    FROM   :h_table
+    {
+        MESSAGE 'Processing Industry ' + VARCHAR(h_industry) + ' . . .';
+
+        h_forms = 0;
+
+        SELECT DISTINCT contributor_reference AS h_reference,
+               period AS h_period
+        FROM   :icr_table
+        WHERE  contributor_industry = :h_industry
+        AND    icr_code <> 100
+        {
+            h_forms = h_forms + 1;
+        };
+
+        total_errors = total_errors + h_no_errors;
+        total_forms = total_forms + h_forms;
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            UPDATE :h_table
+            SET    no_forms = :h_forms
+            WHERE  contributor_industry = :h_industry;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in updating ' + :h_table
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No rows updated on ' + :h_table
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+    };
+
+    ret_val = CALLPROC check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        MESSAGE 'System error in select loop from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    MESSAGE 'Selecting to Screen . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+  
+        SELECT   contributor_industry,
+                 no_errors,
+                 no_forms
+        FROM     :h_table
+        ORDER BY contributor_industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Print' =
+{
+    IF total_errors = 0
+    THEN
+        MESSAGE 'Nothing to Print'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    MESSAGE 'Preparing Report . . .';
+    msa_date = 'now';
+
+    ret_val = CALLPROC msa_cp_callsys (
+              'report ' +
+              :g_database +
+              ' ''(h_table = "' + :h_table + '"' +
+              ',user_name = "' + :g_user_name + '"' +
+              ',period_msg = "' + :period_msg + '"' +
+              ')'' -i$REPORTS/msam_rw_icr_industry.rw' +
+              ' > report.output 2> report.output');
+
+    IF ret_val <> 0
+    THEN
+        MESSAGE 'Error producing report'
+        WITH STYLE = POPUP;
+    ELSE
+        /*--------------------------------------------------------------
+         Remove last line - so a blank end page is not printed
+        --------------------------------------------------------------*/
+
+        ret_val = CALLPROC msa_cp_callsys (
+              'lines=`wc -l < msam_rw_icr_industry.rpt`;' +
+              'lines=`expr ${lines} - 1`;' +
+              'head -${lines} msam_rw_icr_industry.rpt | ' +
+              'lp -o12p -d' + :g_printer +
+              ' >> report.output 2>> report.output');
+
+        IF ret_val <> 0
+        THEN
+            MESSAGE 'Error sending report to printer ' +
+                    :g_printer
+            WITH STYLE = POPUP;
+        ELSE
+            MESSAGE 'Report sent to printer ' +
+                    :g_printer + ' OK'
+            WITH STYLE = POPUP;
+        ENDIF;
+    ENDIF;
+}
+
+'ListForms', KEY FRSKEY4 =
+{
+    IF total_errors = 0
+    THEN
+        MESSAGE 'There are no forms to list'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    ret_val = CALLFRAME msam_fr_icr_list (
+              period_msg = :period_msg,
+              icr_table  = :icr_table,
+              industry   = VARCHAR(:tf.contributor_industry));
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'End', KEY FRSKEY6 =
+{
+    MESSAGE 'Exiting Screen . . .';
+    ret_val = CALLPROC msa_fp_drop_table (h_table = :h_table);
+    RETURN 0;
+}

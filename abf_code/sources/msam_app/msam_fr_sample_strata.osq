@@ -1,0 +1,641 @@
+/******************************************************************************
+                      msam_fr_sample_strata
+
+   Displays sample strata counts by industry and provides totals.
+
+   3 rows are created on the working table, one each for:
+     A) All contributors (default).
+     B) Newly selected contributors.
+     C) Non responding contributors.
+
+******************************************************************************/
+
+INITIALIZE (p_table = VARCHAR(24) NOT NULL WITH DEFAULT)=
+
+DECLARE 
+  h_retries_allowed   = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries           = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not      = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name         = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_table             = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_receipt_date      = DATE        NOT NULL WITH DEFAULT,
+  h_return            = INTEGER4    NOT NULL WITH DEFAULT,
+  h_return2           = INTEGER4    NOT NULL WITH DEFAULT,
+  h_mode              = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_category          = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_register_emp      = INTEGER4    NOT NULL WITH DEFAULT,
+  h_cutoff            = INTEGER4    NOT NULL WITH DEFAULT,
+  h_industry          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_stratum1          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_stratum2          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_stratum3          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_stratum4          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_stratum5          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_under             = INTEGER4    NOT NULL WITH DEFAULT,
+  h_pps               = INTEGER4    NOT NULL WITH DEFAULT,
+  h_over              = INTEGER4    NOT NULL WITH DEFAULT,
+  h_stratum1_new      = INTEGER4    NOT NULL WITH DEFAULT,
+  h_stratum2_new      = INTEGER4    NOT NULL WITH DEFAULT,
+  h_stratum3_new      = INTEGER4    NOT NULL WITH DEFAULT,
+  h_stratum4_new      = INTEGER4    NOT NULL WITH DEFAULT,
+  h_stratum5_new      = INTEGER4    NOT NULL WITH DEFAULT,
+  h_stratum1_non      = INTEGER4    NOT NULL WITH DEFAULT,
+  h_stratum2_non      = INTEGER4    NOT NULL WITH DEFAULT,
+  h_stratum3_non      = INTEGER4    NOT NULL WITH DEFAULT,
+  h_stratum4_non      = INTEGER4    NOT NULL WITH DEFAULT,
+  h_stratum5_non      = INTEGER4    NOT NULL WITH DEFAULT,
+  h_under_non         = INTEGER4    NOT NULL WITH DEFAULT,
+  h_pps_non           = INTEGER4    NOT NULL WITH DEFAULT,
+  h_over_non          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_under_new         = INTEGER4    NOT NULL WITH DEFAULT,
+  h_pps_new           = INTEGER4    NOT NULL WITH DEFAULT,
+  h_over_new          = INTEGER4    NOT NULL WITH DEFAULT,
+
+  lp_load_table       = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_error_check      = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_retries_allowed = 3;
+  h_frpr_name = 'msam_fr_sample_strata';
+  h_table = 'tt_sample_strata';
+  h_mode      = 'A';
+
+  s_title = 'SAMPLE STRATA BY INDUSTRY - ALL CONTRIBUTORS';
+
+  SET_FORMS FIELD '' (MODE(tf1) = 'READ',
+                      MODE(tf2) = 'READ');
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+  /*------------------------------------------------------------------
+    Drop and create working table.
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_drop_table (p_table = :h_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled by external procedure */
+    RETURN h_return;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    CREATE TABLE :h_table 
+               ( industry   INTEGER4 NOT NULL,
+                 cutoff     INTEGER4 NOT NULL,
+                 mode       CHAR(1)  NOT NULL,
+                 under      INTEGER4 NOT NULL,
+                 pps        INTEGER4 NOT NULL,
+                 over       INTEGER4 NOT NULL,
+                 stratum1   INTEGER4 NOT NULL,
+                 stratum2   INTEGER4 NOT NULL,
+                 stratum3   INTEGER4 NOT NULL,
+                 stratum4   INTEGER4 NOT NULL,
+                 stratum5   INTEGER4 NOT NULL);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to create working table ' +:h_table +'. '
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.' 
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    One industry at a time
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT a.contributor_industry AS h_industry,
+           b.emp_cutoff           AS h_cutoff
+    FROM   :p_table a,
+           industry_period b
+    WHERE  a.contributor_industry = b.industry
+      AND  b.period = :g_period
+    ORDER
+       BY  h_industry
+    BEGIN  
+
+      MESSAGE 'Processing Industry ' + VARCHAR(:h_industry) + '. . .';
+
+      h_stratum1 = 0;
+      h_stratum2 = 0;
+      h_stratum3 = 0;
+      h_stratum4 = 0;
+      h_stratum5 = 0;
+      h_under = 0;
+      h_pps = 0;
+      h_over = 0;
+      h_stratum1_new = 0;
+      h_stratum2_new = 0;
+      h_stratum3_new = 0;
+      h_stratum4_new = 0;
+      h_stratum5_new = 0;
+      h_under_new = 0;
+      h_pps_new = 0;
+      h_over_new = 0;
+      h_stratum1_non = 0;
+      h_stratum2_non = 0;
+      h_stratum3_non = 0;
+      h_stratum4_non = 0;
+      h_stratum5_non = 0;
+      h_under_non = 0;
+      h_pps_non = 0;
+      h_over_non = 0;
+  
+      SELECT register_emp    AS h_register_emp,
+             output_category AS h_category,
+             receipt_date    AS h_receipt_date
+      FROM   contributor_period
+      WHERE  contributor_industry = :h_industry
+        AND  period = :g_period
+      BEGIN
+
+        /*..............................................................
+            New contributors
+        ..............................................................*/
+
+        IF h_category = 'C' 
+        OR h_category = 'G' 
+        OR h_category = 'W'
+        THEN
+          
+          IF h_register_emp <= 9
+          THEN
+            h_under_new = h_under_new + 1;
+            h_stratum1_new = h_stratum1_new + 1;
+          ELSEIF h_register_emp <= 19
+          THEN
+            h_stratum2_new = h_stratum2_new + 1;
+          ELSEIF h_register_emp <= 49
+          THEN
+            h_stratum3_new = h_stratum3_new + 1;
+          ELSEIF h_register_emp <= 99
+          THEN
+            h_stratum4_new = h_stratum4_new + 1;
+          ELSE
+            h_stratum5_new = h_stratum5_new + 1;
+          ENDIF;
+
+          IF  h_register_emp >= 10 
+          AND h_register_emp < h_cutoff
+          THEN
+            h_pps_new = h_pps_new + 1;
+          ELSEIF h_register_emp >= h_cutoff
+          THEN
+            h_over_new = h_over_new + 1;
+          ENDIF;
+
+        ENDIF; /* End of new contributors */
+
+        /*..............................................................
+            Standard contributors
+        ..............................................................*/
+
+        IF h_register_emp <= 9
+        THEN
+          h_under = h_under + 1;
+          h_stratum1 = h_stratum1 + 1;
+	  IF h_receipt_date = ''
+	  THEN 
+            h_under_non = h_under_non + 1
+          ENDIF;
+        ELSEIF h_register_emp <= 19
+        THEN
+          h_stratum2 = h_stratum2 + 1;
+          IF h_receipt_date = ''
+	  THEN 
+            h_stratum2_non = h_stratum2_non + 1
+	  ENDIF;
+        ELSEIF h_register_emp <= 49
+        THEN
+          h_stratum3 = h_stratum3 + 1;
+          IF h_receipt_date = ''
+	  THEN 
+	    h_stratum3_non = h_stratum3_non + 1
+	  ENDIF;
+        ELSEIF h_register_emp <= 99
+        THEN
+          h_stratum4 = h_stratum4 + 1;
+          IF h_receipt_date = ''
+          THEN 
+            h_stratum4_non = h_stratum4_non + 1
+          ENDIF;
+        ELSE
+          h_stratum5 = h_stratum5 + 1;
+          IF h_receipt_date = ''
+	  THEN 
+	    h_stratum5_non = h_stratum5_non + 1
+	  ENDIF;
+        ENDIF;
+
+        /*..............................................................
+            Update Totals
+        ..............................................................*/
+
+        IF h_register_emp >= 10 AND h_register_emp < h_cutoff
+        THEN
+          h_pps = h_pps + 1;
+	  IF h_receipt_date = ''
+	  THEN 
+	    h_pps_non = h_pps_non + 1
+	  ENDIF;
+        ELSEIF h_register_emp >= h_cutoff
+        THEN
+          h_over = h_over + 1;
+	  IF h_receipt_date = ''
+	  THEN 
+	    h_over_non = h_over_non + 1
+	  ENDIF;
+        ENDIF; 
+
+      END; /* End of inner loop.
+
+      h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return2 > 1
+      THEN
+        MESSAGE 'ERROR: Failed to select inner loop data ' 
+              + 'for industry ' +VARCHAR(:h_industry) +' ' 
+              + 'Error code ' +VARCHAR(:h_return2) + '. '
+              + 'Please contact IM immediately.' 
+        WITH STYLE = POPUP;
+        RETURN 9;
+      ENDIF;
+
+      /*................................................................
+        Insert the subtotals for all contributors (Mode A)
+      ................................................................*/
+
+      INSERT INTO :h_table 
+                ( industry,
+                  cutoff,
+                  mode,
+                  under,
+                  pps,
+                  over,
+                  stratum1,
+                  stratum2,
+                  stratum3,
+                  stratum4,
+                  stratum5)
+      VALUES    ( :h_industry,
+                  :h_cutoff,
+                  'A',
+                  :h_under,
+                  :h_pps,
+                  :h_over,
+                  :h_stratum1,
+                  :h_stratum2,
+                  :h_stratum3,
+                  :h_stratum4,
+                  :h_stratum5);
+
+      h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return2 != 0
+      THEN
+        MESSAGE 'ERROR: Failed to create row on working table ' +:h_table +' '
+              + 'for all contributors in industry ' +VARCHAR(:h_industry) +' ' 
+              + 'Error code ' +VARCHAR(:h_return2) + '. '
+              + 'Please contact IM immediately.' 
+        WITH STYLE = POPUP;
+        RETURN 9;
+      ENDIF;
+
+      /*................................................................
+        Insert the subtotals for new contributors (Mode B)
+      ................................................................*/
+
+      INSERT INTO :h_table 
+                ( industry,
+                  cutoff,
+                  mode,
+                  under,
+                  pps,
+                  over,
+                  stratum1,
+                  stratum2,
+                  stratum3,
+                  stratum4,
+                  stratum5)
+      VALUES    ( :h_industry,
+                  :h_cutoff,
+                  'B',
+                  :h_under_new,
+                  :h_pps_new,
+                  :h_over_new,
+                  :h_stratum1_new,
+                  :h_stratum2_new,
+                  :h_stratum3_new,
+                  :h_stratum4_new,
+                  :h_stratum5_new);
+
+      h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return2 != 0
+      THEN
+        MESSAGE 'ERROR: Failed to create row on working table ' +:h_table +' '
+              + 'for new contributors in industry ' +VARCHAR(:h_industry) +' ' 
+              + 'Error code ' +VARCHAR(:h_return2) + '. '
+              + 'Please contact IM immediately.' 
+        WITH STYLE = POPUP;
+        RETURN 9;
+      ENDIF;
+
+      /*................................................................
+        Insert the subtotals for non-responders (Mode C)
+      ................................................................*/
+
+      INSERT INTO :h_table 
+                ( industry,
+                  cutoff,
+                  mode,
+                  under,
+                  pps,
+                  over,
+                  stratum1,
+                  stratum2,
+                  stratum3,
+                  stratum4,
+                  stratum5)
+      VALUES    ( :h_industry,
+                  :h_cutoff,
+                  'C',
+                  :h_under_non,
+                  :h_pps_non,
+                  :h_over_non,
+                  :h_stratum1_non,
+                  :h_stratum2_non,
+                  :h_stratum3_non,
+                  :h_stratum4_non,
+                  :h_stratum5_non);
+
+      h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+      IF h_return2 != 0
+      THEN
+        MESSAGE 'ERROR: Failed to create row on working table ' +:h_table +' '
+              + 'for non-responders in industry ' +VARCHAR(:h_industry) +' ' 
+              + 'Error code ' +VARCHAR(:h_return2) + '. '
+              + 'Please contact IM immediately.' 
+        WITH STYLE = POPUP;
+        RETURN 9;
+      ENDIF;
+
+    END;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select industry for main loop. '
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.' 
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+ /*--------------------------------------------------------------
+      Populate table fields with default data.   
+  --------------------------------------------------------------*/
+
+  h_return = CALLPROC lp_load_table ();
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in local procedure */ 
+    RETURN 9;
+  ENDIF;
+
+  RESUME menu;
+
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'ViewAll', KEY FRSKEY5 =
+{
+  s_title = 'SAMPLE STRATA BY INDUSTRY - ALL CONTRIBUTORS';
+  h_mode      = 'A';
+
+  h_return = CALLPROC lp_load_table ();
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in local procedure */ 
+    RETURN 9;
+  ENDIF;
+
+  RESUME menu;
+}
+
+'ViewNew', KEY FRSKEY6 =
+{
+  s_title = 'SAMPLE STRATA BY INDUSTRY - NEW CONTRIBUTORS';
+  h_mode      = 'B';
+
+  h_return = CALLPROC lp_load_table ();
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in local procedure */ 
+    RETURN 9;
+  ENDIF;
+
+  RESUME menu;
+}
+
+'ViewNon', KEY FRSKEY7 =
+{
+  s_title = 'SAMPLE STRATA BY INDUSTRY - NON RESPONDERS';
+  h_mode      = 'C';
+
+  h_return = CALLPROC lp_load_table ();
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in local procedure */ 
+    RETURN 9;
+  ENDIF;
+
+  RESUME menu;
+}
+
+'End', KEY FRSKEY14 =
+{
+  h_return = CALLPROC msa_fp_drop_table (p_table = :h_table);
+
+  IF h_return > 1
+  THEN
+    /* Error message handled in local procedure */ 
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=========================================================================
+    Local procedure to load data to on screen table fields 
+=========================================================================*/
+
+PROCEDURE lp_load_table () =
+{
+  MESSAGE 'Please wait...';
+
+  /*--------------------------------------------------------------
+      Populate first table field depending on mode variable.
+  --------------------------------------------------------------*/
+
+  tf1 =
+
+  SELECT industry,
+         cutoff,
+         under,
+         pps,
+         over,
+         stratum1,
+         stratum2,
+         stratum3,
+         stratum4,
+         stratum5,
+         under + pps + over AS total
+  FROM   :h_table
+  WHERE  mode = :h_mode
+  ORDER 
+     BY  industry;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select data for main table field. '
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.' 
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*--------------------------------------------------------------
+      Populate second table field depending on mode variable.
+  --------------------------------------------------------------*/
+
+  tf2 =
+
+  SELECT 'TOTAL' AS title,
+         SUM(under) AS under,
+         SUM(pps) AS pps,
+         SUM(over) AS over,
+         SUM(stratum1) AS stratum1,
+         SUM(stratum2) AS stratum2,
+         SUM(stratum3) AS stratum3,
+         SUM(stratum4) AS stratum4,
+         SUM(stratum5) AS stratum5,
+         SUM(under) + SUM(pps) + SUM(over) AS total
+  FROM   :h_table
+  WHERE  mode = :h_mode;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select data for main table field. '
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.' 
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+}
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

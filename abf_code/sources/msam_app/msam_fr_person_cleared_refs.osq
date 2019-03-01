@@ -1,0 +1,518 @@
+/**************************************************************************
+   This program is called by msam_fr_person_progress
+   It is used by EOs to check cleared references.
+**************************************************************************/
+
+INITIALIZE (p_table1    = VARCHAR(24) NOT NULL,
+            p_table2    = VARCHAR(24) NOT NULL,
+            p_counter   = INTEGER4    NOT NULL,
+            p_max_count = INTEGER4    NOT NULL)=
+
+DECLARE 
+  h_retries_allowed   = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries           = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not      = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name         = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_field_name        = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_industry          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_rows              = INTEGER4    NOT NULL WITH DEFAULT,
+  h_return            = INTEGER1    NOT NULL WITH DEFAULT,
+  h_table             = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_count             = INTEGER1    NOT NULL WITH DEFAULT,
+
+  lp_save_checks      = PROCEDURE RETURNING INTEGER,
+  lp_load_table       = PROCEDURE RETURNING INTEGER,
+  lp_error_check      = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{    
+  h_frpr_name       = 'msam_fr_person_cleared_refs';
+  h_table           = 'tt_person_cleared_refs';
+  h_retries_allowed = 3;
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+       Load data to screen.
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC lp_load_table ();
+
+  IF h_return != 0
+  THEN
+    /*Error message handled in local procedure */
+    RETURN 9;
+  ENDIF;
+
+  SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+  RESUME FIELD tf;
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'Checked', KEY FRSKEY4 =
+{
+  SET_FORMS FIELD '' (MODE(tf) = 'FILL');
+
+  tf.eo_check = 'Y';
+
+  REDISPLAY;
+
+  UPDATE :h_table
+  SET    eo_check = 'Y'
+  WHERE  contributor_reference = :tf.contributor_reference;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Unable to save EO check marks to temp table. '
+          + 'Error code ' + VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.' 
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+  RESUME FIELD tf.contributor_reference;
+}
+
+
+'Prev', KEY FRSKEY5 =
+{
+  IF :p_counter = 1
+  THEN
+    MESSAGE 'NOTE: There are no industruies before this one.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  h_return = CALLPROC lp_save_checks ();
+
+  IF h_return != 0 
+  THEN 
+    /* Error message handled in local procedure. */
+    RETURN h_return; 
+  ENDIF;
+    
+  p_counter = :p_counter - 1;
+
+  h_return = CALLPROC lp_load_table ();
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in local procedure. */
+    RETURN h_return;
+  ENDIF;
+}
+
+
+'Next', KEY FRSKEY6 =
+{
+  IF :p_counter = :p_max_count
+  THEN
+    MESSAGE 'NOTE: There are no industruies after this one.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  h_return = CALLPROC lp_save_checks ();
+
+  IF h_return != 0 
+  THEN 
+    /* Error message handled in local procedure. */
+    RETURN h_return; 
+  ENDIF;
+
+  p_counter = :p_counter + 1;
+
+  h_return = CALLPROC lp_load_table ();
+  IF h_return != 0 
+  THEN 
+    /* Error message handled in local procedure. */
+    RETURN h_return; 
+  ENDIF;
+}
+
+
+'Contact', KEY FRSKEY8 = 
+{
+  INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+  IF :h_field_name != 'tf'
+  THEN
+    MESSAGE 'WARNING: Please highlight the required contributor.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  h_return = CALLPROC lp_save_checks ();
+
+  IF h_return != 0 
+  THEN 
+    /* Error message handled in local procedure. */
+    RETURN h_return; 
+  ENDIF;
+
+  INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+  IF :h_rows = 0
+  THEN
+    MESSAGE 'WARNING: Please highlight the required contributor.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  CALL APPLICATION ( exec = '$IMAGES/communicate -numeric_overflow=ignore',
+                     param = VARCHAR(:tf.contributor_reference));
+}
+
+
+'QuickView', KEY FRSKEY20 = 
+{
+  h_return = CALLPROC lp_save_checks ();
+
+  IF h_return != 0 
+  THEN 
+    /* Error message handled in local procedure. */
+    RETURN h_return; 
+  ENDIF;
+
+  CALL APPLICATION ( exec = '$IMAGES/quickview_app -numeric_overflow=ignore');
+}
+
+
+'Back', KEY FRSKEY14 =
+{
+  h_return = CALLPROC lp_save_checks ();
+
+  IF h_return != 0 
+  THEN 
+    /* Error message handled in local procedure. */
+    RETURN h_return; 
+  ENDIF;
+
+  RETURN 0;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=========================================================================
+      Local procedure to load or reload temporary table to on screen
+      table field.
+=========================================================================*/
+
+PROCEDURE lp_load_table () =
+
+DECLARE   lp_return         = INTEGER4  NOT NULL WITH DEFAULT,
+          lp_week_cleared   = INTEGER4  NOT NULL WITH DEFAULT,
+          lp_period_cleared = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+  /*......................................................................
+      Set up display fields.
+  ......................................................................*/
+
+  h_industry = :g_industry_array[:p_counter].industry;
+
+  s_title    = 'REFERENCES CLEARED BY ' +:g_analyst_name +' '
+             + 'IN ' + VARCHAR(:g_period) +' '
+             + 'FOR INDUSTRY ' +VARCHAR(:h_industry);
+
+  s_message  = 'Industry ' + VARCHAR(:p_counter) + ' '
+             + 'of ' + VARCHAR(:p_max_count);
+
+  SELECT wk1_clr AS lp_week_cleared,
+         prd_clr AS lp_period_cleared
+  FROM   :p_table2
+  WHERE  contributor_industry = :h_industry;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select week and period totals for display. '
+          + 'Error code ' + VARCHAR(:lp_return) +'. '
+          + 'Please contact IM immediately.' 
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  s_totals = 'Forms cleared in week: ' +VARCHAR(:lp_week_cleared) + '         '
+           + 'Forms cleared in period: ' +VARCHAR(:lp_period_cleared) ;
+
+  REDISPLAY;
+  
+  /*......................................................................
+      Create working table.
+  ......................................................................*/
+
+  lp_return = CALLPROC msa_fp_drop_table (p_table = :h_table);
+
+  IF lp_return != 0
+  THEN
+    /* Error message handled by external procedure */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table
+  AS
+  SELECT a.contributor_reference,
+         a.receipt_date,
+         a.correct_date,
+         '  ' AS turnover_failure,
+         b.eo_check AS eo_check
+  FROM   :p_table1 a,
+         contributor_period_check b
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.contributor_industry  = :h_industry
+    AND  b.period                = :g_period;
+
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to create working table. '
+          + 'Error code ' + VARCHAR(:lp_return) +'. '
+          + 'Please contact IM immediately.' 
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+    
+  MODIFY :h_table TO BTREE
+      ON contributor_reference;
+  
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to modify storage structure of working table. '
+          + 'Error code ' + VARCHAR(:lp_return) +'. '
+          + 'Please contact IM immediately.' 
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+    
+  /*......................................................................
+      Update working table with Turnover failure marks.
+  ......................................................................*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE :h_table a
+    FROM   cqpv b
+    SET    turnover_failure = 'T'
+    WHERE  a.contributor_reference = b.contributor_reference
+      AND  b.contributor_industry = :h_industry
+      AND  b.period = :g_period
+      AND  b.quest_order = 10  
+      AND  b.fcell not in ('V','N');
+
+    lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF lp_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to set Turnover Error markers on working table. '
+          + 'Error code ' + VARCHAR(:lp_return) +'. '
+          + 'Please contact IM immediately.' 
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*......................................................................
+      Update working table with Amended Turnover failure marks.
+  ......................................................................*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE :h_table a
+    FROM   cqpv b
+    SET    turnover_failure = 'TA'
+    WHERE  a.contributor_reference = b.contributor_reference
+      AND  b.quest_order = 10  
+      AND  b.contributor_industry = :h_industry
+      AND  b.period = :g_period
+      AND  b.fcell not in ('V','N')
+      AND  b.avalue != b.fvalue;
+
+    lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF lp_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to set Amended Turnover Error markers '
+          + 'on working table. '
+          + 'Error code ' + VARCHAR(:lp_return) +'. '
+          + 'Please contact IM immediately.' 
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*......................................................................
+      Display data from working table in table field.
+  ......................................................................*/
+
+  tf = 
+
+  SELECT contributor_reference,
+         receipt_date,
+         correct_date,
+         turnover_failure,
+         eo_check
+  FROM   :h_table
+  ORDER BY correct_date DESC;
+  
+  lp_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'NOTE: There are no clearances by this analyst for this industry.'
+    WITH STYLE = POPUP;
+  ELSEIF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to load data to screen. '
+          + 'Error code ' +VARCHAR(:lp_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/*=========================================================================
+      Local procedure to save EO checks prior to leaving table field.
+=========================================================================*/
+
+PROCEDURE lp_save_checks () =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE contributor_period_check a
+    FROM   :h_table b
+    SET    eo_check = 'Y'
+    WHERE  a.contributor_reference = b.contributor_reference
+      AND  a.period = :g_period
+      AND  b.eo_check = 'Y';
+    
+    lp_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF lp_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Unable to save EO check marks to main table. '
+          + 'Error code ' + VARCHAR(:lp_return) +'. '
+          + 'Please contact IM immediately.' 
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

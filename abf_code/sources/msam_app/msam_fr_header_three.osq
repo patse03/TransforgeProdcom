@@ -1,0 +1,468 @@
+INITIALIZE (p_dest_frame = VARCHAR(32) NOT NULL WITH DEFAULT) =
+
+DECLARE
+  h_retries_allowed  = INTEGER1     NOT NULL WITH DEFAULT,
+  h_retries          = INTEGER1     NOT NULL WITH DEFAULT,
+  h_retry_or_not     = CHAR(5)      NOT NULL WITH DEFAULT,
+  h_frpr_name        = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_return           = INTEGER1     NOT NULL WITH DEFAULT,
+  h_return2          = INTEGER1     NOT NULL WITH DEFAULT,
+  h_param_list       = VARCHAR(200) NOT NULL WITH DEFAULT,
+  h_varchar_variable = VARCHAR(200) NOT NULL WITH DEFAULT,
+  h_integer_variable = INTEGER2     NOT NULL WITH DEFAULT,
+  h_dummy            = VARCHAR(11)  NOT NULL WITH DEFAULT,
+  h_period           = INTEGER4     NOT NULL WITH DEFAULT,
+  h_table            = VARCHAR(32)  NOT NULL WITH DEFAULT,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_select_question  = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+  h_retries_allowed = 3;
+  h_frpr_name       = 'msam_fr_header_three';
+
+    s_period  = (DATE_PART('year','today') - 1)  * 100;
+
+  msa_date  = 'today';
+
+  /*---------------------------------------------------------------------------
+      Accepts dest frame as paramater if passed from outside application.
+  ---------------------------------------------------------------------------*/
+
+  IF p_dest_frame = ''
+  THEN
+    
+    h_param_list = CALLPROC CommandLineParameters();
+
+    h_varchar_variable = SQUEEZE ( h_param_list);
+
+    h_integer_variable = LOCATE ( h_varchar_variable, ' ');
+    p_dest_frame       = LEFT   ( h_varchar_variable, h_integer_variable - 1);
+
+  ENDIF;
+
+  s_dest_frame = :p_dest_frame;
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_procs (p_frpr_name = :p_dest_frame);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+       Get user variables.
+  ----------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_get_user_details 
+           ( p_default_printer = BYREF(:g_printer),
+             p_user_name       = BYREF(:g_user_name));
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure */
+    RETURN 9;
+  ENDIF;
+  
+  /*---------------------------------------------------------------------------
+     Unlocks main parameter entry fields.
+  ---------------------------------------------------------------------------*/
+
+  SET_FORMS FIELD '' (DISPLAYONLY(s_period)  = 0,
+                      UNDERLINE(s_period)    = 1,
+                      REVERSE(s_period)      = 0,
+
+                      DISPLAYONLY(s_contributor_reference)    = 0,
+                      UNDERLINE(s_contributor_reference)      = 1,
+                      REVERSE(s_contributor_reference)        = 0,
+
+                      DISPLAYONLY(s_zoom)    = 0,
+                      UNDERLINE(s_zoom)      = 1,
+                      REVERSE(s_zoom)        = 0,
+
+                      DISPLAYONLY(s_question) = 0,
+                      UNDERLINE(s_question)   = 1,
+                      REVERSE(s_question)     = 0);
+
+  RESUME FIELD s_period;
+
+}
+
+/*************************** FIELD ACTIVATIONS ****************************/
+
+FIELD s_period =
+{
+  MESSAGE 'Checking Period . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT week_no AS g_max_week
+    FROM   inquiry_period
+    WHERE  period = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This is not a valid ProdCom period. '
+          + 'Please try again or exit the screen.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_period;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to validate the period parameter. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  SET_FORMS FIELD '' (DISPLAYONLY(s_period) = 1,
+                      UNDERLINE  (s_period) = 0,
+                      REVERSE    (s_period) = 1);
+
+  g_period = :s_period;
+
+  RESUME FIELD s_contributor_reference;
+
+}
+
+FIELD s_contributor_reference =
+{
+
+  MESSAGE 'Checking Contributor Reference . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT contributor_reference AS h_dummy
+    FROM   contributor
+    WHERE  contributor_reference = :s_contributor_reference; 
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This is not a valid ProdCom Contributor. '
+          + 'Please try again or exit the screen.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_contributor_reference;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to validate the contributor reference. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT DISTINCT contributor_reference AS h_dummy
+    FROM   audit_trail
+    WHERE  contributor_reference = :s_contributor_reference
+      AND  period = :s_period; 
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: There are are no entries on the audit trail for '
+          + 'this contributor in the specified period. '
+          + 'Please try again or exit the screen.'
+    WITH STYLE = POPUP;
+    SET_FORMS FIELD '' (DISPLAYONLY(s_period) = 0,
+                        UNDERLINE  (s_period) = 1,
+                        REVERSE    (s_period) = 0);
+    RESUME FIELD s_period;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed whilst validating the contributor reference '
+          + 'and period on the audit trail. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  SET_FORMS FIELD '' (DISPLAYONLY(s_contributor_reference)  = 1,
+                      UNDERLINE  (s_contributor_reference)  = 0,
+                      REVERSE    (s_contributor_reference)  = 1);
+
+  s_message = 'Do you wish to view data at Form or Question level?';
+
+  RESUME FIELD s_zoom;
+
+}
+
+FIELD s_zoom =
+{
+  s_zoom = UPPER(:s_zoom);
+
+  IF  :s_zoom != 'Q'
+  AND :s_zoom != 'F'
+  THEN
+    MESSAGE 'WARNING: Please respond with "F" or "Q".'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_zoom;
+  ENDIF;
+
+  s_message = '';
+
+  /*------------------------------------------------------------------------
+      Form level.
+  ------------------------------------------------------------------------*/
+
+  IF s_zoom = 'F'
+  THEN
+
+    s_question = 0;
+    
+    SET_FORMS FIELD '' (DISPLAYONLY(s_zoom) = 1,
+                        UNDERLINE  (s_zoom) = 0,
+                        REVERSE    (s_zoom) = 1, 
+
+                        DISPLAYONLY(s_question) = 1,
+                        UNDERLINE  (s_question) = 0,
+                        REVERSE    (s_question) = 1); 
+
+    h_return = CALLFRAME msam_fr_audit_trail 
+             ( p_contributor_reference = :s_contributor_reference,
+              p_question              = 0,
+              p_period                = :s_period);
+
+    IF h_return != 2
+    THEN
+      /* Not changing to question mode */
+      RETURN :h_return;
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+     Question level
+  ------------------------------------------------------------------------*/
+
+  h_return = 2;
+
+  WHILE h_return = 2 DO
+
+    IF 1 = 0  /* TESTING */
+    THEN
+
+      MESSAGE 'DEBUG: The following parameters have been prepared...' +X'0D'
+            + '       p_period       = {' +VARCHAR(:s_period) +'}' +X'0D'
+            + '       p_contributor  = {' +:s_contributor_reference +'}' +X'0D'
+            + '       p_question     = {' +VARCHAR(:s_question) +'}' +X'0D'
+      WITH STYLE = POPUP;
+  
+      MESSAGE 'DEBUG: The following frame is now being called...'+X'0D'
+            + '       p_dest_frame  = {' +:p_dest_frame +'}' +X'0D'
+      WITH STYLE = POPUP;
+    
+    ENDIF;  /* TESTING */
+
+    h_return2 = CALLPROC lp_select_question();
+
+    IF h_return2 = 1
+    THEN
+      RESUME FIELD s_zoom;
+    ELSEIF h_return2 > 1
+    THEN
+      /* Error message handled in local procedure */
+      RETURN :h_return2;
+    ENDIF;
+
+    h_return = CALLFRAME msam_fr_audit_trail
+             ( p_period                 = :s_period,
+               p_contributor_reference  = :s_contributor_reference,
+               p_question               = :s_question); 
+
+  ENDWHILE;
+   
+  /* Error message handled in external procedure */
+  RETURN :h_return;
+
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'Clear', KEY FRSKEY12 =
+{
+  CLEAR FIELD ALL;
+
+  msa_date = 'now';
+
+  s_dest_frame = :p_dest_frame;
+
+  SET_FORMS FIELD '' (DISPLAYONLY(s_period)  = 0,
+                      UNDERLINE(s_period)    = 1,
+                      REVERSE(s_period)      = 0,
+
+                      DISPLAYONLY(s_contributor_reference)    = 0,
+                      UNDERLINE(s_contributor_reference)      = 1,
+                      REVERSE(s_contributor_reference)        = 0,
+
+                      DISPLAYONLY(s_zoom)    = 0,
+                      UNDERLINE(s_zoom)      = 1,
+                      REVERSE(s_zoom)        = 0,
+
+                      DISPLAYONLY(s_question) = 0,
+                      UNDERLINE(s_question)   = 1,
+                      REVERSE(s_question)     = 0);
+
+  RESUME FIELD s_period;
+
+}
+
+'End', KEY FRSKEY14 =
+{
+  RETURN 0;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+/*=======================================================================
+    Local procedure to select specific question to view.
+=======================================================================*/
+
+PROCEDURE lp_select_question () =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+  s_zoom = 'Q';
+
+  SET_FORMS FIELD '' (DISPLAYONLY(s_zoom) = 1,
+                      UNDERLINE  (s_zoom) = 0,
+                      REVERSE    (s_zoom) = 1); 
+
+  REDISPLAY;
+
+  lp_return = CALLFRAME msam_fr_question_select 
+            ( p_contributor_reference = :s_contributor_reference,
+              p_period                = :s_period,
+              p_question              = BYREF(:s_question));
+
+  IF lp_return = 1
+  THEN
+    
+    CLEAR FIELD s_zoom;
+    CLEAR FIELD s_question;
+
+    msa_date = 'now';
+
+    s_dest_frame = :p_dest_frame;
+    
+    s_zoom = 'F';
+
+    SET_FORMS FIELD '' (DISPLAYONLY(s_period)  = 1,
+                        UNDERLINE(s_period)    = 0,
+                        REVERSE(s_period)      = 1,
+  
+                        DISPLAYONLY(s_contributor_reference)    = 1,
+                        UNDERLINE(s_contributor_reference)      = 0,
+                        REVERSE(s_contributor_reference)        = 1,
+  
+                        DISPLAYONLY(s_zoom)    = 0,
+                        UNDERLINE(s_zoom)      = 1,
+                        REVERSE(s_zoom)        = 0,
+  
+                        DISPLAYONLY(s_question) = 0,
+                        UNDERLINE(s_question)   = 1,
+                        REVERSE(s_question)     = 0);
+
+    RETURN 1;
+
+  ELSEIF lp_return > 1
+  THEN
+    MESSAGE 'ERROR: Persistant failure to select question correctly. '
+          + 'Error code ' +VARCHAR(:lp_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  SET_FORMS FIELD '' (DISPLAYONLY(s_question)  = 1,
+                      UNDERLINE  (s_question)  = 0,
+                      REVERSE    (s_question)  = 1);
+
+  REDISPLAY;
+
+  RETURN 0;
+
+}

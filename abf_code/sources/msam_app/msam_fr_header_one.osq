@@ -1,0 +1,386 @@
+INITIALIZE (p_dest_frame = VARCHAR(32) NOT NULL WITH DEFAULT) =
+
+DECLARE
+  h_retries_allowed  = INTEGER1     NOT NULL WITH DEFAULT,
+  h_retries          = INTEGER1     NOT NULL WITH DEFAULT,
+  h_retry_or_not     = CHAR(5)      NOT NULL WITH DEFAULT,
+  h_frpr_name        = VARCHAR(24)  NOT NULL WITH DEFAULT,
+  h_return           = INTEGER1     NOT NULL WITH DEFAULT,
+  h_return2          = INTEGER1     NOT NULL WITH DEFAULT,
+  h_param_list       = VARCHAR(200) NOT NULL WITH DEFAULT,
+  h_varchar_variable = VARCHAR(200) NOT NULL WITH DEFAULT,
+  h_integer_variable = INTEGER2     NOT NULL WITH DEFAULT,
+  h_period           = INTEGER4     NOT NULL WITH DEFAULT,
+  h_scope            = VARCHAR(5)   NOT NULL WITH DEFAULT,
+  h_message          = VARCHAR(78)  NOT NULL WITH DEFAULT,
+  h_table            = VARCHAR(32)  NOT NULL WITH DEFAULT,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+  h_retries_allowed = 3;
+  h_frpr_name       = 'msam_fr_header_one';
+  h_message         = 'Scope is either a specific industry, "GROUP" or "ALL".';
+
+  s_message = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+  s_period  = (DATE_PART('year','today') - 1)  * 100;
+
+  msa_date  = 'today';
+
+  /*---------------------------------------------------------------------------
+      Accepts dest frame as paramater if passed from outside application.
+  ---------------------------------------------------------------------------*/
+
+  IF p_dest_frame = ''
+  THEN
+    
+    h_param_list = CALLPROC CommandLineParameters();
+
+    h_varchar_variable = SQUEEZE ( h_param_list);
+
+    h_integer_variable = LOCATE ( h_varchar_variable, ' ');
+    p_dest_frame       = LEFT   ( h_varchar_variable, h_integer_variable - 1);
+
+  ENDIF;
+
+  s_dest_frame = :p_dest_frame;
+
+  h_table = 'tt_maninfo_inds_'+:g_user_id;
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_procs (p_frpr_name = :p_dest_frame);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+       Get user variables.
+  ----------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_get_user_details 
+           ( p_default_printer = BYREF(:g_printer),
+             p_user_name       = BYREF(:g_user_name));
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure */
+    RETURN 9;
+  ENDIF;
+  
+  /*---------------------------------------------------------------------------
+      Hides scope message and unlocks main parameter entry fields.
+  ---------------------------------------------------------------------------*/
+
+  SET_FORMS FIELD '' (INVISIBLE(s_message)  = 1,
+
+                      DISPLAYONLY(s_period) = 0,
+                      UNDERLINE(s_period)   = 1,
+                      REVERSE(s_period)     = 0,
+
+                      DISPLAYONLY(s_week)   = 0,
+                      UNDERLINE(s_week)     = 1,
+                      REVERSE(s_week)       = 0,
+
+                      DISPLAYONLY(s_scope)  = 0,
+                      UNDERLINE(s_scope)    = 1,
+                      REVERSE(s_scope)      = 0);
+
+  RESUME FIELD s_period;
+
+}
+
+/*************************** FIELD ACTIVATIONS ****************************/
+
+FIELD s_period =
+{
+  MESSAGE 'Checking Period . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT week_no AS g_max_week
+    FROM   inquiry_period
+    WHERE  period = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This is not a valid ProdCom period. '
+          + 'Please try again or exit the screen.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_period;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to validate the period parameter. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  SET_FORMS FIELD '' (DISPLAYONLY(s_period) = 1,
+                      UNDERLINE  (s_period) = 0,
+                      REVERSE    (s_period) = 1);
+
+  g_period = :s_period;
+
+  s_week = g_max_week;
+
+  RESUME FIELD s_week;
+
+}
+
+FIELD s_week =
+{
+  IF s_week < 1 
+  OR s_week > :g_max_week
+  THEN
+    MESSAGE 'WARNING: The week number must be between 1 and '
+          + VARCHAR(:g_max_week) + '. Please try again...'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_week;
+  ENDIF;
+
+  SET_FORMS FIELD '' (INVISIBLE(s_message) = 0,
+
+                      DISPLAYONLY(s_week)  = 1,
+                      UNDERLINE  (s_week)  = 0,
+                      REVERSE    (s_week)  = 1);
+
+  g_week = :s_week;
+
+  RESUME FIELD s_scope;
+
+}
+
+FIELD s_scope =
+{
+  IF  UPPER(s_scope) != 'GROUP'
+  AND UPPER(s_scope) != 'ALL'
+  AND s_scope NOT LIKE '/[0-9/]/[0-9/]/[0-9/]/[0-9/]/[0-9/]' ESCAPE '/'
+  THEN
+    MESSAGE 'WARNING: That is not a valid scope. Please see note below.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_scope;
+  ENDIF;
+
+ MESSAGE 'Validating...';
+
+  h_return = CALLPROC msam_fp_industry
+           ( p_scope = BYREF(:s_scope),
+             p_table = :h_table);
+
+  IF h_return = 1
+  THEN
+    /* Warning message handled in external procedure. */
+    RESUME FIELD s_scope;
+  ELSEIF h_return > 1
+  THEN
+    /*Error message handled in external procedure. */
+    RETURN 9;
+  ENDIF;
+  
+  SET_FORMS FIELD '' (INVISIBLE(s_message)  = 1, 
+
+                      DISPLAYONLY(s_scope)  = 1,
+                      UNDERLINE  (s_scope)  = 0,
+                      REVERSE    (s_scope)  = 1);
+
+  REDISPLAY;
+
+  g_scope = VARCHAR(:s_scope);
+
+  /*------------------------------------------------------------------------
+     All three parameters are now set correctly, so proceed to call 
+     the destination frame.
+  ------------------------------------------------------------------------*/
+
+  IF 1 = 0  /* TESTING */
+  THEN
+
+    MESSAGE 'DEBUG: The following parameters have been prepared...' +X'0D'
+          + '       h_table  = {' +:h_table +'}' +X'0D'
+          + '       s_period = {' +VARCHAR(:s_period) +'}' +X'0D'
+          + '       s_week   = {' +VARCHAR(:s_week) +'}' +X'0D'
+          + '       s_scope  = {' +:s_scope +'}' +X'0D'
+    WITH STYLE = POPUP;
+  
+    MESSAGE 'DEBUG: The following frame is now being called...'+X'0D'
+          + '       p_dest_frame  = {' +:p_dest_frame +'}' +X'0D'
+    WITH STYLE = POPUP;
+    
+  ENDIF;  /* TESTING */
+  
+  h_return = 2;
+
+  WHILE h_return = 2 
+  DO
+
+    IF p_dest_frame LIKE '%fp%'
+    THEN
+      h_return = CALLPROC  :p_dest_frame (p_table = :h_table);
+    ELSE
+      h_return = CALLFRAME :p_dest_frame (p_table = :h_table);
+    ENDIF;
+
+    /*........................................................................
+      RAP mode change function. Short term fix, need to find time
+      to do this in local procedures within msam_fr_inq_progress.
+    ........................................................................*/
+
+    IF h_return = 2
+    THEN
+
+      IF :g_week != 53 
+      THEN 
+        g_week = 53;
+      ELSE
+        g_week = :s_week;
+      ENDIF;
+
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 2 
+  THEN 
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+      Remove temp inds table if it still exists.
+  ------------------------------------------------------------------------*/
+
+  h_return2 = CALLPROC msa_fp_drop_table ( h_table = :h_table);
+
+  IF h_return2 != 0
+  THEN
+    /* Error message handled in external procedure */
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+      Deal with non-fatal returns to Reselect
+  ------------------------------------------------------------------------*/
+
+  IF h_return = 1 
+  THEN 
+    CLEAR FIELD ALL;
+
+    msa_date = 'now';
+
+    s_message = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+    s_dest_frame = :p_dest_frame;
+
+    SET_FORMS FIELD '' (INVISIBLE(s_message)  = 1,
+
+                        DISPLAYONLY(s_period) = 0,
+                        UNDERLINE(s_period)   = 1,
+                        REVERSE(s_period)     = 0,
+
+                        DISPLAYONLY(s_week)   = 0,
+                        UNDERLINE(s_week)     = 1,
+                        REVERSE(s_week)       = 0,
+
+                        DISPLAYONLY(s_scope)  = 0,
+                        UNDERLINE(s_scope)    = 1,
+                        REVERSE(s_scope)      = 0);
+
+    RESUME FIELD s_period;
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+      Deal with graceful return to menu.
+  ------------------------------------------------------------------------*/
+
+  RETURN 0;
+
+}
+
+/**************************** KEY ACTIVATIONS *****************************/
+
+'Clear', KEY FRSKEY12 =
+{
+  CLEAR FIELD ALL;
+
+  msa_date = 'now';
+
+  s_message = SHIFT(:h_message, (((80-LENGTH(h_message))/2)*1));
+  s_dest_frame = :p_dest_frame;
+
+  SET_FORMS FIELD '' (INVISIBLE(s_message)  = 1,
+
+                      DISPLAYONLY(s_period) = 0,
+                      UNDERLINE(s_period)   = 1,
+                      REVERSE(s_period)     = 0,
+
+                      DISPLAYONLY(s_week)   = 0,
+                      UNDERLINE(s_week)     = 1,
+                      REVERSE(s_week)       = 0,
+
+                      DISPLAYONLY(s_scope)  = 0,
+                      UNDERLINE(s_scope)    = 1,
+                      REVERSE(s_scope)      = 0);
+
+  RESUME FIELD s_period;
+
+}
+
+'End', KEY FRSKEY14 =
+{
+  h_return = CALLPROC msa_fp_drop_table ( h_table = :h_table);
+  RETURN 0;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
