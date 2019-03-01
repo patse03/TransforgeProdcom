@@ -1,0 +1,1195 @@
+procedure msada_fp_form_table (
+
+        h_industry   = INTEGER4 NOT NULL) =
+
+DECLARE ret_val      = INTEGER4 NOT NULL,
+        h_table      = CHAR(25) NOT NULL,
+        h_con_table  = CHAR(25) NOT NULL,
+        h_max_table1 = CHAR(25) NOT NULL,
+        h_max_table2 = CHAR(25) NOT NULL,
+        h_index      = CHAR(25) NOT NULL,
+        h_index2     = CHAR(25) NOT NULL,
+        h_frpr_name  = VARCHAR(24) NOT NULL,
+        h_text2      = VARCHAR(60) NOT NULL,
+        h_text3      = VARCHAR(60) NOT NULL,
+        h_text4      = VARCHAR(60) NOT NULL,
+        h_text5      = VARCHAR(60) NOT NULL,
+        h_text6      = VARCHAR(60) NOT NULL,
+        h_text7      = VARCHAR(60) NOT NULL,
+        h_text8      = VARCHAR(60) NOT NULL,
+        h_text9      = VARCHAR(60) NOT NULL,
+        h_text10     = VARCHAR(60) NOT NULL,
+        h_cncode1    = VARCHAR(60) NOT NULL,
+        h_cncode2    = VARCHAR(60) NOT NULL,
+        h_cncode3    = VARCHAR(60) NOT NULL,
+        h_cncode4    = VARCHAR(60) NOT NULL,
+        h_cncode5    = VARCHAR(60) NOT NULL,
+        h_cncode6    = VARCHAR(60) NOT NULL,
+        h_cncode7    = VARCHAR(60) NOT NULL,
+        h_cncode8    = VARCHAR(60) NOT NULL,
+        h_cncode9    = VARCHAR(60) NOT NULL,
+        h_tid        = INTEGER4 NOT NULL,
+        h_question   = INTEGER4 NOT NULL,
+        h_lines      = INTEGER4 NOT NULL,
+        h_reference  = CHAR(11) NOT NULL
+{
+    h_frpr_name = 'msada_fp_form_table';
+    h_max_table1 = 'form_max_questions1';
+    h_max_table2 = 'form_max_questions2';
+    h_con_table  = 'temp_form_contribs';
+
+    /*-s----------------------------------------------------------------
+    Create the 'form' table to hold the question data, the note data
+    and the lu data
+    ----------------------------------------------------------------e-*/
+
+    IF g_output_category <> 'NI' AND g_output_category <> 'SM'
+    THEN
+        h_table = 'form_' +
+                  VARCHAR(:g_period) + '_' +
+                  VARCHAR(:h_industry) + '_' +
+                  LOWERCASE(:g_output_category);
+    ELSEIF g_output_category = 'NI'
+    THEN
+        h_table = 'form_' +
+                  VARCHAR(:g_period) + '_' +
+                  LOWERCASE(:g_output_category);
+    ELSEIF g_output_category = 'SM'
+    THEN
+        h_table = 'form_' +
+                  VARCHAR(:g_period) + '_' +
+                  LOWERCASE(:g_output_category);
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create table of just the contributor references that are needed
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Creating Table of Contributors . . .';
+
+    ret_val = CALLPROC batch_fp_drop_table (h_table = :h_con_table);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    IF g_output_category <> 'NI' AND g_output_category <> 'SM'
+    THEN
+        CREATE TABLE :h_con_table
+        AS SELECT    contributor_reference
+        FROM         contributor_period
+        WHERE        output_category = :g_output_category
+        AND          period = :g_period
+        AND          contributor_industry = :h_industry;
+    ELSEIF g_output_category = 'NI'
+    THEN
+        CREATE TABLE :h_con_table
+        AS SELECT    contributor_reference
+        FROM         contributor_period
+        WHERE        output_category IN ('F','G','J','M','N','P','H','K','V')
+        AND          period = :g_period
+        AND          region = 'YY';
+    ELSEIF g_output_category = 'SM'
+    THEN
+        CREATE TABLE :h_con_table
+        AS SELECT    contributor_reference
+        FROM         contributor_period
+        WHERE        output_category IN ('H','K','V')
+        AND          period = :g_period
+        AND          region <> 'YY';
+    ENDIF;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_con_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    MODIFY :h_con_table TO BTREE UNIQUE ON contributor_reference;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error modifying ' + :h_con_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Insert the question details for each contributor for the specified
+    output category into the table
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Creating Table of Contributors/Questions . . .';
+
+    IF :g_form_type = 'M'
+    THEN
+        CREATE TABLE :h_table
+        AS SELECT    'Q' AS col_type,
+                     a.contributor_reference,
+                     a.contributor_industry,
+                     INT4(b.quest_order) AS q_n_l_code,
+                     b.question AS q_n_order,
+                     0 AS q_desc_code,
+                     INT1(0) AS q_count,
+                     0 AS q_line,
+                     0 AS need_count,
+                     '                                                              ' AS text1,
+                     '                                                              ' AS text2,
+                     '                                                              ' AS text3,
+                     '                                                              ' AS text4,
+                     '                                                              ' AS text5,
+                     '                                                              ' AS text6,
+                     '                                                              ' AS text7,
+                     '                                                              ' AS text8,
+                     '                                                              ' AS text9,
+                     '                                                              ' AS text10,
+                     c.unit_1 AS unit1,
+                     '                                                      ' AS cn_code1,
+                     '                                                      ' AS cn_code2,
+                     '                                                      ' AS cn_code3,
+                     '                                                      ' AS cn_code4,
+                     '                                                      ' AS cn_code5,
+                     '                                                      ' AS cn_code6,
+                     '                                                      ' AS cn_code7,
+                     '                                                      ' AS cn_code8,
+                     '                                                      ' AS cn_code9
+        FROM         contributor_period a,
+                     cqpv b,
+                     question_library c,
+                     idbr_sec_reminders d,
+                     :h_con_table e
+        WHERE        a.period = :g_period
+        AND          c.period = :g_annual_period
+        AND          a.period = d.period
+        AND          b.period = a.period
+        AND          b.contributor_reference = a.contributor_reference
+        AND          d.contributor_reference = a.contributor_reference
+        AND          d.contributor_reference = b.contributor_reference
+        AND          e.contributor_reference = b.contributor_reference
+        AND          b.question = c.question;
+
+    ELSE
+
+        CREATE TABLE :h_table
+        AS SELECT    'Q'  AS  col_type,
+                     a.contributor_reference,
+                     a.contributor_industry,
+                     INT4(b.quest_order) AS q_n_l_code,
+                     b.question AS q_n_order,
+                     0 AS q_desc_code,
+                     INT1(0) AS q_count,
+                     0  AS q_line,
+                     0  AS need_count,
+                     '                                                              ' AS text1,
+                     '                                                              ' AS text2,
+                     '                                                              ' AS text3,
+                     '                                                              ' AS text4,
+                     '                                                              ' AS text5,
+                     '                                                              ' AS text6,
+                     '                                                              ' AS text7,
+                     '                                                              ' AS text8,
+                     '                                                              ' AS text9,
+                     '                                                              ' AS text10,
+                     c.unit_1 AS unit1,
+                     '                                                      ' AS cn_code1,
+                     '                                                      ' AS cn_code2,
+                     '                                                      ' AS cn_code3,
+                     '                                                      ' AS cn_code4,
+                     '                                                      ' AS cn_code5,
+                     '                                                      ' AS cn_code6,
+                     '                                                      ' AS cn_code7,
+                     '                                                      ' AS cn_code8,
+                     '                                                      ' AS cn_code9
+        FROM         contributor_period a,
+                     cqpv b,
+                     question_library c,
+                     :h_con_table d
+        WHERE        a.period = :g_period
+        AND          c.period = :g_annual_period
+        AND          b.period = a.period
+        AND          b.contributor_reference = a.contributor_reference
+        AND          d.contributor_reference = a.contributor_reference
+        AND          b.question = c.question;
+
+    ENDIF;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update with the new question text in 60-character chunks
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Updating with Question Text . . .';
+
+
+    UPDATE :h_table a
+    FROM   form_quest_text b
+    SET    q_count = b.line_count,
+           text1 = b.text1,
+           text2 = b.text2,
+           text3 = b.text3,
+           text4 = b.text4,
+           text5 = b.text5,
+           text6 = b.text6,
+           text7 = b.text7,
+           text8 = b.text8,
+           text9 = b.text9,
+           text10 = b.text10
+    WHERE  a.q_n_order = b.question;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating ' + :h_table +
+                    ' from form_quest_text',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Insert the note details for each contributor for the specified
+     output category into the table
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Inserting Notes . . .';
+
+    INSERT INTO :h_table (
+                q_n_l_code,
+                col_type,
+                contributor_reference,
+                contributor_industry,
+                q_n_order,
+                q_desc_code,
+                q_count,
+                q_line,
+                need_count,
+                text1,
+                text2,
+                text3,
+                text4,
+                text5,
+                text6,
+                text7,
+                text8,
+                text9,
+                text10,
+                unit1,
+                cn_code1,
+                cn_code2,
+                cn_code3,
+                cn_code4,
+                cn_code5,
+                cn_code6,
+                cn_code7,
+                cn_code8,
+                cn_code9)
+    SELECT
+    DISTINCT    b.note_code,
+                'N',
+                a.contributor_reference,
+                a.contributor_industry,
+                c.line_no,
+                0,
+                c.line_count,
+                0,
+                0,
+                c.text1,
+                c.text2,
+                c.text3,
+                c.text4,
+                c.text5,
+                c.text6,
+                c.text7,
+                c.text8,
+                c.text9,
+                c.text10,
+                '',
+                '',
+                '',
+                '',
+                '',
+                '',
+                '',
+                '',
+                '',
+                ''
+    FROM        contributor_period a,
+                question_note_link b,
+                form_note_text c,
+                cqpv d,
+                :h_con_table e
+    WHERE       a.period = :g_period
+    AND         a.period = d.period
+    AND         b.period = :g_annual_period
+    AND         c.period = b.period
+    AND         a.contributor_reference = d.contributor_reference
+    AND         a.contributor_reference = e.contributor_reference
+    AND         d.question = b.question
+    AND         b.note_code = c.note_code;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error inserting notes into ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+/*  /*-s----------------------------------------------------------------
+/*     P col_type - Local Units - NO LONGER USED
+/*  ----------------------------------------------------------------e-*/
+/*
+/*    INSERT INTO :h_table
+/*    SELECT      'P'  AS  col_type,
+/*                a.contributor_reference AS contributor_reference,
+/*                a.contributor_industry AS contributor_industry,
+/*                INT4(b.lu_reference) AS q_n_l_code,
+/*                0  AS q_n_order,
+/*                0  AS q_desc_code,
+/*                0 AS q_count,
+/*                0 AS q_line,
+/*                0 AS need_count,
+/*                b.lu_name1 AS text1,
+/*                b.lu_name2 AS text2,
+/*                b.lu_name3 AS text3,
+/*                b.lu_addr1 AS text4,
+/*                b.lu_addr2 AS text5,
+/*                b.lu_addr3 AS text6,
+/*                b.lu_addr4 AS text7,
+/*                b.lu_addr5 AS text8,
+/*                b.lu_postcode AS text9,
+/*                '' AS text10,
+/*                '' AS unit1,
+/*                '' AS cn_code1,
+/*                '' AS cn_code2,
+/*                '' AS cn_code3,
+/*                '' AS cn_code4,
+/*                '' AS cn_code5,
+/*                '' AS cn_code6,
+/*                '' AS cn_code7,
+/*                '' AS cn_code8,
+/*                '' AS cn_code9
+/*    FROM        contributor_period a,
+/*                contributor_luaddress b,
+/*                :h_con_table c
+/*    WHERE       a.period = :g_period
+/*    AND         a.period = b.period
+/*    AND         b.contributor_reference = a.contributor_reference
+/*    AND         c.contributor_reference = a.contributor_reference
+/*    AND         a.structure = 'L';
+/*
+/*    ret_val = CALLPROC batch_check_inq_ing (
+/*              h_num_row_ck = 1,
+/*              h_commit     = 'Y',
+/*              h_rollback   = 'N',
+/*              h_frpr_name  = :h_frpr_name);
+/*
+/*    IF ret_val = 9
+/*    THEN
+/*        INSERT INTO error_log
+/*        VALUES(     'now',
+/*                    'Error inserting col_type P LUs into ' + :h_table,
+/*                    :h_frpr_name,
+/*                    :ret_val,
+/*                    :g_user_id);
+/*        COMMIT;
+/*        RETURN ret_val;
+/*    ENDIF; */
+
+    /*-s----------------------------------------------------------------
+     P col_type
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Inserting P9s . . .';
+
+    INSERT INTO :h_table
+    SELECT      'P'  AS  col_type,
+                a.contributor_reference AS contributor_reference,
+                a.contributor_industry AS contributor_industry,
+                999999999 AS q_n_l_code,
+                0 AS q_n_order,
+                0  AS q_desc_code,
+                0 AS q_count,
+                0 AS q_line,
+                0 AS need_count,
+                '' AS text1,
+                '' AS text2,
+                '' AS text3,
+                '' AS text4,
+                '' AS text5,
+                '' AS text6,
+                '' AS text7,
+                '' AS text8,
+                '' AS text9,
+                '' AS text10,
+                '' AS unit1,
+                '' AS cn_code1,
+                '' AS cn_code2,
+                '' AS cn_code3,
+                '' AS cn_code4,
+                '' AS cn_code5,
+                '' AS cn_code6,
+                '' AS cn_code7,
+                '' AS cn_code8,
+                '' AS cn_code9
+    FROM        contributor_period a,
+                :h_con_table b
+    WHERE       a.period = :g_period
+    AND         a.contributor_reference = b.contributor_reference;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error inserting col_type P into ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     N col_type
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Inserting N9s . . .';
+
+    INSERT INTO :h_table
+    SELECT      'N'  AS  col_type,
+                a.contributor_reference AS contributor_reference,
+                a.contributor_industry AS contributor_industry,
+                999999999 AS q_n_l_code,
+                0 AS q_n_order,
+                0  AS q_desc_code,
+                0 AS q_count,
+                0 AS q_line,
+                0 AS need_count,
+                '' AS text1,
+                '' AS text2,
+                '' AS text3,
+                '' AS text4,
+                '' AS text5,
+                '' AS text6,
+                '' AS text7,
+                '' AS text8,
+                '' AS text9,
+                '' AS text10,
+                '' AS unit1,
+                '' AS cn_code1,
+                '' AS cn_code2,
+                '' AS cn_code3,
+                '' AS cn_code4,
+                '' AS cn_code5,
+                '' AS cn_code6,
+                '' AS cn_code7,
+                '' AS cn_code8,
+                '' AS cn_code9
+    FROM        contributor_period a,
+                :h_con_table b
+    WHERE       a.period = :g_period
+    AND         a.contributor_reference =b.contributor_reference;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error inserting col_type N into ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Modify table - differently for NI as all data is contained in one 
+     table
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Modifying . . .';
+
+    IF g_output_category <> 'NI' AND g_output_category <> 'SM'
+    THEN
+
+        MODIFY    :h_table TO BTREE
+        UNIQUE ON contributor_industry,
+                  contributor_reference,
+                  col_type,
+                  q_n_l_code,
+                  q_n_order,
+                  q_desc_code;
+    ELSE
+
+        MODIFY    :h_table TO BTREE
+        ON        contributor_reference,
+                  q_n_order;
+    ENDIF;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error modifying ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create Indexes
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Indexing 1 . . .';
+
+    h_index = 'x1_' + :h_table;
+
+    CREATE INDEX :h_index
+    ON           :h_table (
+                 col_type,
+                 contributor_reference,
+                 q_n_order,
+                 q_desc_code);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating index ' + :h_index,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    MESSAGE 'Indexing 2 . . .';
+
+    h_index = 'x2_' + :h_table;
+
+    CREATE INDEX :h_index
+    ON           :h_table (
+                 contributor_reference,
+                 q_n_order);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating index ' + :h_index2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Update q_line for 'Q' col_type rows - this field is used in the report
+     writer program to determine when and how to draw the lines on the
+     form:
+
+     0 = Don't draw a line,
+     2 = Draw a line across the page
+
+     (A line is drawn after the highest volume of every question)
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Checking Print Order of Questions . . .';
+
+    ret_val = CALLPROC batch_fp_drop_table (
+	      h_table = :h_max_table1);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_max_table1
+    AS SELECT    contributor_reference,
+                 q_n_order/10 AS base,
+                 q_n_order AS question
+    FROM         :h_table
+    WHERE        col_type = 'Q'
+    AND          q_n_l_code = 1;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_max_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table (
+	      h_table = :h_max_table2);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_max_table2
+    AS SELECT    contributor_reference,
+                 base,
+                 MAX(question) AS question
+    FROM         :h_max_table1
+    GROUP BY     contributor_reference,
+                 base;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_max_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    UPDATE :h_table a
+    FROM   :h_max_table2 b
+    SET    q_line = 2
+    WHERE  a.col_type = 'Q'
+    AND    a.contributor_reference = b.contributor_reference
+    AND    a.q_n_order = b.question
+    AND    a.q_n_l_code = 1;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating q_line = 2 on ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Update with CN Codes
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Updating with CN Codes . . .';
+
+    UPDATE :h_table
+    SET    cn_code1 = '',
+           cn_code2 = '',
+           cn_code3 = '',
+           cn_code4 = '',
+           cn_code5 = '',
+           cn_code6 = '',
+           cn_code7 = '',
+           cn_code8 = '',
+           cn_code9 = '';
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error blanking CN codes on ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    UPDATE :h_table a
+    FROM   prodcom_cncodes b
+    SET    cn_code1 = IFNULL(b.cn_code1,''),
+           cn_code2 = IFNULL(b.cn_code2,''),
+           cn_code3 = IFNULL(b.cn_code3,''),
+           cn_code4 = IFNULL(b.cn_code4,''),
+           cn_code5 = IFNULL(b.cn_code5,''),
+           cn_code6 = IFNULL(b.cn_code6,''),
+           cn_code7 = IFNULL(b.cn_code7,''),
+           cn_code8 = IFNULL(b.cn_code8,''),
+           cn_code9 = IFNULL(b.cn_code9,'')
+    WHERE  a.q_n_order = b.prodcom_code
+    AND    b.period = :g_annual_period;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating with CN Codes',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    DROP INDEX :h_index;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error dropping ' + :h_index,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Rework the lines needed to print each question.
+
+     Start by selecting all Value Questions
+     (01 questions with quest_order of 1).
+    ------------------------------------------------------------------*/
+    /*------------------------------------------------------------------
+    Modify table to speed up processing
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Calculating Question Lines Required . . .';
+
+    SELECT text2 AS h_text2,
+           text3 AS h_text3,
+           text4 AS h_text4,
+           text5 AS h_text5,
+           text6 AS h_text6,
+           text7 AS h_text7,
+           text8 AS h_text8,
+           text9 AS h_text9,
+           text10 AS h_text10,
+           cn_code1 AS h_cncode1,
+           cn_code2 AS h_cncode2,
+           cn_code3 AS h_cncode3,
+           cn_code4 AS h_cncode4,
+           cn_code5 AS h_cncode5,
+           cn_code6 AS h_cncode6,
+           cn_code7 AS h_cncode7,
+           cn_code8 AS h_cncode8,
+           cn_code9 AS h_cncode9,
+           tid AS h_tid
+    FROM   :h_table
+    WHERE  MOD(q_n_order,10) = 1
+    AND    q_n_l_code = 1
+    {
+        /*--------------------------------------------------------------
+        Initial Count of 6 =
+        1 for the blank line before the first line of text, plus
+        1 for the first line of text (there's always at least one line
+        of text), plus
+        1 for the blank line after the question text, plus
+        3 for the 'Value of Sales' and the 2 blank lines following it.
+        --------------------------------------------------------------*/
+
+        h_lines=6;
+        IF h_text2 <> '' THEN h_lines = h_lines + 1; ENDIF;
+        IF h_text3 <> '' THEN h_lines = h_lines + 1; ENDIF;
+        IF h_text4 <> '' THEN h_lines = h_lines + 1; ENDIF;
+        IF h_text5 <> '' THEN h_lines = h_lines + 1; ENDIF;
+        IF h_text6 <> '' THEN h_lines = h_lines + 1; ENDIF;
+        IF h_text7 <> '' THEN h_lines = h_lines + 1; ENDIF;
+        IF h_text8 <> '' THEN h_lines = h_lines + 1; ENDIF;
+        IF h_text9 <> '' THEN h_lines = h_lines + 1; ENDIF;
+        IF h_text10 <> '' THEN h_lines = h_lines + 1; ENDIF;
+
+        /*--------------------------------------------------------------
+        If there's CN Text, add another 1 for the blank line after it.
+        --------------------------------------------------------------*/
+        IF h_cncode1 <> '' THEN h_lines = h_lines + 2; ENDIF;
+
+        IF h_cncode2 <> '' THEN h_lines = h_lines + 1; ENDIF;
+        IF h_cncode3 <> '' THEN h_lines = h_lines + 1; ENDIF;
+        IF h_cncode4 <> '' THEN h_lines = h_lines + 1; ENDIF;
+        IF h_cncode5 <> '' THEN h_lines = h_lines + 1; ENDIF;
+        IF h_cncode6 <> '' THEN h_lines = h_lines + 1; ENDIF;
+        IF h_cncode7 <> '' THEN h_lines = h_lines + 1; ENDIF;
+        IF h_cncode8 <> '' THEN h_lines = h_lines + 1; ENDIF;
+        IF h_cncode9 <> '' THEN h_lines = h_lines + 1; ENDIF;
+
+        UPDATE :h_table
+        SET    need_count = :h_lines
+        WHERE  tid = :h_tid;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error updating need_count 1 on ' + :h_table,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+    };
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error in select loop 1 from ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Update the 01 question with +3 to the need_count for all
+     subsequent volumes
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Updating 01 questions with need_count + 3 . . . ';
+
+    SELECT q_n_order AS h_question,
+           contributor_reference AS h_reference
+    FROM   :h_table
+    WHERE  MOD(q_n_order,10) IN (2,4,5,6,8)
+    {
+
+        UPDATE :h_table
+        SET    need_count = need_count + 3
+        WHERE  q_n_order = :h_question / 10 * 10 + 1
+        AND    contributor_reference = :h_reference;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'ERROR: Failed to update ' + VARCHAR(:h_reference) +
+			' on ' +VARCHAR(:h_table) + 
+			' for question ' +VARCHAR(:h_question) + '.' ,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+    };
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error in select loop 2 from ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Because of the width limit in the final report writer, move the
+    cncodes onto a separate line:
+
+    At the moment an 01 question has:
+        1 line of 11 question text columns plus 9 cn_code columns
+
+    Replace this by :
+        1 line of 11 question text columns
+        1 line of 9 cn_code columns
+
+    by reinserting a duplicate line where the question text has been
+    replaced by the cn_code text
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Re-Inserting CN Codes . . .';
+
+    INSERT INTO :h_table (
+                col_type,
+                contributor_reference,
+                contributor_industry,
+                q_n_l_code,
+                q_n_order,
+                q_desc_code,
+                q_count,
+                q_line,
+                need_count,
+                text1,
+                text2,
+                text3,
+                text4,
+                text5,
+                text6,
+                text7,
+                text8,
+                text9,
+                text10,
+                unit1,
+                cn_code1,
+                cn_code2,
+                cn_code3,
+                cn_code4,
+                cn_code5,
+                cn_code6,
+                cn_code7,
+                cn_code8,
+                cn_code9)
+    SELECT      col_type,
+                contributor_reference,
+                contributor_industry,
+                q_n_l_code,
+                q_n_order,
+                1,
+                q_count,
+                q_line,
+                0,
+                cn_code1,
+                cn_code2,
+                cn_code3,
+                cn_code4,
+                cn_code5,
+                cn_code6,
+                cn_code7,
+                cn_code8,
+                cn_code9,
+                '',
+                unit1,
+                cn_code1,
+                cn_code2,
+                cn_code3,
+                cn_code4,
+                cn_code5,
+                cn_code6,
+                cn_code7,
+                cn_code8,
+                cn_code9
+    FROM        :h_table
+    WHERE       col_type = 'Q'
+    AND         q_n_l_code = 1
+    AND         MOD(q_n_order,10) = 1;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error re-inserting CN Codes',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+/*--------------------------------------------------------------------
+  append the data from the industry/output_category table into the 
+  main form_table 
+--------------------------------------------------------------------*/
+
+    INSERT INTO form_table 
+    SELECT *
+    FROM 	:h_table;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting into form_table from ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    MODIFY form_table TO BTREE ON contributor_reference, contributor_industry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val > 1
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error modifying to key form_table from ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    RETURN 0;
+
+}

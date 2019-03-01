@@ -1,0 +1,307 @@
+
+/*-s--------------------------------------------------------------------
+Run once msada_fp_setup has been run to create the tables used.
+
+e.g. $IMAGES/form_print_app -dprodlivedb -a 15 1 A F
+or   $IMAGES/form_print_app -dprodlivedb -a 15 1 NI F
+where:
+      15 = inquiry
+      1  = process to be run, where
+           1 = form run
+           2 = setup print files
+           3 = despatch lists
+           4 = updates despatch_history & industry_period
+
+plus optional parameters (only used for Process 1):
+
+      A  = GB output category (or NI for ALL NI output categories)
+                              (SM for small output categories)
+                              (CF to call the Creat File procedures)    
+      F  = Form_Type (M for reminders)
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msada_fp_start () =
+
+DECLARE ret_val              = INTEGER4 NOT NULL,
+        h_param_list         = VARCHAR(200) NOT NULL,
+        industry_cycle_point = CHAR(1) NOT NULL,
+        h_varchar_variable   = VARCHAR(200) NOT NULL,
+        h_integer_variable   = INTEGER2 NOT NULL,
+        h_param1             = VARCHAR(10) NOT NULL,
+        h_param2             = VARCHAR(10) NOT NULL,
+        h_param3             = VARCHAR(10) NOT NULL,
+        h_param4             = VARCHAR(10) NOT NULL,
+        h_param5             = VARCHAR(10) NOT NULL,
+        h_frpr_name          = VARCHAR(25) NOT NULL
+
+{
+    h_frpr_name = 'msada_fp_start';
+    g_analysts_table = 'forms_data_analysts';
+
+    SELECT DBMSINFO('username') AS g_user_id;
+    SELECT DBMSINFO('database') AS g_database;
+
+    /*-s----------------------------------------------------------------
+    Select the parameters from the UNIX line
+    ----------------------------------------------------------------e-*/
+
+    h_param_list = CALLPROC COMMANDLINEPARAMETERS();
+
+    h_varchar_variable = SQUEEZE (h_param_list);
+
+    h_integer_variable = LOCATE (h_varchar_variable, ' ');
+    h_param1           = LEFT   (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = SHIFT  (h_varchar_variable, - h_integer_variable);
+
+    h_integer_variable = LOCATE (h_varchar_variable, ' ');
+    h_param2           = LEFT   (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = SHIFT  (h_varchar_variable, - h_integer_variable);
+
+    h_integer_variable = LOCATE (h_varchar_variable, ' ');
+    h_param3           = LEFT   (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = SHIFT  (h_varchar_variable, - h_integer_variable);
+
+    h_integer_variable = LOCATE (h_varchar_variable, ' ');
+    h_param4           = LEFT   (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = SHIFT  (h_varchar_variable, - h_integer_variable);
+
+    g_inquiry = INT1(:h_param1);
+    g_process = INT1(:h_param2);
+    g_output_category = UPPERCASE(:h_param3);
+    g_form_type = UPPERCASE(:h_param4);
+
+    /*-s----------------------------------------------------------------
+     Check parameters
+    ----------------------------------------------------------------e-*/
+
+    IF :g_inquiry <> 14 AND :g_inquiry <> 15
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid Inquiry = ' + VARCHAR(:g_inquiry),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF :g_process < 1 OR :g_process > 4
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid Process = ' + VARCHAR(:g_process),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF :g_process = 1
+    THEN
+        IF g_output_category <> 'NI'
+        AND g_output_category <> 'A'
+        AND g_output_category <> 'C'
+        AND g_output_category <> 'D'
+        AND g_output_category <> 'E'
+        AND g_output_category <> 'H'
+        AND g_output_category <> 'K'
+        AND g_output_category <> 'O'
+        AND g_output_category <> 'Q'
+        AND g_output_category <> 'T'
+        AND g_output_category <> 'V'
+        AND g_output_category <> 'W'
+        AND g_output_category <> 'X'
+        AND g_output_category <> 'Y'
+        AND g_output_category <> 'Z'
+        AND g_output_category <> 'SM'
+        AND g_output_category <> 'CF'
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Invalid Output Category = ' + VARCHAR(:g_output_category),
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+
+        IF :g_form_type <> 'F' AND :g_form_type <> 'M'
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Invalid Form_Type = ' + VARCHAR(:g_form_type),
+                        :h_frpr_name,
+                        9,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     If it's a FORMS run, Check the industry_cycle_point.
+     If it's not 'S' (set to S by the setup part of this application),
+     then do not run
+    ----------------------------------------------------------------e-*/
+
+    IF :g_process = 1
+    THEN
+        SELECT industry_cycle_point
+        FROM   industry 
+        WHERE  inquiry = :g_inquiry
+        AND    industry_cycle_point <> 'S';
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error selecting from industry',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+
+        ELSEIF ret_val = 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Industry Cycle Point <> S',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val; 
+        ENDIF; 
+    ENDIF;
+
+    INSERT INTO error_log
+    VALUES(     'now',
+                'Forms Run Starts, Inq = ' + VARCHAR(:g_inquiry) +
+                ', Proc = ' + VARCHAR(:g_process) +
+                ' (Output = ' + :g_output_category +
+                ', Form_Type = ' + :g_form_type + ')',
+                :h_frpr_name,
+                0,
+                :g_user_id);
+    COMMIT;
+
+    /*-s------------------------------------------------------------
+    Select the current period for the inquiry
+    ------------------------------------------------------------e-*/
+
+    SELECT span_end AS g_period
+    FROM   inquiry
+    WHERE  inquiry = :g_inquiry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error selecting span_end on inquiry',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s------------------------------------------------------------
+     Convert period to use when selecting from question_library
+     in called procedure
+    ------------------------------------------------------------e-*/
+
+     IF :g_inquiry = 14
+     THEN
+         g_annual_period = :g_period;
+     ELSE
+         g_annual_period = :g_period / 100 * 100;
+     ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Blank out error file for holding calls to call system
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC msa_cp_callsys ('> $FORMS/report.output');
+       
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error blanking error file',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    For all GB output_categories call procedure msada_fp_run_gb.
+    For all NI output_categories call procedure msada_fp_run_ni.
+    These create the tables which hold the forms data and run the report
+    writer to produce the forms.
+    ----------------------------------------------------------------e-*/
+
+    g_print_table = 'form_prints_' + VARCHAR(:g_inquiry);
+
+    IF :g_process = 1
+    THEN
+        IF g_output_category = 'NI'
+        THEN
+            ret_val = CALLPROC msada_fp_run_ni ();
+        ELSEIF g_output_category = 'SM'
+	THEN
+            ret_val = CALLPROC msada_fp_run_small ();
+        ELSEIF g_output_category = 'CF'
+	THEN
+            ret_val = CALLPROC msada_fp_first_file ();
+            ret_val = CALLPROC msada_fp_form_file ();
+        ELSE
+            ret_val = CALLPROC msada_fp_run_gb ();
+        ENDIF;
+
+    ELSEIF :g_process = 2
+    THEN
+        ret_val = CALLPROC msada_fp_setup_print ();
+
+    ELSEIF :g_process = 3
+    THEN
+        ret_val = CALLPROC msada_fp_run_despatch ();
+
+    ELSEIF :g_process = 4
+    THEN
+        ret_val = CALLPROC msada_fp_question_counts ();
+
+    ENDIF;
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    INSERT INTO error_log
+    VALUES(     'now',
+                'Forms Run Ends',
+                :h_frpr_name,
+                0,
+                :g_user_id);
+    COMMIT;
+
+    RETURN 0;
+}

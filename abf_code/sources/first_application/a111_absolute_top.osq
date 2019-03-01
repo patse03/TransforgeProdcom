@@ -1,0 +1,456 @@
+/*----------------------------------------------------------------------
+                        a111_absolute_top
+---------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE 
+  h_frpr_name       = VARCHAR(24)  NOT NULL,
+  h_return          = INTEGER      NOT NULL,
+  h_attempts        = INTEGER1     NOT NULL,
+  h_retries         = INTEGER1     NOT NULL,
+  h_retries_allowed = INTEGER1     NOT NULL,
+  h_retry_or_not    = CHAR(5)      NOT NULL,
+  h_password        = CHAR(5)      NOT NULL,
+  h_locked          = CHAR(1)      NOT NULL,
+  h_test_user       = VARCHAR(10)  NOT NULL,
+  h_date_changed    = DATE         NOT NULL,
+  h_expiry          = DATE         NOT NULL,
+  h_difference      = DATE         NOT NULL,
+  h_table           = CHAR(25)     NOT NULL,
+
+  lp_full_error_check    = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  msa_date          = 'now';
+  h_frpr_name       = 'a111_absolute_top';
+  h_attempts        = 0;
+  h_retries_allowed = 3;
+  h_table           = 'reclass_outstanding';
+
+  SET_FORMS FRS (TIMEOUT = gc_timeout);
+
+  /* C procedure to suppress system messages. */
+  h_return = CALLPROC cp_set_err;
+
+  g_help = CALLPROC msa_cp_getvar('PROD_HELP');
+
+  SELECT DBMSINFO('database') AS g_database;
+  SELECT DBMSINFO('username') AS g_user_id;
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+  h_return = CALLPROC msa_fp_get_user_details 
+           ( h_password        = BYREF(:h_password),
+             h_date_changed    = BYREF(:h_date_changed),
+             h_grade           = BYREF(:g_grade),
+             h_access_level    = BYREF(:g_access_level),
+             h_access_code     = BYREF(:g_access_code),
+             h_user_name       = BYREF(:g_user_name),
+             h_default_printer = BYREF(:g_printer));
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in local procedure */
+    RETURN 0;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+       Check for administrators lock. If locked, inform and exit.
+  ----------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT locked AS h_locked
+    FROM   dba_system_lock;
+  
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to determine system lock status. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  IF h_locked = 'Y'
+  THEN
+
+    IF g_user_class = 'D'
+    THEN
+     
+      SET_FORMS FIELD '' ( DISPLAYONLY (s_password) = 0,
+                           UNDERLINE   (s_contributor_reference) = 1,
+                           REVERSE     (s_contributor_reference) = 1,
+                           BLINK       (s_message) = 0);
+
+        s_message = ' ' +X'0D'
+                  + '     THE PRODCOM SYSTEM IS CURRENTLY LOCKED.     ' +X'0D'
+                  + '  But as a developer you can access CAREFULLY!   ';
+      REDISPLAY;
+      SLEEP 10;
+
+    ELSE
+
+      SET_FORMS FIELD '' ( DISPLAYONLY (s_password) = 0,
+                           UNDERLINE   (s_contributor_reference) = 1,
+                           REVERSE     (s_contributor_reference) = 1,
+                           BLINK       (s_message) = 1);
+
+        s_message = ' ' +X'0D'
+                  + '     THE PRODCOM SYSTEM IS CURRENTLY LOCKED.     ' +X'0D'
+                  + '            Please try again later.              ';
+      REDISPLAY;
+      SLEEP 10;
+      EXIT;
+
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Check user has not already logged in
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT user_id AS h_test_user
+    FROM   inter_image_params
+    WHERE  user_id = :g_user_id;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 0);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1 
+  THEN
+    MESSAGE 'ERROR: Failed to select user_id from inter image parameters. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN
+    MESSAGE 'WARNING: The user id you have logged in with is recorded as '
+          + 'already being used within the ProdCom system. Under these '
+          + 'circumstances, you will be umable to access the ProdCom '
+          + 'system using this user id. Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 0;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Delete any existing entry from quickview_history for user.
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    DELETE FROM quickview_history
+    WHERE       user_name = :g_user_id;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed whilst deleting from quickview history table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+}
+
+/************************* KEY ACTIVATIONS ***********************************/
+
+'Go', KEY FRSKEY4 =
+{
+  h_attempts = h_attempts + 1;
+
+  IF :s_password != :h_password
+  THEN
+
+    IF h_attempts < 3 
+    THEN
+      MESSAGE 'WARNING: Incorrect password entered for user id.' +X'0D'
+            + '         Strike ' +VARCHAR(:h_attempts) +' of three attempts.'; 
+      SLEEP 3;
+
+    ELSEIF h_attempts = 3
+    THEN
+       MESSAGE 'ERROR: Failed in three attempts at password. Exiting system.';
+       SLEEP 3;
+       RETURN 0;
+
+     ENDIF;
+
+     RESUME FIELD s_password;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    At present the password may only be valid for up to 100 days,
+    Warnings are displayed from the 93rd day onwards. If no action is
+    taken to change the password, then the user will not be able to
+    enter the system after the 100th day
+  ------------------------------------------------------------------*/
+
+  h_difference = date('today')   - :h_date_changed;
+  h_expiry     = :h_date_changed + '101 days';
+
+  IF  h_difference < '93 days'
+  AND h_difference > '62 days'
+  THEN
+    s_message = 'NOTE: Password has been valid for ' + VARCHAR(h_difference);
+    REDISPLAY;
+    SLEEP 1;
+
+  ELSEIF h_difference <= '100 days'
+  AND h_difference    >  '62 days'
+  THEN
+    s_message = 'WARNING: Password has been valid for ' 
+              + VARCHAR(h_difference) + '.' +X'0D'
+              + '         It must be changed before '
+              + VARCHAR(:h_expiry) + 'or it will expire.';
+    REDISPLAY;
+    SLEEP 4;
+
+  ELSEIF h_difference > '100 days'
+  THEN
+    MESSAGE 'WARNING: Your password has expired and must be replaced.'
+    WITH STYLE = POPUP;
+
+    h_return = CALLFRAME change_exp_password ();
+
+    IF h_return != 0
+    THEN
+      /* Error message handled in local procedure */
+      RETURN h_return;
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Inter_image_params table records will be used to pass
+    parameters through to images if required, this is due to the fact
+    that parameters cannot be passed directly between compiled images
+
+    With the removal of non-stanbrd produser ids, this table will now
+    be a definitive list of users in the system. Hussah!
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO inter_image_params
+    VALUES    (:g_user_id, 
+               :s_password,
+               'N', 
+               'N',
+               'now');
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to insert data into inter_image_params table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     For control and dev teams, show any errors on process logs.
+  ------------------------------------------------------------------*/
+
+  IF g_user_class = 'C'
+  OR g_user_class = 'D'
+  THEN
+    h_return = CALLFRAME msae_fr_check_process_logs (p_first_check = 'Y');
+  ENDIF;
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure */
+    RETURN 9;
+  ENDIF;
+  
+  /*------------------------------------------------------------------
+     Progress to limited menu or main menu as appropriate.
+  ------------------------------------------------------------------*/
+
+  IF g_access_code = 'O1'
+  THEN
+
+    h_return = CALLFRAME dbase_limit_top ();
+
+  ELSE
+
+    h_return = CALLFRAME dbase_admin_top ();
+
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/*********************** TIMEOUT ACTIVATION ********************************/
+
+/*----------------------------------------------------------------------
+   Timeout
+
+   NB: No point having popup error messages at this stage, we are trying
+       to boot them out, not wait till they get back to tell them there
+       was an error booting them out, then do it anyway.
+----------------------------------------------------------------------*/
+
+ON TIMEOUT =
+{
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    DELETE FROM   inter_image_params
+    WHERE         user_id = :g_user_id;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO error_log 
+              ( error_time,
+                error_text,
+                frpr_name,
+                error_code,
+                user_id)
+    VALUES (    'now',
+                'TIMEOUT',
+                :h_frpr_name,
+                 0,
+                 :g_user_id);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  EXIT;
+
+}
+
+/************************* LOCAL PROCEDURES ******************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

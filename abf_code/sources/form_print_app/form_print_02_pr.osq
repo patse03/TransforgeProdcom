@@ -1,0 +1,809 @@
+/************************************************************************** 
+  New print form process designed to be run using the ProdCom Production 
+  Control program.
+  
+  Two mandatory parameters (usually passed from PPC program):
+    *  g_annual_period: yyyy00 
+    *  g_form_type    : F/R       [Form or Reminder]
+
+  Two optional parameters (Used in manual mode):
+    *  g_setup: Y/N   [Run the setup components?]  
+    *  g_final: Y/N   [Run the spc file output procedure?]  
+
+  e.g. Normal run called by PPC: 
+       $IMAGES/form_print_app -dprodlivedb -a 201200 F
+  or   Manual run following failure of reminders, where setup worked OK:
+       $IMAGES/form_print_app -dprodlivedb -a 201200 R N N
+
+  THIS IS STAGE TWO OF FOUR STAGES:
+   1) Setup routines
+   2) Contributor information for front page.
+   3) Question information for other pages.
+   4) SPC file creation.
+
+  DF 2012
+
+  Mar 2015 - MC 
+  Removing g_form_type split for ons_tel contact [11/45] as all reminders go out
+  with ons contact nos (min 0184).
+
+*******************************************************************************/
+
+PROCEDURE form_print_02_pr () =
+
+DECLARE h_return                = INTEGER4     NOT NULL WITH DEFAULT,
+        h_return2               = INTEGER4     NOT NULL WITH DEFAULT,
+        h_param_list            = VARCHAR(200) NOT NULL WITH DEFAULT,
+        industry_cycle_point    = CHAR(1)      NOT NULL WITH DEFAULT,
+        h_varchar_variable      = VARCHAR(200) NOT NULL WITH DEFAULT,
+        h_integer_variable      = INTEGER2     NOT NULL WITH DEFAULT,
+        h_period                = INTEGER4     NOT NULL WITH DEFAULT,
+        h_total                 = INTEGER4     NOT NULL WITH DEFAULT,
+        h_count                 = INTEGER4     NOT NULL WITH DEFAULT,
+        h_param1                = VARCHAR(10)  NOT NULL WITH DEFAULT,
+        h_param2                = VARCHAR(10)  NOT NULL WITH DEFAULT,
+        h_param3                = VARCHAR(10)  NOT NULL WITH DEFAULT,
+        h_param4                = VARCHAR(10)  NOT NULL WITH DEFAULT,
+        h_param5                = VARCHAR(10)  NOT NULL WITH DEFAULT,
+        h_text                  = VARCHAR(70)  NOT NULL WITH DEFAULT,
+        h_frpr_name             = VARCHAR(25)  NOT NULL WITH DEFAULT,
+        h_temp_table            = VARCHAR(36)  NOT NULL WITH DEFAULT,
+        h_table_1               = VARCHAR(36)  NOT NULL WITH DEFAULT,
+        h_contributor_reference = CHAR(11)     NOT NULL WITH DEFAULT,
+        h_checkletter           = CHAR(1)      NOT NULL WITH DEFAULT,
+ 
+        lp_error_check       = PROCEDURE RETURNING INTEGER NOT NULL,
+        lp_drop_table        = PROCEDURE RETURNING INTEGER NOT NULL,
+
+{
+
+  h_frpr_name  = 'form_print_02_pr';
+  h_temp_table = 'tt_form_print_02';
+  h_table_1    = LOWER(:g_form_type) +'pr_form_c_data';
+
+  /*------------------------------------------------------------------
+      Log start of process.
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'STARTING: Process 2 starting.');
+
+  /*----------------------------------------------------------------------
+      Prepare front page working table. 
+  ----------------------------------------------------------------------*/
+
+  MESSAGE '[4/45] Creating First Working Table...';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 4 of 45.');
+
+  h_return = lp_drop_table (p_table_name = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_temp_table
+  AS
+  SELECT a.contributor_reference,
+         ' ' AS check_letter,
+         a.contributor_industry,
+         a.output_category,
+         a.legal_status,
+         a.currency,
+         a.region,
+         '0001' AS formtype,
+         ' ' AS inclexcl,
+         '0' AS welsh,
+         'N' AS new,
+         'N' AS osm,
+         '999999' AS ons_tel,
+         b.add_name1,
+         b.add_name2,
+         b.add_name3,
+         b.add_line1,
+         b.add_line2,
+         b.add_line3,
+         b.add_line4,
+         b.add_line5,
+         b.add_postcode,
+         b.add_tradstyle1,
+         b.add_tradstyle2,
+         b.add_tradstyle3,
+         b.addressee
+  FROM   contributor_period a,
+         contributor b
+  WHERE  a.contributor_reference = b.contributor_reference
+    AND  a.period = :g_period;    
+         
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create working table ' +:h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+           
+  /*----------------------------------------------------------------------
+      MODIFY working table to HASH structure.
+  ----------------------------------------------------------------------*/
+
+  MODIFY :h_temp_table TO HASH UNIQUE
+  ON contributor_reference; 
+  
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify working table ' +:h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+           
+  
+  /*----------------------------------------------------------------------
+      If a reminders run, remove returned forms and stopped reminders.
+  ----------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 4a of 45.');
+
+  IF g_form_type = 'R'
+  THEN 
+
+    MESSAGE '[4a/45] REMINDERS: Removing returned forms and reminder stops...';
+    SLEEP 1;
+
+    DELETE FROM :h_temp_table a
+    WHERE a.contributor_reference IN
+        ( SELECT b.contributor_reference 
+          FROM   contributor_period b
+          WHERE  b.contributor_reference = a.contributor_reference
+            AND  b.period = :g_period
+            AND  b.receipt_date != '') 
+       OR a.contributor_reference IN
+        ( SELECT c.contributor_reference 
+          FROM   stop_reminder c
+          WHERE  c.contributor_reference = a.contributor_reference
+            AND  c.period = :g_period
+            AND  c.reminder = 2); 
+   
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to delete unneeded contributors from  ' 
+             + :h_temp_table +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+      Calculate check letter.
+  ----------------------------------------------------------------------*/
+
+  MESSAGE '[5/45] Calculating Check Letter...';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 5 of 45.');
+
+  h_count = 0;
+
+  SELECT COUNT(contributor_reference) AS h_total
+  FROM   :h_temp_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to count contributors on ' + :h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'STARTING: subprocess 2a starting.');
+
+  SELECT contributor_reference AS h_contributor_reference
+  FROM   :h_temp_table
+  BEGIN
+
+    h_count = h_count +1;
+
+    IF MOD(h_count,1000) = 0
+    THEN
+      MESSAGE '[5/45] Calculating Check Letter (' + VARCHAR(:h_count)
+            + '/' +VARCHAR(:h_total) +')...';
+    ENDIF;
+
+    h_return2 =  CALLPROC form_print_02a_cp (:h_contributor_reference,
+                                             BYREF(:h_checkletter));
+    
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed to create checkletter for ' 
+             + :h_contributor_reference +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return2,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+  
+    UPDATE :h_temp_table
+    SET    check_letter = :h_checkletter
+    WHERE  contributor_reference = :h_contributor_reference;
+  
+    h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+    IF h_return2 != 0
+    THEN
+      h_text = 'ERROR: Failed to update with checkletter of '
+             + :h_checkletter + ' for ' + :h_contributor_reference +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+  END;           
+   
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create select contributor for loop from ' 
+           + :h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'COMPLETE: Subprocess 2a completed.');
+
+
+  /*----------------------------------------------------------------------
+    Set form type to 0002 for NI contributors, leaves as 0001 for GB.
+  ----------------------------------------------------------------------*/
+
+  MESSAGE '[6/45] Marking NI Forms...';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 6 of 45.');
+
+  UPDATE  :h_temp_table
+  SET     formtype = '0002'
+  WHERE   region = 'YY'
+    AND   output_category IN ('F','G','J','M','Y');
+ 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update NI contributors on ' + :h_temp_table +' '
+           + 'with formtype "0002".';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+    Set Inclusion Exclusion markers.
+  ----------------------------------------------------------------------*/
+
+  MESSAGE '[7/45] Setting Incl/Excl Markers...';
+  SLEEP 1;
+ 
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 7 of 45.');
+
+  UPDATE  :h_temp_table
+  SET     inclexcl = 'F'
+  WHERE   output_category = 'Y';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update ' + :h_temp_table +' '
+           + 'with "F" inclusion/exclusion marker.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  UPDATE  :h_temp_table
+  SET     inclexcl = 'T'
+  WHERE   output_category = 'X';
+  
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update ' + :h_temp_table +' '
+           + 'with "T" inclusion/exclusion marker.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+    Set Welsh markers.
+  ----------------------------------------------------------------------*/
+
+  MESSAGE '[8/45] Setting Welsh Markers...';
+  SLEEP 1;
+ 
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 8 of 45.');
+
+  UPDATE  :h_temp_table
+  SET     welsh = 'P'
+  WHERE   contributor_reference IN 
+      (   SELECT contributor_reference
+          FROM   welsh_contributor
+          WHERE  period = :g_period);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update ' + :h_temp_table +' '
+           + 'with "P" welsh marker.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  UPDATE  :h_temp_table
+  SET     welsh = 'W'
+  WHERE   contributor_reference IN 
+      (   SELECT contributor_reference
+          FROM   welsh_forms
+          WHERE  period = :g_period);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update ' + :h_temp_table +' '
+           + 'with "W" welsh marker.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+    If a forms run, and contributor is newly selected, set "new" marker.
+  ----------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 9 of 45.');
+
+  IF g_form_type = 'R'
+  THEN 
+    MESSAGE '[9/45] SKIPPING: No "New Form" markers on reminders run...';
+    SLEEP 1;
+  ELSE 
+    MESSAGE '[9/45] Setting New Form Markers...';
+    SLEEP 1;
+
+    UPDATE :h_temp_table
+    SET    new = 'Y'
+    WHERE  contributor_reference IN
+        (  SELECT contributor_reference 
+           FROM   first_table
+           WHERE  output_category IN ('C','G','W') );  
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+    IF h_return > 1
+    THEN
+      h_text = 'ERROR: Failed to update ' + :h_temp_table +' '
+             + 'with new contributor marker.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+  ENDIF; /* End of g_form_type fork */
+
+  /*----------------------------------------------------------------------
+    Set OSM marker.
+  ----------------------------------------------------------------------*/
+
+  MESSAGE '[10/45] Setting Osmotherly Markers...';
+  SLEEP 1;
+ 
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 10 of 45.');
+
+  UPDATE :h_temp_table
+  SET    osm = 'Y'
+  WHERE  contributor_reference IN
+      (  SELECT contributor_reference
+         FROM   first_table
+         WHERE output_category IN ('O','W') ); 
+ 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to update ' + :h_temp_table +' '
+           + 'with osmotherly marker.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+    Set ONS phone number (Which identifies the Data Analyst for SPC). 
+    If reminder run, leave as dummy phone number as respondant relations
+     7 digit phone number substituted by SPC later in process.
+  ----------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 11 of 45.');
+
+  MESSAGE '[11/45] Setting Data Analyst...';
+  SLEEP 1;
+ 
+  UPDATE :h_temp_table a
+  FROM   industry_analysts b
+  SET    ons_tel = '65' + b.ext
+  WHERE  a.contributor_industry = b.industry
+    AND  a.contributor_reference >= b.low_ref
+    AND  a.contributor_reference <= b.high_ref
+    AND  LEFT(b.ext,1) =1;
+  
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update ' + :h_temp_table +' '
+           + 'with Data Analyst phone numbers prefixed 65.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  UPDATE :h_temp_table a
+  FROM   industry_analysts b
+  SET    ons_tel = '45' + b.ext
+  WHERE  a.contributor_industry = b.industry
+    AND  a.contributor_reference >= b.low_ref
+    AND  a.contributor_reference <= b.high_ref
+    AND  LEFT(b.ext,1) != 1;
+  
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+ 
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update ' + :h_temp_table +' '
+           + 'with Data Analyst phone numbers prefixed 45.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+    Delete existing data for this period from first main table.
+  --------------------------------------------------------------------------*/
+
+  MESSAGE '[12/45] Deleting Old Data...';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 12 of 45.');
+
+  DELETE FROM :h_table_1
+  WHERE  period = :g_period;  
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to delete existing data from ' + :h_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+  
+  /*-------------------------------------------------------------------------
+    Insert current period data from working table.
+  --------------------------------------------------------------------------*/
+
+  MESSAGE '[13/45] Inserting New Data...';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 13 of 45.');
+
+  INSERT INTO :h_table_1
+            ( period,
+              contributor_reference,
+              check_letter,
+              contributor_industry,
+              output_category,
+              legal_status,
+              currency,
+              region,
+              formtype,
+              inclexcl,
+              welsh,
+              new,
+              osm,
+              ons_tel,
+              add_name1,
+              add_name2,
+              add_name3,
+              add_line1,
+              add_line2,
+              add_line3,
+              add_line4,
+              add_line5,
+              add_postcode,
+              add_tradstyle1,
+              add_tradstyle2,
+              add_tradstyle3,
+              addressee )
+  SELECT      :g_period,
+              contributor_reference,
+              check_letter,
+              contributor_industry,
+              output_category,
+              legal_status,
+              currency,
+              region,
+              formtype,
+              inclexcl,
+              welsh,
+              new,
+              osm,
+              ons_tel,
+              add_name1,
+              add_name2,
+              add_name3,
+              add_line1,
+              add_line2,
+              add_line3,
+              add_line4,
+              add_line5,
+              add_postcode,
+              add_tradstyle1,
+              add_tradstyle2,
+              add_tradstyle3,
+              addressee 
+  FROM        :h_temp_table; 
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to insert ' +VARCHAR(:g_period) +' '
+           + ' data into ' + :h_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+ 
+
+  /*---------------------------------------------------------------------
+      If form run, record reference numbers in contributor_period_check
+  ----------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 13a of 45.');
+
+  IF g_form_type = 'R'
+  THEN
+
+    MESSAGE '[13a/45] SKIPPING: No data analyst phone numbers on reminders...';
+    SLEEP 1;
+
+  ELSE
+
+    MESSAGE '[13a/45] Inserting contributors into contributor_period_check...';
+    SLEEP 1;
+
+    DELETE FROM contributor_period_check
+    WHERE  period = :g_period;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+    IF h_return > 1
+    THEN
+      h_text = 'ERROR: Failed to delete ' +VARCHAR(:g_period) +' '
+             + ' data from contributor_period_check.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+ 
+    INSERT INTO contributor_period_check
+    SELECT contributor_reference,
+           period,
+           '' AS eo_check
+    FROM  :h_table_1
+    WHERE period = :g_period; 
+  
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to insert ' +VARCHAR(:g_period) +' '
+             + ' data into contributor_period_check.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+ 
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Log end of process.
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'COMPLETE: Process 2 completed.');
+
+  RETURN 0;
+    
+}
+
+/*************************** LOCAL PROCEDURES *****************************/
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL WITH DEFAULT) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(36) NOT NULL WITH DEFAULT
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  h_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF h_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+
+

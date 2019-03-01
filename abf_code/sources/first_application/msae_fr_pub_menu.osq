@@ -1,0 +1,226 @@
+/*-------------------------------------------------------------------
+harrydb menu system
+--------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msae_fr_pub_menu';
+    msa_date = 'now';
+}
+
+FIELD choice =
+{
+
+    IF choice = 1
+    THEN
+        CALL APPLICATION (EXEC = '$IMAGES/msacsimcheck');
+
+    ELSEIF choice = 2
+    THEN
+        CALL APPLICATION (EXEC = '$IMAGES/pub_app');
+
+    ELSEIF choice = 3
+    THEN
+        IF :g_access_level <> 79 AND :g_access_level <> 99
+        THEN
+            MESSAGE 'Sorry, but your access level isn''t high enough' +
+                    ' to call this option'
+            WITH STYLE = POPUP;
+            RESUME FIELD choice;
+        ENDIF;
+
+        /*-----------------------------------------------------------
+         To give users permission to create all the files and tables
+         required, replace this command
+         CALL APPLICATION (EXEC = '$IMAGES/batch_publication_app');
+         by the following one, which pretends it's running as the
+         database owner, produser.
+        -----------------------------------------------------------*/
+
+	IF :g_database = 'prodlivedb'
+	THEN
+            CALL SYSTEM ( '/home/prodcom/admin/prodlive/cp_runasuser' +
+                          ' "$IMAGES/batch_publication_app -dharrydb"');
+	ELSE
+            CALL SYSTEM ( '/home/prodcom/admin/produser/cp_runasuser' +
+                          ' "$IMAGES/batch_publication_app -dharrydb"');
+	ENDIF;
+
+    ELSEIF choice = 4
+    THEN
+        CALL APPLICATION (EXEC = '$IMAGES/frozen_pub_app');
+
+    ELSEIF choice = 5
+    THEN
+        CALL APPLICATION (EXEC = '$IMAGES/footnote_app');
+
+    ELSEIF choice = 6
+    THEN
+        CALL APPLICATION (EXEC = '$IMAGES/staff_app');
+
+    ELSEIF choice = 7
+    THEN
+        CALL APPLICATION (EXEC = '$IMAGES/amri_app');
+
+    ELSEIF choice = 0
+    THEN
+
+        /*--------------------------------------------------------------
+        quit the system
+        --------------------------------------------------------------*/
+
+        DELETE FROM   inter_image_params
+        WHERE         user_id = :g_user_id;
+
+        ret_val = CALLPROC check_inq_ing(
+                           h_num_row_ck = 1,
+                           h_commit     = 'Y',
+                           h_frpr_name  = :h_frpr_name,
+                           h_rollback   = 'N');
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'ERROR ... unable to delete your Inter Image ' +
+                    'Params record. Contact I.S. immediately ' +
+                    'informing them of the situation. This session ' +
+                    'will now terminate'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+        RETURN 0;
+
+    ELSE
+        msa_date = 'now';
+        RESUME FIELD choice;
+    ENDIF;
+
+    ret_val = CALLPROC msa_fp_update_iip (h_exit = 'N');
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    msa_date = 'now';
+    RESUME FIELD choice;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+/*----------------------------------------------------------------------
+   Timeout Errors
+----------------------------------------------------------------------*/
+
+ON TIMEOUT =
+{
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        DELETE FROM   inter_image_params
+        WHERE         user_id = :g_user_id;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        EXIT;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'Timeout: System error in deleting IIP record'
+        WITH STYLE = POPUP;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Timeout: no IIP record could be updated'
+        WITH STYLE = POPUP;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        INSERT INTO error_log (
+                    error_time,
+                    error_text,
+                    frpr_name,
+                    error_code,
+                    user_id)
+        VALUES (    'now',
+                    'TIMEOUT',
+                    :h_frpr_name,
+                    0,
+                    :g_user_id);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        EXIT;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'Timeout: System error inserting into error_log'
+        WITH STYLE = POPUP;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Timeout: No record inserted into error_log'
+        WITH STYLE = POPUP;
+    ENDIF;
+
+    EXIT;
+}

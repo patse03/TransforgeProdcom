@@ -1,0 +1,517 @@
+/******************************************************************************
+  Rewrite of msada_fp_create_quests to fit in with new main print program.
+
+  The process prepares the question texts in 57 character slices to comply 
+  with printing restictions.
+
+  (Not many changes, just tidied and converted to recent programing standards)
+
+  MANUAL RUN:
+
+    $<image dir>/form_print_app -d<database> form_print_01c_pr -a <period>
+
+  e.g.
+    
+    $IMAGES/form_print_app -dprodlivedb form_print_01c_pr -a 201200
+
+  Invalid parameters are recorded as error code 2 on the fpr_process_log table.
+
+  DF 2012
+
+******************************************************************************/
+
+PROCEDURE form_print_01c_pr () =
+
+DECLARE h_frpr_name            = VARCHAR(24) NOT NULL WITH DEFAULT,
+        h_table                = VARCHAR(24) NOT NULL WITH DEFAULT,
+        h_temp_table           = VARCHAR(24) NOT NULL WITH DEFAULT,
+        h_log                  = VARCHAR(70) NOT NULL WITH DEFAULT,
+        h_period               = INTEGER4    NOT NULL WITH DEFAULT,
+        h_question             = INTEGER4    NOT NULL WITH DEFAULT,
+        h_counter              = INTEGER4    NOT NULL WITH DEFAULT,
+        h_check_1              = INTEGER1    NOT NULL WITH DEFAULT,
+        h_check_2              = INTEGER1    NOT NULL WITH DEFAULT,
+        h_check_3              = INTEGER1    NOT NULL WITH DEFAULT,
+        h_return               = INTEGER1    NOT NULL WITH DEFAULT,
+        h_industry             = INTEGER4    NOT NULL WITH DEFAULT,
+        h_text1                = VARCHAR(57) NOT NULL WITH DEFAULT,
+        h_text2                = VARCHAR(57) NOT NULL WITH DEFAULT,
+        h_text3                = VARCHAR(57) NOT NULL WITH DEFAULT,
+        h_text4                = VARCHAR(57) NOT NULL WITH DEFAULT,
+        h_text5                = VARCHAR(57) NOT NULL WITH DEFAULT,
+        h_text6                = VARCHAR(57) NOT NULL WITH DEFAULT,
+        h_text7                = VARCHAR(57) NOT NULL WITH DEFAULT,
+        h_text8                = VARCHAR(57) NOT NULL WITH DEFAULT,
+        h_text9                = VARCHAR(57) NOT NULL WITH DEFAULT,
+        h_text10               = VARCHAR(57) NOT NULL WITH DEFAULT,
+        h_param_list           = CHAR(10)    NOT NULL WITH DEFAULT,
+        h_varchar_variable     = CHAR(10)    NOT NULL WITH DEFAULT,
+        h_param1               = VARCHAR(10) NOT NULL WITH DEFAULT,
+        h_integer_variable     = INTEGER1    NOT NULL WITH DEFAULT,
+
+        lp_error_check         = PROCEDURE RETURNING INTEGER,
+        lp_drop_table          = PROCEDURE RETURNING INTEGER, 
+
+{
+
+  h_frpr_name  = 'form_print_01c_pr';
+  h_table      = 'fpr_question_texts';
+  h_temp_table = 'tt_form_print_01c';
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_procs (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Checks to see if a valid period parameter has been supplied.
+    If it hasn't, report error code two and abort.
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = :h_return,
+           p_text      = 'STARTING: Subprocess 1c starting.');
+
+  MESSAGE 'Creating Quetion Texts (1/6) . . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Setup - Question Texts 1 of 6.');
+
+  h_param_list = CALLPROC CommandLineParameters ();
+
+  h_varchar_variable = SQUEEZE(h_param_list);
+  h_integer_variable = LOCATE(h_varchar_variable, ' ');
+  h_param1           = LEFT(h_varchar_variable, h_integer_variable-1);
+
+  IF g_period = 0
+  THEN
+    SELECT MAX(period) AS g_period
+    FROM   inquiry_period
+    WHERE  inquiry = 14;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_log = 'ERROR: Failed to select max period from inquiry_period.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_log);
+      RETURN h_return;
+    ENDIF;
+
+  ENDIF;
+
+  IF  INT4(h_param1) != :g_period + 100
+  AND INT4(h_param1) != :g_period
+  AND INT4(h_param1) != :g_period - 100
+  THEN
+    h_log = 'ERROR: ' +:h_param1 +' '
+          + 'is not a period that this program can process.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_log);
+    RETURN 9;
+  ENDIF;
+
+  g_period = INT4(:h_param1);
+
+  /*------------------------------------------------------------------
+    Drop and create working table.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating Question Texts (2/6) . . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Setup - Question Texts 2 of 6.');
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE :h_temp_table (
+                 period     INTEGER4    NOT NULL WITH DEFAULT,
+                 question   INTEGER4    NOT NULL WITH DEFAULT,
+                 line_count INTEGER4    NOT NULL WITH DEFAULT,
+                 text1      VARCHAR(57) NOT NULL WITH DEFAULT,
+                 text2      VARCHAR(57) NOT NULL WITH DEFAULT,
+                 text3      VARCHAR(57) NOT NULL WITH DEFAULT,
+                 text4      VARCHAR(57) NOT NULL WITH DEFAULT,
+                 text5      VARCHAR(57) NOT NULL WITH DEFAULT,
+                 text6      VARCHAR(57) NOT NULL WITH DEFAULT,
+                 text7      VARCHAR(57) NOT NULL WITH DEFAULT,
+                 text8      VARCHAR(57) NOT NULL WITH DEFAULT,
+                 text9      VARCHAR(57) NOT NULL WITH DEFAULT,
+                 text10     VARCHAR(57) NOT NULL WITH DEFAULT);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_log = 'ERROR: Failed to create table ' +:h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Populate working table. The only questions whose text is required 
+    are lags 0, 2 & 5 for value questions (not standard headings)
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating Question Texts (3/6) . . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Setup - Question Texts 3 of 6.');
+
+  INSERT INTO :h_temp_table 
+  SELECT :g_period  AS period,
+         question   AS question,
+         line_count AS line_count,
+         text_line1 AS text1,
+         text_line2 AS text2,
+         text_line3 AS text3,
+         text_line4 AS text4,
+         text_line5 AS text5,
+         text_line6 AS text6,
+         text_line7 AS text7,
+         text_line8 AS text8,
+         text_line9 AS text9,
+         text_line10 AS text10
+  FROM   question_library
+  WHERE  period = :g_period
+    AND  quest_order = 1
+    AND  MOD(question,10) = 1
+    AND  lag IN (0,2,5);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_log = 'ERROR: Failed to insert question text into ' +:h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Modify
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating Question Texts (4/6) . . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Setup - Question Texts 4 of 6.');
+
+  MODIFY :h_temp_table TO BTREE UNIQUE ON period, question;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_log = 'ERROR: Failed to modify table ' +:h_temp_table +' '
+          + 'to btree unique.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Delete from and add to the permanent table
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating Question Texts (5/6) . . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Setup - Question Texts 5 of 6.');
+
+  DELETE FROM :h_table
+  WHERE       period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_log = 'ERROR: Failed to delete existing ' +VARCHAR(:g_period) + ' '
+          + 'records from table ' +:h_table +'.'; 
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  INSERT INTO :h_table
+  SELECT      *
+  FROM        :h_temp_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_log = 'ERROR: Failed to insert ' +VARCHAR(:g_period) + ' '
+          + 'question texts into table ' +:h_table +'.'; 
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Check if all three setups have been done and if so set 
+      form status for period to "S".
+  ------------------------------------------------------------------*/
+
+  h_check_1 = 0;
+  h_check_2 = 0;
+  h_check_3 = 0;
+
+  SELECT period AS h_period
+  FROM   prodcom_cncodes
+  WHERE  period = :g_period;
+ 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1 
+  THEN
+    h_log = 'ERROR: Failed to check ' +VARCHAR(:g_period) + ' '
+          + 'records present on table prodcom_cncodes.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  IF h_return = 0
+  THEN
+    h_check_1 = 1;
+  ENDIF; 
+
+
+  SELECT period AS h_period
+  FROM   fpr_form_notes
+  WHERE  period = :g_period;
+ 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1 
+  THEN
+    h_log = 'ERROR: Failed to check ' +VARCHAR(:g_period) + ' '
+          + 'records present on table fpr_form_notes.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  IF h_return = 0
+  THEN
+    h_check_2 = 1;
+  ENDIF; 
+
+
+  SELECT period AS h_period
+  FROM   fpr_question_texts
+  WHERE  period = :g_period;
+ 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1 
+  THEN
+    h_log = 'ERROR: Failed to check ' +VARCHAR(:g_period) + ' '
+          + 'records present on table fpr_question_texts.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  IF h_return = 0
+  THEN
+    h_check_3 = 1;
+  ENDIF; 
+
+  IF  h_check_1 = 1
+  AND h_check_2 = 1
+  AND h_check_3 = 1
+  THEN
+    UPDATE industry
+    SET    industry_cycle_point = 'S';
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return > 1 
+    THEN
+      h_log = 'ERROR: Failed to update industry_cycle_point to "S".';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_log);
+      RETURN h_return;
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Tidy up and complete.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating Question Texts (6/6) . . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Setup - Question Texts 6 of 6.');
+
+  MODIFY :h_table TO BTREE UNIQUE ON period, question;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_log = 'ERROR: Failed to modify table ' +:h_table +' '
+          + 'to btree unique.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    h_log = 'WARNING: Failed to drop ' +:h_temp_table +'. '
+          + 'Please delete it manually asap.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+  ENDIF;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = :h_return,
+           p_text      = 'COMPLETE: Subprocess 1c completed successfully.');
+
+  RETURN 0;
+
+}
+
+/************************ LOCAL PROCEDURES ***********************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(24) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(20) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  h_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF h_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+

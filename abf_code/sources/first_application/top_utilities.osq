@@ -1,0 +1,174 @@
+INITIALIZE () =
+
+DECLARE 
+  h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name       = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_return          = INTEGER1    NOT NULL WITH DEFAULT,
+  h_exit            = CHAR(1)     NOT NULL WITH DEFAULT,
+  
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'top_utilities';
+    msa_date = 'now';
+}
+
+/**************************** FIELD ACTIVATIONS **************************/
+
+FIELD choice =
+{
+  IF choice = 1
+  THEN
+    CALL APPLICATION 
+       ( EXEC = '$IMAGES/validation_gates_app -numeric_overflow=ignore ');
+
+  ELSEIF choice = 2
+  THEN
+    CALL APPLICATION 
+       ( EXEC = '$IMAGES/disclosure_response_app -numeric_overflow=ignore ');
+
+  ELSEIF choice = 3
+  THEN
+    h_return = CALLFRAME msae_fr_sas_transfer ();
+    
+  ELSEIF choice = 4
+  THEN
+    h_return = CALLFRAME msae_fr_sas_view ();
+    
+  ELSEIF choice = 0
+  THEN
+    RETURN 0;
+
+  ELSE
+    msa_date = 'now';
+    RESUME FIELD choice;
+
+  ENDIF;
+
+  /*-----------------------------------------------------------------
+      Deals with return from called app or frame.
+  -----------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_read_iip (h_exit = BYREF(:h_exit));
+
+  IF h_return != 0
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+  IF h_exit = 'Y'
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  msa_date = 'now';
+
+  RESUME FIELD choice;
+
+}
+
+/*********************** KEY ACTIVATIONS *********************************/
+
+'QuickView', KEY FRSKEY20 =
+{
+  CALL APPLICATION (exec = '$IMAGES/quickview_app -numeric_overflow=ignore ');
+}
+
+
+/*********************** TIMEOUT ACTIVATION ********************************/
+
+/*----------------------------------------------------------------------
+   Timeout
+
+   NB: No point having popup error messages at this stage, we are trying
+       to boot them out, not wait till they get back to tell them there
+       was an error booting them out, then do it anyway.
+----------------------------------------------------------------------*/
+
+ON TIMEOUT =
+{
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    DELETE FROM   inter_image_params
+    WHERE         user_id = :g_user_id;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO error_log 
+              ( error_time,
+                error_text,
+                frpr_name,
+                error_code,
+                user_id)
+    VALUES (    'now',
+                'TIMEOUT',
+                :h_frpr_name,
+                 0,
+                 :g_user_id);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  EXIT;
+
+}
+
+
+/**************************** LOCAL PROCEDURES **************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

@@ -1,0 +1,195 @@
+
+/*----------------------------------------------------------------------
+                      msae_fr_reset_qv
+
+ This enables Control Section to delete a username's entry from
+ the QuickView table - enabling that username to call QuickView
+ again. (For when usernames quit by Alt-F10 or other means).
+
+    Called by :            sys_control_menu
+----------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        h_yesno           = CHAR(1) NOT NULL
+
+{
+    msa_date = 'now';
+    h_frpr_name = 'msae_fr_reset_qv';
+    h_retries_allowed = 3;
+
+    SET_FORMS FIELD '' (INVISIBLE(t_message) = 1,
+                        INVISIBLE(tf)        = 1);
+}
+
+FIELD userid =
+{
+
+    msa_date = 'now';
+    IF userid = ''
+    THEN
+        RESUME FIELD userid;
+    ENDIF;
+
+    IF LENGTH(userid) < 7
+    THEN
+        MESSAGE 'UserID should be at least 7 characters'
+        WITH STYLE=POPUP;
+        RESUME FIELD userid;
+    ENDIF;
+
+    IF LEFT(userid,4) <> 'prod'
+    THEN
+        MESSAGE 'UserID should begin with ''prod'''
+        WITH STYLE=POPUP;
+        RESUME FIELD userid;
+    ENDIF;
+
+    /*----------------------------------------------
+     Check if the username is in the history table 
+    -----------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf := SELECT   english_name,
+                                time
+                       FROM     quickview_history
+                       WHERE    user_name = :userid ;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing quickview history table'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE :userid + ' has no entry in the QuickView table'
+        WITH STYLE = POPUP;
+        CLEAR FIELD userid;
+        RESUME FIELD userid;
+    ENDIF;
+
+    t_message := :userid + ' switched to';
+    SET_FORMS FIELD '' (INVISIBLE(t_message) = 0,
+                        INVISIBLE(tf)        = 0);
+    REDISPLAY;
+
+    h_yesno = '';
+
+    WHILE :h_yesno <> 'n' AND :h_yesno <> 'y'
+    DO
+
+        h_yesno = PROMPT 'Reset the above details ?' +
+                          ' Type Y/N and press <return>'
+                  WITH STYLE = POPUP;
+        h_yesno = LOWERCASE(:h_yesno);
+    ENDWHILE;
+
+    IF h_yesno = 'y'
+    THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            DELETE FROM   quickview_history
+            WHERE         user_name = :userid;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in deleting from quickview history'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No rows deleted from quickview history table'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSE
+            MESSAGE :userid + '''s details deleted OK'
+            WITH STYLE = POPUP;
+
+        ENDIF;
+
+    ENDIF;
+
+    SET_FORMS FIELD '' (INVISIBLE(t_message) = 1,
+                        INVISIBLE(tf)        = 1);
+    CLEAR FIELD userid;
+    msa_date = 'now';
+    REDISPLAY;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}
+
+'QuickView', KEY FRSKEY7 =
+{
+    CALL APPLICATION (exec = '$IMAGES/quickview_app -numeric_overflow=ignore ');
+}

@@ -1,0 +1,822 @@
+/**************************************************************************
+  Rewrite of msada_fp_create_cncodes to fit in with new main print program.
+
+  This process prepares the CN codes for the period ready for printing.
+
+  (Not many changes, just tidied and converted to recent programing standards)
+
+  MANUAL RUN: 
+
+    $<image dir>/form_print_app -d<database> form_print_01a_pr -a <period>
+
+  e.g.
+
+    $IMAGES/form_print_app -dprodlivedb form_print_01a_pr -a 201200
+
+  Invalid parameters are recorded as error code 2 on the fpr_process_log table.
+
+  DF 2012
+
+***************************************************************************/
+
+PROCEDURE form_print_01a_pr () =
+
+DECLARE h_prodcom_code       = INTEGER4    NOT NULL WITH DEFAULT,
+        h_period             = INTEGER4    NOT NULL WITH DEFAULT,
+        h_prodcom_store      = INTEGER4    NOT NULL WITH DEFAULT,
+        h_cn_codes           = CHAR(8)    NOT NULL WITH DEFAULT,
+        h_counter            = INTEGER1    NOT NULL WITH DEFAULT,
+        h_check_1            = INTEGER1    NOT NULL WITH DEFAULT,
+        h_check_2            = INTEGER1    NOT NULL WITH DEFAULT,
+        h_check_3            = INTEGER1    NOT NULL WITH DEFAULT,
+        h_concat_row1        = CHAR(54)    NOT NULL WITH DEFAULT,
+        h_concat_row2        = CHAR(54)    NOT NULL WITH DEFAULT,
+        h_concat_row3        = CHAR(54)    NOT NULL WITH DEFAULT,
+        h_concat_row4        = CHAR(54)    NOT NULL WITH DEFAULT,
+        h_concat_row5        = CHAR(54)    NOT NULL WITH DEFAULT,
+        h_concat_row6        = CHAR(54)    NOT NULL WITH DEFAULT,
+        h_concat_row7        = CHAR(54)    NOT NULL WITH DEFAULT,
+        h_concat_row8        = CHAR(54)    NOT NULL WITH DEFAULT,
+        h_concat_row9        = CHAR(54)    NOT NULL WITH DEFAULT,
+        h_param_list         = CHAR(10)    NOT NULL WITH DEFAULT,
+        h_varchar_variable   = CHAR(10)    NOT NULL WITH DEFAULT,
+        h_param1             = VARCHAR(10) NOT NULL WITH DEFAULT,
+        h_integer_variable   = INTEGER1    NOT NULL WITH DEFAULT,
+        h_count              = INTEGER1    NOT NULL WITH DEFAULT,
+        h_table              = VARCHAR(25) NOT NULL WITH DEFAULT,
+        h_temp_table         = VARCHAR(25) NOT NULL WITH DEFAULT,
+        h_log                = VARCHAR(70) NOT NULL WITH DEFAULT,
+        h_frpr_name          = VARCHAR(25) NOT NULL WITH DEFAULT,
+        h_return             = INTEGER4    NOT NULL WITH DEFAULT,
+        h_return2            = INTEGER4    NOT NULL WITH DEFAULT,
+
+        lp_error_check       = PROCEDURE RETURNING INTEGER,
+        lp_drop_table        = PROCEDURE RETURNING INTEGER,
+
+{
+
+  h_frpr_name  = 'form_print_01a_pr';
+  h_table      = 'prodcom_cncodes';
+  h_temp_table = 'tt_form_print_01a';
+   
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_procs (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+
+  /*------------------------------------------------------------------
+    Checks to see if a valid period parameter has been supplied. 
+    If it hasn't, report error code two and abort.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating CN Codes (1/6) . . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = :h_return,
+           p_text      = 'STARTING: Subprocess 1a starting.');
+  
+  h_param_list = CALLPROC CommandLineParameters ();
+
+  h_varchar_variable = SQUEEZE(h_param_list);
+  h_integer_variable = LOCATE(h_varchar_variable, ' ');
+  h_param1           = LEFT(h_varchar_variable, h_integer_variable-1);
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Setup - CN Codes 1 of 6.');
+
+
+  IF g_period = 0 
+  THEN
+    SELECT MAX(period) AS g_period
+    FROM   inquiry_period
+    WHERE  inquiry = 14;
+
+    h_return = CALLPROC lp_error_check ( p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_log = 'ERROR: Failed to select max period from inquiry_period.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_log);
+      RETURN h_return;
+    ENDIF;
+
+  ENDIF;
+
+  IF  INT4(h_param1) != :g_period + 100
+  AND INT4(h_param1) != :g_period
+  AND INT4(h_param1) != :g_period - 100
+  THEN
+    h_log = 'ERROR: ' +:h_param1 +' ' 
+          + 'is not a period that this program can process.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_log);
+    RETURN 9;
+  ENDIF;
+
+  g_period = INT4(:h_param1);
+
+  /*------------------------------------------------------------------
+    Drop and create working table.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating CN Codes (2/6) . . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Setup - CN Codes 2 of 6.');
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE :h_temp_table  
+             ( period        INTEGER4 NOT NULL WITH DEFAULT,
+               prodcom_code  INTEGER4 NOT NULL WITH DEFAULT,
+               need_count    INTEGER1 NOT NULL WITH DEFAULT,
+               cn_code1      CHAR(54) NOT NULL WITH DEFAULT,
+               cn_code2      CHAR(54) NOT NULL WITH DEFAULT,
+               cn_code3      CHAR(54) NOT NULL WITH DEFAULT,
+               cn_code4      CHAR(54) NOT NULL WITH DEFAULT,
+               cn_code5      CHAR(54) NOT NULL WITH DEFAULT,
+               cn_code6      CHAR(54) NOT NULL WITH DEFAULT,
+               cn_code7      CHAR(54) NOT NULL WITH DEFAULT,
+               cn_code8      CHAR(54) NOT NULL WITH DEFAULT,
+               cn_code9      CHAR(54) NOT NULL WITH DEFAULT);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+      h_log = 'ERROR: Failed to create table ' +:h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Populate working table.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating CN Codes (3/6) . . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Setup - CN Codes 3 of 6.');
+
+  h_count = 1;
+  h_prodcom_store = 0;
+
+  SELECT   cn_codes     AS h_cn_codes,
+           prodcom_code AS h_prodcom_code,
+           period       AS h_period
+  FROM     prodcom_lookup
+  WHERE    period = :g_period
+  ORDER BY prodcom_code
+  BEGIN
+
+    IF h_prodcom_store != 0
+    THEN
+      IF h_prodcom_code != h_prodcom_store
+      THEN
+        h_count = h_count - 1;
+        IF (h_count > 0 AND h_count < 6)
+        THEN
+          h_concat_row1 = CONCAT(h_concat_row1,ASCII(')'));
+          h_counter = 1;
+        ELSEIF (h_count > 5 AND h_count < 11)
+        THEN
+          h_concat_row2 = CONCAT(h_concat_row2,ASCII(')'));
+          h_counter = 2;
+        ELSEIF (h_count > 10 AND h_count < 16)
+        THEN
+          h_concat_row3 = CONCAT(h_concat_row3,ASCII(')'));
+          h_counter = 3;
+        ELSEIF (h_count > 15 AND h_count < 21)
+        THEN
+          h_concat_row4 = CONCAT(h_concat_row4,ASCII(')'));
+          h_counter = 4;
+        ELSEIF (h_count > 20 AND h_count < 26)
+        THEN
+          h_concat_row5 = CONCAT(h_concat_row5,ASCII(')'));
+          h_counter = 5;
+        ELSEIF (h_count > 25 AND h_count < 31)
+        THEN
+          h_concat_row6 = CONCAT(h_concat_row6,ASCII(')'));
+          h_counter = 6;
+        ELSEIF (h_count > 30 AND h_count < 36)
+        THEN
+          h_concat_row7 = CONCAT(h_concat_row7,ASCII(')'));
+          h_counter = 7;
+        ELSEIF (h_count > 35 AND h_count < 41)
+        THEN
+          h_concat_row8 = CONCAT(h_concat_row8,ASCII(')'));
+          h_counter = 8;
+        ELSEIF (h_count > 40 AND h_count < 46)
+        THEN
+          h_concat_row9 = CONCAT(h_concat_row9,ASCII(')'));
+          h_counter = 9;
+        ENDIF;
+
+        INSERT INTO :h_temp_table
+        VALUES (    :g_period,
+                    :h_prodcom_store,
+                    :h_counter,
+                    :h_concat_row1,
+                    :h_concat_row2,
+                    :h_concat_row3,
+                    :h_concat_row4,
+                    :h_concat_row5,
+                    :h_concat_row6,
+                    :h_concat_row7,
+                    :h_concat_row8,
+                    :h_concat_row9);
+
+        h_return2 = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+        IF h_return2 != 0
+        THEN
+          h_log  = 'ERROR: Failed to insert into table ' +:h_temp_table +'.';
+          CALLPROC write_to_process_log
+                 ( p_frpr_name = :h_frpr_name,
+                   p_code      = :h_return2,
+                   p_text      = :h_log);
+          RETURN h_return;
+        ENDIF;
+
+        h_concat_row1 = '';
+        h_concat_row2 = '';
+        h_concat_row3 = '';
+        h_concat_row4 = '';
+        h_concat_row5 = '';
+        h_concat_row6 = '';
+        h_concat_row7 = '';
+        h_concat_row8 = '';
+        h_concat_row9 = '';
+        h_count = 1;
+
+      ENDIF;
+    ENDIF;
+
+    IF h_count = 1
+    THEN
+      h_concat_row1 = :h_cn_codes;
+      h_count = 2;
+
+    ELSEIF (h_count > 1  AND h_count < 6)
+    THEN
+      h_concat_row1 = CONCAT(h_concat_row1, (CONCAT(' + ',ASCII(:h_cn_codes))));
+      h_count = h_count + 1;
+
+    ELSEIF h_count = 6
+    THEN
+      h_concat_row2 = :h_cn_codes;
+      h_count = 7;
+
+    ELSEIF (h_count > 5 AND h_count < 11)
+    THEN
+      h_concat_row2 = CONCAT(h_concat_row2, (CONCAT(' + ',ASCII(:h_cn_codes))));
+      h_count = h_count + 1;
+
+    ELSEIF h_count = 11
+    THEN
+      h_concat_row3 = :h_cn_codes;
+      h_count = 12;
+
+    ELSEIF (h_count > 10 AND h_count < 16)
+    THEN
+      h_concat_row3 = CONCAT(h_concat_row3, (CONCAT(' + ',ASCII(:h_cn_codes))));
+      h_count = h_count + 1;
+
+    ELSEIF h_count = 16
+    THEN
+      h_concat_row4 = :h_cn_codes;
+      h_count = 17;
+
+    ELSEIF (h_count > 15 AND h_count < 21)
+    THEN
+      h_concat_row4 = CONCAT(h_concat_row4, (CONCAT(' + ',ASCII(:h_cn_codes))));
+      h_count = h_count + 1;
+
+    ELSEIF h_count = 21
+    THEN
+      h_concat_row5 = :h_cn_codes;
+      h_count = 22;
+
+    ELSEIF (h_count > 20 AND h_count < 26)
+    THEN
+      h_concat_row5 = CONCAT(h_concat_row5, (CONCAT(' + ',ASCII(:h_cn_codes))));
+      h_count = h_count + 1;
+
+    ELSEIF h_count = 26
+    THEN
+      h_concat_row6 = :h_cn_codes;
+      h_count = 27;
+
+    ELSEIF (h_count > 25 AND h_count < 31)
+    THEN
+      h_concat_row6 = CONCAT(h_concat_row6, (CONCAT(' + ',ASCII(:h_cn_codes))));
+      h_count = h_count + 1;
+
+    ELSEIF h_count = 31
+    THEN
+      h_concat_row7 = :h_cn_codes;
+      h_count = 32;
+
+    ELSEIF (h_count > 30 AND h_count < 36)
+    THEN
+      h_concat_row7 = CONCAT(h_concat_row7, (CONCAT(' + ',ASCII(:h_cn_codes))));
+      h_count = h_count + 1;
+
+    ELSEIF h_count = 36
+    THEN
+      h_concat_row8 = :h_cn_codes;
+      h_count = 37;
+
+    ELSEIF (h_count > 35 AND h_count < 41)
+    THEN
+      h_concat_row8 = CONCAT(h_concat_row8, (CONCAT(' + ',ASCII(:h_cn_codes))));
+      h_count = h_count + 1;
+
+    ELSEIF h_count = 41
+    THEN
+      h_concat_row9 = :h_cn_codes;
+      h_count = 42;
+
+    ELSEIF (h_count > 40 AND h_count < 46)
+    THEN
+      h_concat_row9 = CONCAT(h_concat_row9, (CONCAT(' + ',ASCII(:h_cn_codes))));
+      h_count = h_count + 1;
+
+    ENDIF;
+
+    h_prodcom_store = :h_prodcom_code;
+
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_log = 'ERROR: Failed to select ' + VARCHAR(:g_period) +' cn codes ' 
+          + 'from prodcom_lookup.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  MODIFY :h_temp_table TO BTREE UNIQUE 
+      ON prodcom_code, period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_log = 'ERROR: Failed to modify table ' +:h_temp_table +' '
+          + 'to btree unique.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Set need counts
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating CN Codes (4/6) . . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Setup - CN Codes 4 of 6.');
+
+  UPDATE :h_temp_table a
+  FROM   question_library b
+  SET    need_count = a.need_count + b.line_count
+  WHERE  a.prodcom_code = b.question
+    AND  b.period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_log = 'ERROR: Failed on first update of ' +:h_temp_table +' ' 
+          + 'from question_library.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  UPDATE :h_temp_table a
+  FROM   question_library b
+  SET    need_count = a.need_count + 3
+  WHERE  a.prodcom_code + 1 = b.question
+    AND  b.period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_log = 'ERROR: Failed on second update of ' +:h_temp_table +' ' 
+          + 'from question_library.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  UPDATE :h_temp_table a
+  FROM   question_library b
+  SET    need_count = a.need_count + 3
+  WHERE  a.prodcom_code + 3 = b.question
+    AND  b.period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_log = 'ERROR: Failed on third update of ' +:h_temp_table +' ' 
+          + 'from question_library.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  UPDATE :h_temp_table a
+  FROM   question_library b
+  SET    need_count = a.need_count + 3
+  WHERE  a.prodcom_code + 4 = b.question
+    AND  b.period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_log = 'ERROR: Failed on fourth update of ' +:h_temp_table +' ' 
+          + 'from question_library.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  UPDATE :h_temp_table a
+  FROM   question_library b
+  SET    need_count = a.need_count + 3
+  WHERE  a.prodcom_code + 5 = b.question
+    AND  b.period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_log = 'ERROR: Failed on fifth update of ' +:h_temp_table +' ' 
+          + 'from question_library.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  UPDATE :h_temp_table a
+  FROM   question_library b
+  SET    need_count = a.need_count + 3
+  WHERE  a.prodcom_code + 7 = b.question
+    AND  b.period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_log = 'ERROR: Failed on sixth update of ' +:h_temp_table +' ' 
+          + 'from question_library.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  UPDATE :h_temp_table a
+  FROM   question_library b
+  SET    need_count = a.need_count + 3
+  WHERE  a.prodcom_code + 8 = b.question
+    AND  b.period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_log = 'ERROR: Failed on seventh update of ' +:h_temp_table +' ' 
+          + 'from question_library.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  UPDATE :h_temp_table
+  SET    need_count = need_count + 5;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_log = 'ERROR: Failed on eighth update of ' +:h_temp_table +' ' 
+          + 'from question_library.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Delete from and insert into the live :h_table
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating CN Codes (5/6) . . .';
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Setup - CN Codes 5 of 6.');
+
+  DELETE FROM :h_table
+  WHERE       period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_log = 'ERROR: Failed to delete existing ' +VARCHAR(:g_period) + ' '
+          + 'CN codes from table ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  INSERT INTO :h_table
+  SELECT      *
+  FROM        :h_temp_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_log = 'ERROR: Failed to insert ' +VARCHAR(:g_period) + ' '
+          + 'CN codes into table ' +:h_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Check if all three setups have been done and if so set 
+      form status for period to "S".
+  ------------------------------------------------------------------*/
+
+  h_check_1 = 0;
+  h_check_2 = 0;
+  h_check_3 = 0;
+
+  SELECT period AS h_period
+  FROM   prodcom_cncodes
+  WHERE  period = :g_period;
+ 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1 
+  THEN
+    h_log = 'ERROR: Failed to check ' +VARCHAR(:g_period) + ' '
+          + 'records present on table prodcom_cncodes.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  IF h_return = 0
+  THEN
+    h_check_1 = 1;
+  ENDIF; 
+
+
+  SELECT period AS h_period
+  FROM   fpr_form_notes
+  WHERE  period = :g_period;
+ 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1 
+  THEN
+    h_log = 'ERROR: Failed to check ' +VARCHAR(:g_period) + ' '
+          + 'records present on table fpr_form_notes.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  IF h_return = 0
+  THEN
+    h_check_2 = 1;
+  ENDIF; 
+
+
+  SELECT period AS h_period
+  FROM   fpr_question_texts
+  WHERE  period = :g_period;
+ 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1 
+  THEN
+    h_log = 'ERROR: Failed to check ' +VARCHAR(:g_period) + ' '
+          + 'records present on table fpr_question_texts.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  IF h_return = 0
+  THEN
+    h_check_3 = 1;
+  ENDIF; 
+
+  IF h_check_1 = 1
+  AND h_check_2 = 1
+  AND h_check_3 = 1
+  THEN
+    UPDATE industry
+    SET    industry_cycle_point = 'S';
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return > 1 
+    THEN
+      h_log = 'ERROR: Failed to update industry_cycle_point to "S".';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_log);
+      RETURN h_return;
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Tidy up and complete.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating CN Codes (6/6) . . .';
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Setup - CN Codes 6 of 6.');
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    h_log = 'WARNING: Failed to drop ' +:h_temp_table +'. ' 
+          + 'Please delete it manually asap.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+  ENDIF;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = :h_return,
+           p_text      = 'COMPLETE: Subprocess 1a completed successfully.');
+  
+  RETURN 0;
+}
+
+/************************ LOCAL PROCEDURES ***********************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(24) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(20) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  h_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF h_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+
+

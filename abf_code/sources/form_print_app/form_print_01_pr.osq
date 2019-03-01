@@ -1,0 +1,760 @@
+/************************************************************************** 
+
+  New print form process designed to be run using the ProdCom Production 
+  Control program.
+  
+  Two mandatory parameters (usually passed from PPC program):
+    *  g_annual_period: yyyy00 
+    *  g_form_type    : F/R       [Form or Reminder]
+
+  Two optional parameters (Used in manual mode):
+    *  g_setup: Y/N   [Run the setup components? Default = Y]  
+    *  g_final: Y/N   [Run the spc file output procedure? Default = Y]  
+
+  NB: Reminder run will not run the setup components. This is correct.
+
+  e.g. Normal run called by PPC: 
+       $IMAGES/form_print_app -dprodlivedb -a 201200 F
+  or   Manual run following failure of forms, where setup worked OK:
+       $IMAGES/form_print_app -dprodlivedb -a 201200 F N Y
+  or   Manual run following failure of reminders:
+       $IMAGES/form_print_app -dprodlivedb -a 201200 R N Y
+  or   Manual test run following failure of reminders:
+       $IMAGES/form_print_app -dprodlivedb -a 201200 R N N
+
+  FOUR STAGES:
+   1) Setup routines
+   2) Contributor information for front page.
+   3) Question information for other pages.
+   4) SPC file creation.
+
+  DF 2012
+
+***********************************************************************/
+
+PROCEDURE form_print_01_pr () =
+
+DECLARE h_return                = INTEGER4     NOT NULL WITH DEFAULT,
+        h_return2               = INTEGER4     NOT NULL WITH DEFAULT,
+        h_dummy                 = INTEGER4     NOT NULL WITH DEFAULT,
+        h_param_list            = VARCHAR(200) NOT NULL WITH DEFAULT,
+        industry_cycle_point    = CHAR(1)      NOT NULL WITH DEFAULT,
+        h_varchar_variable      = VARCHAR(200) NOT NULL WITH DEFAULT,
+        h_integer_variable      = INTEGER2     NOT NULL WITH DEFAULT,
+        h_period                = INTEGER4     NOT NULL WITH DEFAULT,
+        h_total                 = INTEGER4     NOT NULL WITH DEFAULT,
+        h_count                 = INTEGER4     NOT NULL WITH DEFAULT,
+        h_param1                = VARCHAR(10)  NOT NULL WITH DEFAULT,
+        h_param2                = VARCHAR(10)  NOT NULL WITH DEFAULT,
+        h_param3                = VARCHAR(10)  NOT NULL WITH DEFAULT,
+        h_param4                = VARCHAR(10)  NOT NULL WITH DEFAULT,
+        h_param5                = VARCHAR(10)  NOT NULL WITH DEFAULT,
+        h_text                  = VARCHAR(70)  NOT NULL WITH DEFAULT,
+        h_frpr_name             = VARCHAR(25)  NOT NULL WITH DEFAULT,
+        h_table_1               = VARCHAR(36)  NOT NULL WITH DEFAULT,
+        h_table_2               = VARCHAR(36)  NOT NULL WITH DEFAULT,
+        h_table_3               = VARCHAR(36)  NOT NULL WITH DEFAULT,
+        h_c_table               = VARCHAR(36)  NOT NULL WITH DEFAULT,
+        h_despatch_table        = VARCHAR(20)  NOT NULL WITH DEFAULT,
+        h_contributor_reference = CHAR(11)     NOT NULL WITH DEFAULT,
+        h_checkletter           = CHAR(1)      NOT NULL WITH DEFAULT,
+ 
+        lp_error_check       = PROCEDURE RETURNING INTEGER NOT NULL,
+        lp_drop_table        = PROCEDURE RETURNING INTEGER NOT NULL,
+
+{
+
+  h_frpr_name  = 'form_print_01_pr';
+
+  h_table_1 = 'tt_form_print_01';
+  h_table_2 = 'tt_form_print_02';
+  h_table_3 = 'tt_form_print_03';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_procs (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Select the parameters from the UNIX line
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[1/45] Getting parameters...';
+  SLEEP 1;
+  
+  h_param_list = CALLPROC COMMANDLINEPARAMETERS();
+
+  h_varchar_variable = SQUEEZE (h_param_list);
+
+  h_integer_variable = LOCATE (h_varchar_variable, ' ');
+  h_param1           = LEFT   (h_varchar_variable,h_integer_variable - 1);
+  h_varchar_variable = SHIFT  (h_varchar_variable, - h_integer_variable);
+
+  h_integer_variable = LOCATE (h_varchar_variable, ' ');
+  h_param2           = LEFT   (h_varchar_variable,h_integer_variable - 1);
+  h_varchar_variable = SHIFT  (h_varchar_variable, - h_integer_variable);
+
+  h_integer_variable = LOCATE (h_varchar_variable, ' ');
+  h_param3           = LEFT   (h_varchar_variable,h_integer_variable - 1);
+  h_varchar_variable = SHIFT  (h_varchar_variable, - h_integer_variable);
+
+  h_integer_variable = LOCATE (h_varchar_variable, ' ');
+  h_param4           = LEFT   (h_varchar_variable,h_integer_variable - 1);
+  h_varchar_variable = SHIFT  (h_varchar_variable, - h_integer_variable);
+
+  g_period    = INT4(:h_param1);
+  g_form_type = UPPERCASE(:h_param2);
+  g_setup     = UPPERCASE(:h_param3);
+  g_final     = UPPERCASE(:h_param4);
+
+  /*------------------------------------------------------------------
+      Log start of process. (Needs :g_form_type to run)
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = '*SIGNON*');
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'STARTING: MAIN PROCESS (1) STARTING.');
+  
+  /*------------------------------------------------------------------
+    Select max inquiry_period as h_period, as thats what we should
+    be printing forms and reminders for.
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 1 of 45.');
+
+  SELECT  MAX(period) AS h_period
+  FROM    inquiry_period
+  WHERE   inquiry = 14; 
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select max period from inquiry period.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Validate parameters
+  ----------------------------------------------------------------------*/
+
+  MESSAGE '[2/45] Validating parameters...';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 2 of 45.');
+
+  IF  g_form_type != 'F' 
+  AND g_form_type != 'R' 
+  THEN
+    h_text = 'ERROR: ' +UPPER(:g_form_type) +' ' 
+           + 'is not a valid form type parameter.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  IF (g_form_type = 'F' AND  g_period != :h_period)
+  OR (g_form_type = 'R' AND (g_period != :h_period AND
+                             g_period != :h_period -100)) 
+  THEN
+    h_text = 'ERROR: Period is not valid to preform this procedure with.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  IF g_setup = ''
+  THEN 
+
+    IF g_form_type = 'F' 
+    THEN 
+      h_text = 'NOTE: g_setup defaulted to Y as this is a forms run.';
+      g_setup = 'Y'
+    ELSE 
+      h_text = 'NOTE: g_setup defaulted to N as this is a reminder run.';
+      g_setup = 'N'
+    ENDIF;
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+  ENDIF;
+
+
+  IF g_form_type = 'R' AND g_setup = 'Y'
+  THEN
+    g_setup = 'N';
+    h_text = 'NOTE: g_setup parameter changed to N as this is a reminder run.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+  ENDIF;
+   
+  IF  g_setup != 'Y' 
+  AND g_setup != 'N' 
+  THEN
+    h_text = 'ERROR: ' +UPPER(:g_setup) +' ' 
+           + 'is not a valid setup option parameter.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  IF g_final = ''
+  THEN 
+    g_final = 'Y'
+  ENDIF;  
+
+  IF  g_final != 'Y' 
+  AND g_final != 'N' 
+  THEN
+    h_text = 'ERROR: ' +UPPER(:g_final) +' ' 
+           + 'is not a valid output option parameter.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+     Note validated parameters in the process log and check cycle point.
+  ------------------------------------------------------------------------*/
+
+  IF g_form_type = 'F'
+  THEN 
+
+    IF g_setup = 'Y' 
+    THEN 
+      h_text = 'NOTE: THIS IS A FORMS RUN INCLUDING SETUP FOR '
+             + VARCHAR(:g_period) +'.';
+    ELSE 
+      h_text = 'NOTE: THIS IS A FORMS RUN EXCLUDING SETUP FOR '
+             + VARCHAR(:g_period) +'.';
+    ENDIF;
+
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+    SELECT industry AS h_dummy
+    FROM   industry
+    WHERE  industry_cycle_point != 'Q'
+    AND    inquiry = 14;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 0);
+
+    IF h_return = 1
+    THEN
+      h_text = 'WARNING: Industry cycle point is not "Q". Aborting.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+
+    ELSEIF h_return > 1
+    THEN
+      h_text = 'ERROR: Failed to select cycle point from industry table.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+       RETURN 9;
+    ENDIF;
+
+  ELSE 
+
+    h_text = 'NOTE: THIS IS A REMINDER RUN FOR ' + VARCHAR(:g_period) +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+    SELECT industry AS h_dummy
+    FROM   industry
+    WHERE  industry_cycle_point != 'F'
+    AND    inquiry = 14;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 0);
+
+    IF h_return = 1
+    THEN
+      h_text = 'WARNING: Industry cycle point is not "F". Aborting.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+
+    ELSEIF h_return > 1
+    THEN
+      h_text = 'ERROR: Failed to select cycle point from industry table.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+       RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+      If setup is required, call 1a, 1b and 1c in sequence. 
+
+      (NB: We are not checking for cycle_point already being "S"
+           as to do so would prevent us from forcing a recalculation
+           of the tables should that be required. We assume that if
+           setup can be safely skipped, the an propriate parameter would 
+           be set.)
+  ----------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 3 of 45.');
+
+  IF g_setup = 'Y'
+  THEN
+
+    MESSAGE '[3/45] Running Setup...';
+    SLEEP 1;
+
+    h_return = CALLPROC form_print_01a_pr();
+
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Subprocess 1a failed to complete successfully. '
+            + 'Please see fpr_process_log for details.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+    h_return = CALLPROC form_print_01b_pr();
+
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Subprocess 1b failed to complete successfully. '
+            + 'Please see fpr_process_log for details.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+    h_return = CALLPROC form_print_01c_pr();
+
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Subprocess 1c failed to complete successfully. '
+            + 'Please see fpr_process_log for details.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+ 
+  ELSE   
+
+    MESSAGE '[3/45] Skipping Setup...';
+    SLEEP 2;
+
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+     Run Process 2 to collect the contributor info for the front page.
+  ----------------------------------------------------------------------*/
+
+  h_return = CALLPROC form_print_02_pr();
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Process 2 failed to complete successfully. '
+          + 'Please see fpr_process_log for details.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+     Run Process 3 to collect the question info for the other pages.
+  ----------------------------------------------------------------------*/
+
+  h_return = CALLPROC form_print_03_pr();
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Process 3 failed to complete successfully. '
+          + 'Please see fpr_process_log for details.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+     Run Process 4 to send the data to either SPC or ADMIN/SCRATCH 
+     depending upon the output parameter held in g_final.
+  ----------------------------------------------------------------------*/
+
+  h_return = CALLPROC form_print_04_pr();
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Process 4 failed to complete successfully. '
+          + 'Please see fpr_process_log for details.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+     Update question counts if main forms run.
+  ----------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 42 of 45.');
+
+  IF g_form_type = 'R'
+  THEN
+    MESSAGE '[42/45] SKIPPED: Update of question counts per industry.';
+    SLEEP 1;
+  ELSE
+    MESSAGE '[42/45] Update question counts per industry.';
+    SLEEP 1;
+
+    h_return = lp_drop_table (p_table_name = :h_table_1);
+
+    IF h_return != 0
+    THEN
+      /* Error logging handled in LP */
+      RETURN 9;
+    ENDIF;
+
+    CREATE TABLE :h_table_1
+    AS 
+    SELECT    a.industry,
+              COUNT(b.question) AS questions
+    FROM      industry_period a,
+              cqpv b
+    WHERE     a.period = :g_period
+    AND       a.period = b.period
+    AND       a.industry = b.contributor_industry
+    AND       b.quest_order = 1
+    GROUP BY  a.industry;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to create table ' +:h_table_1 +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+    UPDATE industry_period a
+    FROM   :h_table_1 b
+    SET    questions_selected = b.questions
+    WHERE  a.industry = b.industry
+    AND    a.period = :g_period;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to update industry_period with question counts.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;  /* End of form type switch */
+
+  /*------------------------------------------------------------------
+    Save despatch reference details
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 43 of 45.');
+
+  MESSAGE '[43/45] Save despatch reference details.';
+  SLEEP 1;
+
+  h_despatch_table = LOWER(:g_form_type) +'pr_despatch_history'; 
+  h_c_table        = LOWER(:g_form_type) +'pr_form_c_data'; 
+
+  DELETE FROM :h_despatch_table
+  WHERE       period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to delete existing data for current period '
+           + 'from ' +:h_despatch_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :h_despatch_table TO HEAP;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to modify '+:h_despatch_table +' to heap.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  INSERT INTO :h_despatch_table 
+            ( contributor_reference,
+              contributor_industry,
+              period,
+              register_emp) 
+  SELECT      a.contributor_reference,
+              a.contributor_industry,
+              a.period,
+              a.register_emp
+  FROM        contributor_period a,
+              :h_c_table b
+  WHERE       a.period = :g_period
+    AND       a.period = b.period
+    AND       a.contributor_reference = b.contributor_reference;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to insert data for current period '
+           + 'into ' +:h_despatch_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :h_despatch_table TO BTREE UNIQUE 
+  ON     contributor_reference, period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify ' +:h_despatch_table +' to btree unique.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+     Update cycle point to F on final run.
+  ----------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 44 of 45.');
+
+  IF g_final = 'N'
+  OR g_form_type = 'R'
+  THEN
+
+    MESSAGE '[44/45] SKIPPING: No need to update industry cycle point. . .';
+    SLEEP 1;
+
+  ELSE
+
+    MESSAGE '[44/45] Updating industry cycle point to "F". . .';
+    SLEEP 1;
+
+    UPDATE industry
+    SET    industry_cycle_point = 'F';
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to update industry_cycle_point to "F".';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+  
+  /*----------------------------------------------------------------------
+     Tidy up.
+  ----------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 45 of 45.');
+
+  MESSAGE '[45/45] Final tidying up. . .';
+  SLEEP 1;
+
+  h_return = lp_drop_table (p_table_name = :h_table_1);
+
+  IF h_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+  h_return = lp_drop_table (p_table_name = :h_table_2);
+
+  IF h_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+  h_return = lp_drop_table (p_table_name = :h_table_3);
+
+  IF h_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Log end of process.
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'COMPLETE: MAIN PROCESS (1) COMPLETED OK.');
+  
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = '*SIGNOFF*');
+
+}
+
+/*************************** LOCAL PROCEDURES *****************************/
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL WITH DEFAULT) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(36) NOT NULL WITH DEFAULT
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  h_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF h_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+
+

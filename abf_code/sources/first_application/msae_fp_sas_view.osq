@@ -1,0 +1,282 @@
+
+INITIALIZE () =
+
+DECLARE 
+  h_retries_allowed   = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries           = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not      = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name         = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_table             = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_output_category   = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_current_category  = CHAR(1)     NOT NULL WITH DEFAULT,
+  h_rows              = INTEGER4    NOT NULL WITH DEFAULT,
+  h_total             = INTEGER4    NOT NULL WITH DEFAULT,
+  h_current_total     = INTEGER4    NOT NULL WITH DEFAULT,
+  h_return            = INTEGER1    NOT NULL WITH DEFAULT,
+  h_return2           = INTEGER1    NOT NULL WITH DEFAULT,
+  h_lookback          = INTEGER1    NOT NULL WITH DEFAULT,
+  h_viewdate          = INGRESDATE  NOT NULL WITH DEFAULT,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  msa_date = 'now';
+  h_frpr_name = 'msae_fr_sas_view';
+  h_retries_allowed = 3;
+  h_table = 'temp_relift';
+
+  SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+  IF DOW('now') = 'Mon'
+  THEN
+    h_viewdate = date('today') - date('3 days');
+  ELSE
+    h_viewdate = date('today') - date('1 days');
+  ENDIF;
+
+
+  /*------------------------------------------------------------------
+      Drop then create Table
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_drop_table (h_table = :h_table);
+
+  IF h_return != 0
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    CREATE TABLE :h_table
+    AS 
+    SELECT a.*,
+           b.question_industry
+    FROM   contributor_sas a,
+           question_library b
+    WHERE a.requested > :h_viewdate
+      AND a.question = b.question
+      AND a.data_for_period/100 = b.period/100;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+      ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: There is no relift data to view at this time. '
+          + 'If you think this is indicates that there is a problem, '
+          + 'then please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to create temp working table. '
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Capitalise extracted marker.
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE :h_table
+    SET    extracted = UPPER(extracted);
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to update extraction marker on temp table. '
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Select to Screen
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    tf =
+
+    SELECT question_industry,
+           contributor_reference,
+           question,
+           run_period,
+           data_for_period,
+           week_no,
+           user_id,
+           ' ' + extracted AS extracted
+    FROM   :h_table
+    ORDER BY requested,
+             contributor_reference,
+             run_period,
+             data_for_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+      ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to load data to screen. '
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  RESUME FIELD tf;
+}
+
+/***************************** KEY ACTIVATIONS ******************************/
+
+'Print', KEY FRSKEY8 =
+{
+
+  MESSAGE 'Preparing Report . .  .';
+  msa_date = 'now';
+
+  /*--------------------------------------------------------------
+      Prepare report for printing.
+  --------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_cp_callsys 
+                    ( 'report ' +
+                      :g_database +
+                      ' ''(h_table = "' + :h_table + '"' +
+                      ',user_name = "' + :g_user_name + '"' +
+                      ')'' -i$REPORTS/msae_rw_sas_view.rw' +
+                      ' > report.output 2> report.output');
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed whilst producing report.'
+          + 'Error code ' +VARCHAR(:h_return) + '. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+  ELSE
+
+    /*--------------------------------------------------------------
+        Remove last line so a blank end page is not printed then
+        send to printer.
+    --------------------------------------------------------------*/
+
+    MESSAGE 'Preparing Report . .  .';
+
+    h_return2 = CALLPROC msa_cp_callsys (
+                        'lines=`wc -l < msae_rw_sas_view.rpt`;' +
+                        'lines=`expr ${lines} - 1`;' +
+                        'head -${lines} msae_rw_sas_view.rpt | ' +
+                        'lp -o12p -d' + :g_printer +
+                        ' >> report.output 2>> report.output');
+  
+    IF h_return2 != 0
+    THEN
+      MESSAGE 'ERROR: Failed to send report to printer ' + :g_printer + '. ' 
+            + 'Error code ' +VARCHAR(:h_return) + '. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+    ELSE
+      MESSAGE 'NOTE: Report successfully sent to printer ' + :g_printer + '.' 
+      WITH STYLE = POPUP;
+    ENDIF;
+
+  ENDIF;
+
+}
+
+
+'End' , KEY FRSKEY14 =
+{
+    MESSAGE 'Exiting Screen . . .';
+
+    h_return = CALLPROC msa_fp_drop_table (
+	      h_table = :h_table);
+
+    RETURN 0;
+}
+
+/*************************** LOCAL PROCEDURES *****************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

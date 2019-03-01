@@ -1,0 +1,329 @@
+/*****************************************************************************
+   Checks if there are any existing broadcasts that the user has not seen.
+
+   If there are, calls a splash screen.
+
+   Once seen and confirmed, the confirmation is recorded and the message
+   will not display again.
+
+   No access check needed. Everyone gets to see them. (Except Devs.) 
+
+*****************************************************************************/
+
+PROCEDURE check_motd ()= 
+
+
+DECLARE h_retries_allowed = INTEGER1     NOT NULL WITH DEFAULT,
+        h_retries         = INTEGER1     NOT NULL WITH DEFAULT,
+        h_retry_or_not    = CHAR(5)      NOT NULL WITH DEFAULT,
+        h_frpr_name       = VARCHAR(24)  NOT NULL WITH DEFAULT,
+        h_return          = INTEGER1     NOT NULL WITH DEFAULT,
+        h_return2         = INTEGER1     NOT NULL WITH DEFAULT,
+        h_temp_table      = VARCHAR(36)  NOT NULL WITH DEFAULT,
+        h_ref             = CHAR(3)      NOT NULL WITH DEFAULT,
+        h_text1           = VARCHAR(60)  NOT NULL WITH DEFAULT,
+        h_text2           = VARCHAR(60)  NOT NULL WITH DEFAULT,
+        h_text3           = VARCHAR(60)  NOT NULL WITH DEFAULT,
+        h_text4           = VARCHAR(60)  NOT NULL WITH DEFAULT,
+        h_text5           = VARCHAR(60)  NOT NULL WITH DEFAULT,
+        h_today           = DATE         NOT NULL WITH DEFAULT,
+        h_delay           = DATE         NOT NULL WITH DEFAULT,
+
+  lp_error_check          = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_full_error_check     = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_retries_allowed = 3;
+  h_frpr_name       = 'check_motd';
+  h_temp_table      = 'tt_check_motd';
+  h_today           = date('today'); 
+  h_delay           = date('today') - '7 days';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  /*-------------------------------------------------------------------------
+     Check to see if there are any obsolete broadcasts. 
+     If there are, delete them and matching conformation records.
+  -------------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_drop_table (h_table = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure */
+    RETURN 9;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+  
+    CREATE TABLE :h_temp_table
+    AS 
+    SELECT ref,
+           date
+    FROM   msg_current_messages
+    WHERE  persist = 'N'
+      AND  date < :h_today
+    UNION
+    SELECT ref,
+           date
+    FROM   msg_current_messages
+    WHERE  persist = 'Y'
+      AND  date < :h_delay; 
+
+    h_return = lp_full_error_check (p_num_row_ck = 0);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+
+    /*...................................................................
+       Remove obsolete messages
+    ...................................................................*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+      
+      DELETE FROM msg_current_messages a
+      WHERE  a.ref  IN 
+          (  SELECT b.ref
+             FROM   :h_temp_table b );  
+     
+      h_return2 = lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return2 != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return2 > 1
+    THEN
+      MESSAGE 'ERROR: Failed whilst deleting obsolete system messages. '
+            + 'Error code ' +VARCHAR(:h_return2) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+    /*...................................................................
+       Remove obsolete confirmations
+    ...................................................................*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+      
+      DELETE FROM msg_cleared_messages a
+      WHERE  a.ref  IN 
+          (  SELECT b.ref
+             FROM   :h_temp_table b );  
+     
+      h_return2 = lp_full_error_check (p_num_row_ck = 1);
+
+      IF h_return2 != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return2 > 1
+    THEN
+      MESSAGE 'ERROR: Failed whilst deleting obsolete message confirmations. '
+            + 'Error code ' +VARCHAR(:h_return2) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed whilst checking for obsolete system messages. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+         
+  /*---------------------------------------------------------------------------
+     Create temp table of any outstanding system broadcasts that have 
+     not already been seen by the user.
+  ---------------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_drop_table (h_table = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure */
+    RETURN 9;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    CREATE TABLE :h_temp_table 
+    AS 
+    SELECT *
+    FROM   msg_current_messages a
+    WHERE  a.ref = (SELECT b.ref
+                    FROM msg_current_messages b
+                    WHERE NOT EXISTS
+                        (  SELECT c.*  
+                           FROM msg_cleared_messages c
+                           WHERE c.ref     = b.ref
+                             AND c.user_id = :g_user_id));
+
+    h_return = lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1 /* No broadcasts to display */
+  THEN
+    
+    h_return = CALLPROC msa_fp_drop_table (h_table = :h_temp_table);
+
+    IF h_return != 0
+    THEN
+      /* Error message handled in external procedure */
+      RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+
+  ELSEIF h_return > 1
+  THEN 
+    MESSAGE 'ERROR: Failed to create working table of current system messages. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*---------------------------------------------------------------------------
+      Loop through messages to display and get acknowledgement.
+  ---------------------------------------------------------------------------*/
+  
+  SELECT ref AS h_ref,
+         text1 AS h_text1,
+         text2 AS h_text2,
+         text3 AS h_text3,
+         text4 AS h_text4,
+         text5 AS h_text5
+  FROM :h_temp_table
+  ORDER BY h_ref
+  BEGIN
+
+    CALLFRAME msa_fr_display_motd
+            ( p_ref   = :h_ref,
+              p_text1 = :h_text1,
+              p_text2 = :h_text2,
+              p_text3 = :h_text3,
+              p_text4 = :h_text4,
+              p_text5 = :h_text5);
+
+    /* Simple frame for display only, no error handling needed. */
+
+  END;
+
+  h_return = lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to display system broadcast messages. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  h_return = CALLPROC msa_fp_drop_table (h_table = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure */
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/************************* LOCAL PROCEDURES *********************************/
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

@@ -1,0 +1,314 @@
+INITIALIZE () =
+
+DECLARE 
+
+  h_retries_allowed   = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries           = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not      = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name         = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_table             = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_counter           = INTEGER4    NOT NULL WITH DEFAULT,
+  h_num_rows          = INTEGER4    NOT NULL WITH DEFAULT,
+  h_num_forms         = INTEGER4    NOT NULL WITH DEFAULT,
+  h_receipt_date      = DATE        NOT NULL WITH DEFAULT,
+  h_return            = INTEGER1    NOT NULL WITH DEFAULT,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  msa_date = 'now';
+  h_retries_allowed = 3;
+  h_frpr_name = 'msae_fr_rec_nto';
+  h_table = 'temp_rec_nto';
+
+  SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+  /*---------------------------------------------------------------------
+       Drop then create working table.
+  ---------------------------------------------------------------------*/
+
+  MESSAGE 'Selecting Receipted Contributors . . .';
+
+  h_return = CALLPROC msa_fp_drop_table ( h_table = :h_table);
+
+  IF h_return != 0
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    CREATE TABLE :h_table
+    AS 
+    SELECT  a.contributor_reference,
+            a.period,
+            a.contributor_industry,
+            a.receipt_date,
+            b.add_name1
+    FROM    contributor_period a,
+            contributor b
+    WHERE   a.inquiry =14
+      AND   a.contributor_reference = b.contributor_reference
+      AND   a.form_status = 1;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'NOTE: No forms have been receipted and not take on.' +X'0D'
+          + '      This is A Good Thing, though highly unlikely.'
+    WITH STYLE = POPUP;
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to create ' +:h_table +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*---------------------------------------------------------------------
+       Load data to table field
+  ---------------------------------------------------------------------*/
+
+  MESSAGE 'Loading data to screen . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    tf =
+
+    SELECT   0 AS counter,
+             period,
+             contributor_industry,
+             contributor_reference,
+             receipt_date
+    FROM     :h_table
+    ORDER BY receipt_date,
+             period,
+             contributor_industry,
+             contributor_reference;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to load data to screen from ' +:h_table +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  h_num_forms = :h_num_rows;
+    
+  h_counter = 0;
+
+  UNLOADTABLE tf 
+  BEGIN
+    h_counter = h_counter + 1;
+    tf.counter = h_counter;
+  END;
+
+  /*---------------------------------------------------------------------
+     Calculate previous receipt dates
+  ---------------------------------------------------------------------*/
+
+  MESSAGE 'Calculating Previous Receipt Dates . . .';
+
+  h_days_0      = 0;
+  h_days_1      = 0;
+  h_days_2      = 0;
+  h_days_7      = 0;
+  h_days_14     = 0;
+  h_days_28     = 0;
+  h_days_oldest = 0;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT   receipt_date AS h_receipt_date
+    FROM     :h_table
+    ORDER BY h_receipt_date DESC
+    BEGIN
+
+      IF h_receipt_date = DATE('today')
+      THEN
+        h_days_0 = h_days_0 + 1;
+
+      ELSEIF h_receipt_date = DATE('today') - '1 day'
+      THEN
+        h_days_1 = h_days_1 + 1;
+
+      ELSEIF h_receipt_date = DATE('today') - '2 days'
+      THEN
+        h_days_2 = h_days_2 + 1;
+
+      ELSEIF h_receipt_date >= DATE('today') - '7 days'
+      THEN
+        h_days_7 = h_days_7 + 1;
+
+      ELSEIF h_receipt_date >= DATE('today') - '14 days'
+      THEN
+        h_days_14 = h_days_14 + 1;
+
+      ELSEIF h_receipt_date >= DATE('today') - '28 days'
+      THEN
+        h_days_28 = h_days_28 + 1;
+
+      ELSE
+        h_days_oldest = h_days_oldest + 1;
+      ENDIF;
+
+    END;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select for loop from ' +:h_table +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  RESUME FIELD tf;
+
+}
+
+/************************* KEY ACTIVATIONS ********************************/
+
+
+'Print', KEY FRSKEY4 =
+{
+  IF h_num_forms = 0
+  THEN
+    MESSAGE 'NOTE: There is nothing to print!'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  MESSAGE 'Preparing Report . . .';
+
+  msa_date = 'now';
+
+  h_return = CALLPROC msa_cp_callsys 
+           ( 'report ' 
+           + :g_database 
+           + ' ''(h_table = "' + :h_table + '"' 
+           + ',user_name = "' + :g_user_name + '"' 
+           + ',h_days_0 = ' + VARCHAR(h_days_0) 
+           + ',h_days_1 = ' + VARCHAR(h_days_1) 
+           + ',h_days_2 = ' + VARCHAR(h_days_2) 
+           + ',h_days_7 = ' + VARCHAR(h_days_7) 
+           + ',h_days_14 = ' + VARCHAR(h_days_14) 
+           + ',h_days_28 = ' + VARCHAR(h_days_28) 
+           + ',h_days_oldest = ' + VARCHAR(h_days_oldest) 
+           + ')'' -i$REPORTS/msae_rw_rec_nto.rw' 
+           + ' > report.output 2> report.output');
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to produce report. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+  ELSE
+
+    /*--------------------------------------------------------------
+       Remove last line - so a blank end page is not printed
+    --------------------------------------------------------------*/
+
+    h_return = CALLPROC msa_cp_callsys 
+             ( 'lines=`wc -l < msae_rw_rec_nto.rpt`;' 
+             + 'lines=`expr ${lines} - 1`;' 
+             + 'head -${lines} msae_rw_rec_nto.rpt | ' 
+             + 'lp -o12p -d' + :g_printer 
+             + ' >> report.output 2>> report.output');
+
+    IF h_return != 0
+    THEN
+      MESSAGE 'ERROR: Failed to send report to printer ' + :g_printer +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ELSE
+      MESSAGE 'NOTE: Report successfully sent to printer ' + :g_printer +'. '
+      WITH STYLE = POPUP;
+    ENDIF;
+
+  ENDIF;
+}
+
+'End', KEY FRSKEY14 =
+{
+  RETURN 0;
+}
+
+/************************** LOCAL PROCEDURE ******************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_num_row    = BYREF(h_num_rows),
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

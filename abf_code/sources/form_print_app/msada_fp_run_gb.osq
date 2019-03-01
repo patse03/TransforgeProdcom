@@ -1,0 +1,499 @@
+/*-S--------------------------------------------------------------------
+Industry and output category at a time for GB Forms and for
+special category forms (O Q V X Y Z)
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msada_fp_run_gb () =
+
+DECLARE ret_val       = INTEGER4 NOT NULL,
+        h_industry    = INTEGER4 NOT NULL,
+        contrib_count = INTEGER4 NOT NULL,
+        h_count       = INTEGER4 NOT NULL,
+        h_rows        = INTEGER4 NOT NULL,
+        h_print_count = INTEGER4 NOT NULL,
+        form_control  = VARCHAR(24) NOT NULL,
+        gb_table      = VARCHAR(24) NOT NULL,
+        ni_table      = VARCHAR(24) NOT NULL,
+        h_frpr_name   = VARCHAR(24) NOT NULL,
+        print_name    = VARCHAR(24) NOT NULL,
+        report_name   = VARCHAR(24) NOT NULL,
+        first_table   = VARCHAR(24) NOT NULL,
+        form_table    = VARCHAR(24) NOT NULL,
+
+{
+    h_frpr_name = 'msada_fp_run_gb';
+    report_name = 'msada_rw_form.rw'; 
+    /*   report_name = 'sjh_msada_rw_form.rw';   */
+
+    gb_table = 'forms_' + VARCHAR(:g_period) + '_' + 
+               LOWERCASE(SQUEEZE(:g_output_category)) + '_gb';
+    ni_table = 'forms_' + VARCHAR(:g_period) + '_' + 
+               LOWERCASE(SQUEEZE(:g_output_category)) + '_ni';
+
+    /*-s----------------------------------------------------------------
+     Create the temporary form control table
+     This holds the industries for the output_category.
+     Select loop around the temporary table to control the production of
+     the forms.
+     If only certain industries are required they should be
+     inserted into this select as:
+     and contributor_industry in ().
+    ----------------------------------------------------------------e-*/
+
+    form_control = 'form_control_' + LOWERCASE(:g_output_category);
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :form_control);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    IF :g_form_type = 'F'
+    THEN
+        CREATE TABLE :form_control
+        AS SELECT    COUNT(contributor_reference) AS count_ref,
+                     contributor_industry AS contributor_industry
+        FROM         contributor_period
+        WHERE        period = :g_period
+        AND          output_category = :g_output_category
+    /*  and    contributor_industry in (18120)  */
+        GROUP BY     contributor_industry;
+
+    ELSE
+        CREATE TABLE :form_control
+        AS SELECT    COUNT(a.contributor_reference) AS count_ref,
+                     a.contributor_industry AS contributor_industry
+        FROM         contributor_period a,
+                     idbr_sec_reminders b
+        WHERE        a.period = :g_period
+        AND          a.period = b.period
+        AND          a.output_category = :g_output_category  
+        AND          a.contributor_reference = b.contributor_reference
+     /*and    contributor_industry in (22220,26120) */
+        GROUP BY     a.contributor_industry;
+    ENDIF;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :form_control,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+
+    ELSEIF ret_val = 1
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'No forms required for Category ' +
+                    :g_output_category,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 0;
+    ENDIF;
+
+    MODIFY :form_control TO BTREE ON contributor_industry; COMMIT;
+
+    /*-s----------------------------------------------------------------
+     Delete existing rows from the print table
+    ----------------------------------------------------------------e-*/
+
+    DELETE FROM :g_print_table
+    WHERE       output_category = :g_output_category;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error deleting from ' + :g_print_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Industry at a time . . .
+    ----------------------------------------------------------------e-*/
+
+    SELECT contributor_industry AS h_industry,
+           count_ref AS contrib_count
+    FROM   :form_control
+
+    {
+        MESSAGE 'Barcodes for ' + VARCHAR(:h_industry) + ' . . .';
+
+        /*-s------------------------------------------------------------
+	 Create the temporary barcode table
+        ------------------------------------------------------------e-*/
+
+        ret_val = CALLPROC msada_fp_calc_barcode (
+                  h_industry = :h_industry);
+
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+        /*-s------------------------------------------------------------
+	 Create the first table
+        ------------------------------------------------------------e-*/
+
+        MESSAGE 'First Table for ' + VARCHAR(:h_industry) + ' . . .';
+
+        ret_val = CALLPROC msada_fp_first_table (
+                  h_industry = :h_industry);
+
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+        /*-s------------------------------------------------------------
+	 Create the form table
+        ------------------------------------------------------------e-*/
+
+        MESSAGE 'Form Table for ' + VARCHAR(:h_industry) + ' . . .';
+
+        ret_val = CALLPROC msada_fp_form_table (
+                  h_industry = :h_industry);
+
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+        /*-s------------------------------------------------------------
+	 Declarations for report writer
+        ------------------------------------------------------------e-*/
+/******* TAKEN OUT FOR SPC TO TAKE OVER FORMS PRINTING *******
+        MESSAGE 'Report Writing for ' + VARCHAR(:h_industry) + ' . . .';
+
+        print_name = 'form_' +
+                     VARCHAR(:g_period) + '_' +
+                     VARCHAR(h_industry) + '_' +
+                     :g_output_category;
+
+        first_table = LOWERCASE('first_' +
+                      VARCHAR(:g_period) + '_' +
+                      VARCHAR(h_industry) + '_' +
+                      :g_output_category);
+
+        form_table  = LOWERCASE('form_' +
+                      VARCHAR(:g_period) + '_' +
+                      VARCHAR(h_industry) + '_' +
+                      :g_output_category);
+
+        IF SQUEEZE(:g_output_category) LIKE '\[OQVWXYZ\]' ESCAPE '\' AND
+            h_industry <> 23201 AND h_industry <> 23209
+        THEN
+******/
+            /*----------------------------------------------------------
+            Split the O Q V W X Y Z table into NI and non-NI 
+	    (W added 4/11/2003 as missed off before)
+            ----------------------------------------------------------*/
+/********
+            ret_val = CALLPROC batch_fp_drop_table (
+                               h_table = :ni_table);
+            IF ret_val <> 0
+            THEN
+                RETURN ret_val;
+            ENDIF;
+
+            CREATE TABLE :ni_table
+            AS SELECT    *
+            FROM         :first_table
+            WHERE        region = 'YY';
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row    = BYREF(:h_rows),
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9
+            THEN
+                INSERT INTO error_log
+                VALUES(     'now',
+                            'Error creating ' + :ni_table,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+
+            ELSEIF ret_val = 0
+            THEN
+                first_table = :ni_table;
+
+                print_name = 'form_' +
+                             VARCHAR(:g_period) + '_' +
+                             VARCHAR(h_industry) + '_' +
+                             TRIM(:g_output_category) + '_ni';
+
+                ret_val = CALLPROC msa_cp_callsys (
+                'report ' +
+                 :g_database + ' ' +
+                 '''(period = ' + VARCHAR(:g_period) +
+                 ', first_out = "' + :first_table +
+                 '", form_out = "' + :form_table +
+                 '", country = "NI"' +
+                 ', inquiry = ' + VARCHAR(:g_inquiry) +
+                 ', h_count = ' + VARCHAR(:h_count) +
+                 ', form_type = "' + :g_form_type +
+                 '")''' +
+                 ' -f$FORMS/' + :print_name +
+                 ' -i$REPORTS/' + :report_name +
+                 '>> $FORMS/report.output');
+
+                IF ret_val <> 0
+                THEN
+                    INSERT INTO error_log
+                    VALUES(     'now',
+                                'Error calling ' + :report_name +
+                                ' for Industry ' + VARCHAR(:h_industry)+
+                                ' and Category ' + :g_output_category +
+                                ' for NI',
+                                :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                    COMMIT;
+                    RETURN ret_val;
+                ENDIF;
+
+                h_count = h_count + :h_rows;
+                h_print_count = h_print_count + 1;
+
+                INSERT INTO :g_print_table
+                VALUES (    :g_output_category,
+                            :print_name,
+                            :h_print_count);
+
+                ret_val = CALLPROC batch_check_inq_ing (
+                          h_num_row_ck = 1,
+                          h_commit     = 'Y',
+                          h_rollback   = 'N',
+                          h_frpr_name  = :h_frpr_name);
+
+                IF ret_val <> 0
+                THEN
+                    INSERT INTO error_log
+                    VALUES(     'now',
+                                'Error inserting ni rows into ' + :g_print_table,
+                                :h_frpr_name,
+                                :ret_val,
+                                :g_user_id);
+                    COMMIT;
+                    RETURN ret_val;
+                ENDIF;
+            ENDIF;
+******/
+            /*----------------------------------------------------------
+             GB
+            ----------------------------------------------------------*/
+/*******
+            first_table = 'first_' +
+                          VARCHAR(:g_period) + '_' +
+                          VARCHAR(h_industry) + '_' +
+                          :g_output_category;
+
+            ret_val = CALLPROC batch_fp_drop_table (
+                               h_table = :gb_table);
+            IF ret_val <> 0
+            THEN
+                RETURN ret_val;
+            ENDIF;
+
+            CREATE TABLE :gb_table
+            AS SELECT    *
+            FROM         :first_table
+            WHERE        region <> 'YY';
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row    = BYREF(:h_rows),
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9
+            THEN
+                INSERT INTO error_log
+                VALUES(     'now',
+                            'Error creating ' + :gb_table,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+
+            ELSEIF ret_val = 0
+            THEN
+                first_table = :gb_table;
+
+                print_name = 'form_' +
+                             VARCHAR(:g_period) + '_' +
+                             VARCHAR(h_industry) + '_' +
+                             TRIM(:g_output_category) + '_gb';
+
+                ret_val = CALLPROC msa_cp_callsys (
+                'report ' +
+                 :g_database + ' ' +
+                 '''(period = ' + VARCHAR(:g_period) +
+                 ', first_out = "' + :first_table +
+                 '", form_out = "' + :form_table +
+                 '", country = "GB"' +
+                 ', inquiry = ' + VARCHAR(:g_inquiry) +
+                 ', h_count = ' + VARCHAR(:h_count) +
+                 ', form_type = "' + :g_form_type +
+                 '")''' +
+                 ' -f$FORMS/' + :print_name +
+                 ' -i$REPORTS/' + :report_name +
+                 '>> $FORMS/report.output');
+
+                IF ret_val <> 0
+                THEN
+                    INSERT INTO error_log
+                    VALUES(     'now',
+                                'Error calling ' + :report_name +
+                                ' for Industry ' + VARCHAR(:h_industry)+
+                                ' and Category ' + :g_output_category +
+                                ' for GB',
+                                :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                    COMMIT;
+                    RETURN ret_val;
+                ENDIF;
+
+                h_count = h_count + :h_rows;
+                h_print_count = h_print_count + 1;
+
+                INSERT INTO :g_print_table
+                VALUES (    :g_output_category,
+                            :print_name,
+                            :h_print_count);
+
+                ret_val = CALLPROC batch_check_inq_ing (
+                          h_num_row_ck = 1,
+                          h_commit     = 'Y',
+                          h_rollback   = 'N',
+                          h_frpr_name  = :h_frpr_name);
+
+                IF ret_val <> 0
+                THEN
+                    INSERT INTO error_log
+                    VALUES(     'now',
+                                'Error inserting gb rows into ' + :g_print_table,
+                                :h_frpr_name,
+                                :ret_val,
+                                :g_user_id);
+                    COMMIT;
+                    RETURN ret_val;
+                ENDIF;
+            ENDIF;
+
+        ELSE
+
+
+            ret_val = CALLPROC msa_cp_callsys (
+            'report ' +
+             :g_database + ' ' +
+             '''(period = ' + VARCHAR(:g_period) +
+             ', first_out = "' + :first_table +
+             '", form_out = "' + :form_table +
+             '", country = "GB"' +
+             ', inquiry = ' + VARCHAR(:g_inquiry) +
+             ', h_count = ' + VARCHAR(:h_count) +
+             ', form_type = "' + :g_form_type +
+             '")''' +
+             ' -f$FORMS/' + :print_name +
+             ' -i$REPORTS/' + :report_name +
+             '>> $FORMS/report.output');
+
+            IF ret_val <> 0
+            THEN
+                INSERT INTO error_log
+                VALUES(     'now',
+                            'Error calling ' + :report_name +
+                            ' for Industry ' + VARCHAR(:h_industry) +
+                            ' and Category ' + :g_output_category,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            h_count = h_count + :contrib_count;
+            h_print_count = h_print_count + 1;
+
+            INSERT INTO :g_print_table
+            VALUES (    :g_output_category,
+                        :print_name,
+                        :h_print_count);
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0
+            THEN
+                INSERT INTO error_log
+                VALUES(     'now',
+                            'Error inserting into ' + :g_print_table,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+        ENDIF;
+
+     ret_val = CALLPROC batch_fp_drop_table(h_table = :form_table);
+     ret_val = CALLPROC batch_fp_drop_table(h_table = :first_table);
+******/
+    };
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error in select loop processing industries',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    RETURN 0;
+}

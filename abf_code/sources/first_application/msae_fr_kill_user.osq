@@ -1,0 +1,238 @@
+/*------------------------------------------------------------------
+                       Kills off a Username
+------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_name            = VARCHAR(24) NOT NULL,
+        h_nice_name       = VARCHAR(24) NOT NULL,
+        h_counter         = INTEGER4 NOT NULL,
+        h_letter          = CHAR(1) NOT NULL,
+        h_prev_letter     = CHAR(1) NOT NULL,
+        h_extension       = CHAR(4) NOT NULL,
+        h_return          = INTEGER1 NOT NULL,
+        h_user_id         = VARCHAR(10) NOT NULL,
+        h_command         = VARCHAR(200) NOT NULL,
+        h_yesno           = CHAR(1) NOT NULL
+{
+  h_retries_allowed = 3;
+  msa_date = 'now';
+  h_frpr_name = 'msae_fr_kill_user';
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+}
+
+/************************** FIELD ACTIVATIONS ***************************/
+
+FIELD s_user_id =
+{
+
+  /*-------------------------------------------------------------------------
+      Validate s_user_id and set some variables.
+  -------------------------------------------------------------------------*/
+
+  IF s_user_id = ''
+  THEN
+    RESUME FIELD s_user_id;
+  ENDIF;
+
+  IF LENGTH(s_user_id) < 7
+  THEN
+    MESSAGE 'WARNING: Username should be at least 7 characters.'
+    WITH STYLE=POPUP;
+    RESUME FIELD s_user_id;
+  ENDIF;
+
+  IF :g_user_id = :s_user_id
+  THEN
+    MESSAGE 'WARNING: Suicide is not an option. Select someone elses '
+          + 'user id to kill off...'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_user_id;
+  ENDIF;
+
+  h_name      = '';
+  h_nice_name = '';
+  h_extension = '';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT user_name AS h_name,
+           extension AS h_extension
+    FROM   passwords_new
+    WHERE  user_id = :s_user_id;
+
+    h_return = CALLPROC check_inq_ing 
+             ( h_num_row_ck      = 1,
+               h_commit          = 'Y',
+               h_rollback        = 'N',
+               h_retries         = :h_retries,
+               h_retries_allowed = :h_retries_allowed,
+               h_frpr_name       = :h_frpr_name);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: No such user ID can be located on the system. '
+          + 'If you believe this to be incorrect, please contact the '
+          + 'control team for assistance.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_user_id;
+
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to to validate specified user id. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+
+  ENDIF;
+
+  h_user_id = :s_user_id;
+
+  /*--------------------------------------------------------------
+    Make the name pretty: e.g. JOHN SMITH ---> John Smith
+  --------------------------------------------------------------*/
+
+  h_counter = 1;
+  h_prev_letter = ' ';
+  h_nice_name = '';
+
+  WHILE h_counter <= LENGTH(h_name)
+  DO
+
+    h_letter = CHAREXTRACT(h_name,h_counter);
+
+    IF h_letter = ' '
+    THEN
+      h_nice_name = CONCAT(h_nice_name,' ');
+    ELSEIF h_prev_letter = ' '
+    THEN
+      h_nice_name = CONCAT(h_nice_name, h_letter);
+    ELSE
+      h_nice_name = CONCAT(h_nice_name, LOWERCASE(h_letter));
+    ENDIF;
+
+    h_prev_letter = h_letter;
+    h_counter = h_counter + 1;
+
+  ENDWHILE;
+
+  /*--------------------------------------------------------------
+    Confirm the kill.
+  --------------------------------------------------------------*/
+
+  h_yesno = '';
+
+  WHILE :h_yesno != 'Y' AND :h_yesno != 'N'
+  DO
+
+    h_yesno = PROMPT 'CONFIRMATION: Please confirm that you want to '
+                   + 'terminate the following session:' +X'0D'
+                   + '             ' + :h_nice_name +'   '
+                   + '(' + :h_user_id +').' + X'0D'
+                   + '[Y/N] >'
+              WITH STYLE=POPUP;
+         h_yesno = UPPER(h_yesno);
+    ENDWHILE;
+
+  IF h_yesno = 'N'
+  THEN
+    RESUME;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Reset IIP Markers
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Resetting IIP Markers . . .';
+
+  h_command := SQUEEZE('iip prodlivedb ' + :h_user_id);
+  h_return = CALLPROC msae_cp_callsys (:h_command);
+
+  h_command := SQUEEZE('iip produserdb ' + :h_user_id);
+  h_return = CALLPROC msae_cp_callsys (:h_command);
+
+  h_command := SQUEEZE('iip produatd1 ' + :h_user_id);
+  h_return = CALLPROC msae_cp_callsys (:h_command);
+
+  /*------------------------------------------------------------------
+    Call the UNIX script "kill_job"
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Killing UNIX Jobs . . .';
+
+  h_command := SQUEEZE('clear ; kill_user_no_password ' + :h_user_id );
+
+  CALL SYSTEM :h_command; 
+
+  CLEAR SCREEN;
+
+  REDISPLAY;
+
+
+  MESSAGE 'NOTE: The session belonging to ' +:h_nice_name +' '
+        + '(' +:h_user_id +') has been terminated. Please call them '
+        + 'on extension ' + h_extension +' to let them know.'
+  WITH STYLE = POPUP;
+
+  msa_date = 'now';
+
+  CLEAR FIELD ALL;
+
+  msa_date = 'now';
+
+  RESUME FIELD s_user_id;
+
+}
+
+/**************************** KEY ACTIVATIONS ****************************/
+
+'WhosIn', KEY FRSKEY4 =
+{
+  h_command = 'whosin | pg';
+
+  CALL SYSTEM :h_command;
+  msa_date = 'now';
+}
+
+'End', KEY FRSKEY14 =
+{
+  RETURN 0;
+}
+
+'QuickView', KEY FRSKEY20 =
+{
+  CALL APPLICATION (exec = '$IMAGES/quickview_app -numeric_overflow=ignore ');
+}
+

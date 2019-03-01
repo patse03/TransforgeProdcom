@@ -1,0 +1,571 @@
+/*----------------------------------------------------------------------
+ Views Published History by Question
+----------------------------------------------------------------------*/
+
+INITIALIZE ()=
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_found           = CHAR(1) NOT NULL,
+        h_inquiry         = INTEGER1 NOT NULL,
+        h_lag             = INTEGER1 NOT NULL,
+        h_annual_period   = INTEGER4 NOT NULL,
+        h_prev_period     = INTEGER4 NOT NULL,
+        h_earliest_period = INTEGER4 NOT NULL,
+        h_all_rows        = INTEGER4 NOT NULL,
+        h_current_row     = INTEGER4 NOT NULL,
+        h_grossed_value   = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        q_array           = ARRAY OF g_question_type,
+        lp_load_table     = PROCEDURE RETURNING INTEGER
+{
+    SET_FORMS FIELD '' (MODE(tf) = 'READ',
+                       INVISIBLE(industry) = 1);
+
+    h_retries_allowed = 3;
+    h_frpr_name = 'msae_fr_pub_question';
+    msa_date = 'now';
+
+    MESSAGE 'Checking Date of Publication Table . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT create_date
+        FROM   iitables
+        WHERE  table_name = 'published_history';
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing iitables'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'published_history could not be found on iitables'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+}
+
+FIELD question =
+{
+    MESSAGE 'Checking Question . . .';
+
+    /*------------------------------------------------------------------
+      Find question industry
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT question_industry AS industry
+        FROM   question_library
+        WHERE  question = :question;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This Question could not be found'
+        WITH STYLE = POPUP;
+        RESUME FIELD question;
+    ENDIF;
+
+    RESUME FIELD run_period;
+}
+
+FIELD run_period =
+{
+    MESSAGE 'Checking Period . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT period AS run_period,
+               inquiry AS h_inquiry
+        FROM   industry_period
+        WHERE  industry = :industry
+        AND    period = :run_period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing industry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This Question''s Industry does not exist for this Period'
+        WITH STYLE = POPUP;
+        RESUME FIELD run_period;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Find periods
+    ------------------------------------------------------------------*/
+
+    IF :h_inquiry = 14
+    THEN
+        h_annual_period = :run_period / 100 * 100;
+         
+        CALLPROC msa_fp_prev_periods (
+        inquiry      = :h_inquiry,
+        period       = :run_period,
+        prev_period1 = BYREF(:h_prev_period),
+        prev_period2 = BYREF(:h_earliest_period));
+    ELSE
+        h_annual_period = :run_period / 100 * 100;
+
+        CALLPROC msa_fp_prev_periods (
+        inquiry      = :h_inquiry,
+        period       = :run_period,
+        prev_period1 = BYREF(:h_prev_period),
+        prev_period4 = BYREF(:h_earliest_period));
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Load up the questions into the array
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Loading Questions for Industry ' + 
+             VARCHAR(:industry) + ' . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        q_array = 
+
+        SELECT DISTINCT(a.question) AS question
+        FROM   published_history a,
+               question_library b
+        WHERE  a.question_industry = :industry
+        AND    a.run_period = :run_period
+        AND    b.period = :h_annual_period
+        AND    a.question = b.question;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No Questions were found for this Industry'
+        WITH STYLE = POPUP;
+        RESUME FIELD run_period;
+    ENDIF;
+
+    h_all_rows = CALLPROC arrayallrows(q_array);
+
+    /*------------------------------------------------------------------
+      Load up the first question
+    ------------------------------------------------------------------*/
+
+    h_current_row = 1;
+    h_found = 'n';
+
+    WHILE :h_current_row < :h_all_rows
+    DO
+        IF :question = :q_array[:h_current_row].question
+        THEN
+            h_found = 'y';
+            ENDLOOP;
+        ENDIF;
+        h_current_row = :h_current_row + 1;
+
+    ENDWHILE;
+
+    IF :h_found = 'n'
+    THEN
+        MESSAGE 'This Question could not be found in the' +
+                ' published_history / question link'
+        WITH STYLE = POPUP;
+        RESUME FIELD question;
+    ENDIF;
+
+    question = :q_array[:h_current_row].question;
+    question_message = 'Question ' + ASCII(:h_current_row) +
+                       ' of ' + CONCAT(' ',ASCII(:h_all_rows));
+
+    ret_val = CALLPROC lp_load_table();
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    SET_FORMS FIELD '' (INVISIBLE(industry) = 0);
+    RESUME FIELD question;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'PreviousQuestion' =
+{
+    IF :h_current_row = 1
+    THEN
+        MESSAGE 'There are no more questions'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_current_row = :h_current_row - 1;
+    question = :q_array[:h_current_row].question;
+    question_message = 'Question ' + ASCII(:h_current_row) +
+                       ' of ' + CONCAT(' ',ASCII(:h_all_rows));
+
+    ret_val = CALLPROC lp_load_table();
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'NextQuestion' =
+{
+    IF :h_current_row = :h_all_rows
+    THEN
+        MESSAGE 'There are no more questions'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_current_row = :h_current_row + 1;
+    question = :q_array[:h_current_row].question;
+    question_message = 'Question ' + ASCII(:h_current_row) +
+                       ' of ' + CONCAT(' ',ASCII(:h_all_rows));
+
+    ret_val = CALLPROC lp_load_table();
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                   L O C A L   P R O C E D U R E S
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_table () =
+{
+    MESSAGE 'Loading Question ' + ASCII(:question) + ' . . .';
+
+    /*------------------------------------------------------------------
+      Check Lag
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT lag AS h_lag
+        FROM   question_library
+        WHERE  question = :question
+        AND    period = :h_annual_period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This Question could not be found'
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+    IF h_lag = 0 
+    THEN 
+        q_type = '(Original)';
+
+    ELSEIF h_lag = 1 
+    THEN  
+        q_type = '(Owner/Multi)';
+
+    ELSEIF h_lag = 2 
+    THEN  
+        q_type = '(Member/UK only)';
+
+    ELSEIF h_lag = 3 
+    THEN  
+        q_type = '(Dummy/Multi/UK only)'; 
+
+    ELSEIF h_lag = 4 
+    THEN  
+        q_type = '(Constituent)';
+
+    ELSEIF h_lag = 5 
+    THEN  
+        q_type = '(Original - no trade)';
+
+    ELSEIF h_lag = 6 
+    THEN  
+        q_type = '(CSDB Question)';
+
+    ELSE
+        q_type = '(Unknown)';
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Load table
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT   data_for_period,
+                 enterprise_count,
+                 total_value,
+                 gross_factor,
+                 grossed_value,
+                 0 AS prev_grossed_value,
+                 grossed_disc_indicator,
+                 rollup,
+                 disc_flag
+        FROM     published_history
+        WHERE    question = :question
+        AND      run_period = :run_period
+        AND      data_for_period >= :h_earliest_period
+        ORDER BY data_for_period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing published_history'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No data found on published_history'
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Update with previous run_period's grossed value
+    ------------------------------------------------------------------*/
+
+    UNLOADTABLE tf 
+    {
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            SELECT grossed_value AS h_grossed_value
+            FROM   published_history
+            WHERE  question = :question
+            AND    run_period = :h_prev_period
+            AND    data_for_period = :tf.data_for_period;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+    
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+    
+        ENDWHILE;
+    
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+    
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing published_history'
+            WITH STYLE = POPUP;
+            RETURN 9;
+    
+        ELSEIF ret_val = 1
+        THEN
+            tf.prev_grossed_value = 0;
+
+        ELSE
+            tf.prev_grossed_value = :h_grossed_value;
+
+        ENDIF;
+
+    };
+
+    RETURN 0;
+}

@@ -1,0 +1,295 @@
+PROCEDURE msada_fp_calc_barcode (
+
+        h_industry            = INTEGER4 NOT NULL) =
+
+DECLARE ret_val               = INTEGER4 NOT NULL,
+        contributor_reference = CHAR(11) NOT NULL,
+        contributor_industry  = INTEGER4 NOT NULL,
+        h_frpr_name           = VARCHAR(25) NOT NULL,
+        h_table               = VARCHAR(25) NOT NULL,
+        f_barcode             = INTEGER4 NOT NULL,
+        faxbar1               = CHAR(100) NOT NULL,
+        faxbar2               = CHAR(100) NOT NULL,
+        faxbar3               = CHAR(100) NOT NULL,
+        faxbar4               = CHAR(100) NOT NULL,
+        faxbar5               = CHAR(100) NOT NULL,
+        in_string             = CHAR(30) NOT NULL,
+        out_string            = CHAR(100) NOT NULL
+
+{
+    h_frpr_name = 'msada_fp_calc_barcodes';
+    h_table = 'temp_barcodes';
+
+    IF g_output_category <> 'NI' AND g_output_category <> 'SM'
+    THEN
+        g_barcode_table = 'barcodes_' + VARCHAR(:g_period) +
+                        '_' + VARCHAR(:h_industry) +
+                        '_' + LOWERCASE(:g_output_category);
+    ELSE
+        g_barcode_table = 'barcodes_' + VARCHAR(:g_period) +
+                        '_' + LOWERCASE(:g_output_category);
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :g_barcode_table);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :g_barcode_table (
+    contributor_reference  CHAR(11) NOT NULL,
+    barcode                CHAR(90) NOT NULL,  
+    fax_barcode1           CHAR(90) NOT NULL,  
+    fax_barcode2           CHAR(90) NOT NULL, 
+    fax_barcode3           CHAR(90) NOT NULL, 
+    fax_barcode4           CHAR(90) NOT NULL, 
+    fax_barcode5           CHAR(90) NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :g_barcode_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    The contributors are selected using a select loop
+    to calculate the front page barcode numbers
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table (h_table = :h_table);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    IF g_output_category <> 'NI' AND g_output_category <> 'SM'
+    THEN
+        CREATE TABLE :h_table
+        AS SELECT    contributor_reference
+        FROM         contributor_period
+        WHERE        output_category = :g_output_category
+        AND          period = :g_period
+        AND          contributor_industry = :h_industry;
+    ELSEIF g_output_category = 'NI'
+    THEN
+        CREATE TABLE :h_table
+        AS SELECT    contributor_reference
+        FROM         contributor_period
+        WHERE        output_category IN ('F','G','J','M','N','P','H','K','V')
+        AND          period = :g_period;
+    ELSEIF g_output_category = 'SM'
+    THEN
+        CREATE TABLE :h_table
+        AS SELECT    contributor_reference
+        FROM         contributor_period
+        WHERE        output_category IN ('H','K','V')
+        AND          period = :g_period;
+    ENDIF;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    SELECT contributor_reference
+    FROM   :h_table
+    {
+        IF :g_inquiry = 14
+        THEN
+            in_string = '014' +
+                        VARCHAR(:contributor_reference) +
+                        VARCHAR(:g_period + 12);
+        ELSE
+            in_string = '015' +
+                        VARCHAR(:contributor_reference) +
+                        VARCHAR(:g_period);
+        ENDIF;
+
+        ret_val = CALLPROC msada_cp_calc_barcode(
+                  in_string,
+                  BYREF(out_string));
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error in C program creating barcode for ' +
+                        VARCHAR(:contributor_reference),
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+        /*-s------------------------------------------------------------
+        This section inserts the front page barcode into the table
+        ------------------------------------------------------------e-*/
+
+        INSERT INTO :g_barcode_table
+        VALUES (    :contributor_reference,
+                    :out_string,
+		    '',
+		    '',
+		    '',
+		    '',
+		    '');
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error inserting into ' + :g_barcode_table,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+
+    /*-s----------------------------------------------------------------
+    calculate fax barcode
+    ----------------------------------------------------------------e-*/
+
+    f_barcode = 1;
+
+    WHILE f_barcode < 6
+    DO 
+
+    MESSAGE 'Calculating Fax Barcode . . .';
+
+    IF :g_inquiry = 14
+    THEN
+        in_string = '014' +
+                    VARCHAR(:contributor_reference) +
+		    '0' +
+		    VARCHAR(f_barcode * 10000 + MOD(:g_period,10000)) ;
+    ELSE
+        in_string = '015' +
+                    VARCHAR(:contributor_reference) +
+		    '0' +
+		    VARCHAR(f_barcode * 10000 + MOD(:g_period,10000)) ;
+    ENDIF;
+
+        ret_val = CALLPROC msada_cp_calc_barcode (
+                           in_string,
+                           BYREF(out_string));
+    
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+	                'Error calculating fax barcode for ' + :contributor_reference,
+			:h_frpr_name,
+			:ret_val,
+			:g_user_id);
+	    COMMIT;
+	    RETURN ret_val;
+        ENDIF;
+
+        IF f_barcode = 1
+        THEN
+            faxbar1 = out_string;
+        ELSEIF f_barcode = 2
+        THEN
+            faxbar2 = out_string;
+        ELSEIF f_barcode = 3
+        THEN
+            faxbar3 = out_string;
+        ELSEIF f_barcode = 4
+        THEN
+            faxbar4 = out_string;
+        ELSEIF f_barcode = 5
+        THEN
+            faxbar5 = out_string;
+        ENDIF;
+
+        f_barcode = f_barcode + 1;
+
+    ENDWHILE;
+
+    UPDATE :g_barcode_table
+    SET    fax_barcode1 = :faxbar1,
+           fax_barcode2 = :faxbar2,
+           fax_barcode3 = :faxbar3,
+           fax_barcode4 = :faxbar4,
+           fax_barcode5 = :faxbar5
+    where  contributor_reference  = :contributor_reference;
+
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error in updating barcode on ' + :g_barcode_table,
+	   	    :h_frpr_name,
+		    :ret_val,
+		    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+
+    ENDIF;
+
+    };
+
+    MODIFY TABLE :g_barcode_table TO BTREE
+    UNIQUE ON    contributor_reference;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error modifying ' + :g_barcode_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    RETURN 0;
+}

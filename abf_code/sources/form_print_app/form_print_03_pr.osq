@@ -1,0 +1,1231 @@
+/****************************************************************************** 
+
+  New print form process designed to be run using the ProdCom Production 
+  Control program.
+  
+  Two mandatory parameters (usually passed from PPC program):
+    *  g_annual_period: yyyy00 
+    *  g_form_type    : F/R       [Form or Reminder]
+
+  Two optional parameters (Used in manual mode):
+    *  g_setup: Y/N   [Run the setup components?]  
+    *  g_final: Y/N   [Run the spc file output procedure?]  
+
+  e.g. Normal run called by PPC: 
+       $IMAGES/form_print_app -dprodlivedb -a 201200 F
+  or   Manual run following failure of reminders, where setup worked OK:
+       $IMAGES/form_print_app -dprodlivedb -a 201200 R N N
+
+  THIS IS STAGE THREE OF FOUR STAGES:
+   1) Setup routines
+   2) Contributor information for front page.
+   3) Question information for other pages.
+   4) SPC file creation.
+
+  DF 2012
+
+  May 2014 - DF - Yearly table prefixed y_ to coordinate with archiving
+                  work. Teh tables will not be needed when archiving is 
+                  implemented, but creating them as y tables will provide
+                  them as backups for 2014 data period. After the 2014 data
+                  period, the code relating to them can be deleted safely.
+
+*****************************************************************************/
+
+PROCEDURE form_print_03_pr () =
+
+DECLARE h_return                = INTEGER4     NOT NULL WITH DEFAULT,
+        h_return2               = INTEGER4     NOT NULL WITH DEFAULT,
+        h_param_list            = VARCHAR(200) NOT NULL WITH DEFAULT,
+        industry_cycle_point    = CHAR(1)      NOT NULL WITH DEFAULT,
+        h_varchar_variable      = VARCHAR(200) NOT NULL WITH DEFAULT,
+        h_integer_variable      = INTEGER2     NOT NULL WITH DEFAULT,
+        h_period                = INTEGER4     NOT NULL WITH DEFAULT,
+        h_question              = INTEGER4     NOT NULL WITH DEFAULT,
+        h_val_qst               = INTEGER4     NOT NULL WITH DEFAULT,
+        h_total                 = INTEGER4     NOT NULL WITH DEFAULT,
+        h_count                 = INTEGER4     NOT NULL WITH DEFAULT,
+        h_param1                = VARCHAR(10)  NOT NULL WITH DEFAULT,
+        h_param2                = VARCHAR(10)  NOT NULL WITH DEFAULT,
+        h_param3                = VARCHAR(10)  NOT NULL WITH DEFAULT,
+        h_param4                = VARCHAR(10)  NOT NULL WITH DEFAULT,
+        h_param5                = VARCHAR(10)  NOT NULL WITH DEFAULT,
+        h_text                  = VARCHAR(70)  NOT NULL WITH DEFAULT,
+        h_frpr_name             = VARCHAR(25)  NOT NULL WITH DEFAULT,
+        h_temp_table            = VARCHAR(36)  NOT NULL WITH DEFAULT,
+        h_year_table            = VARCHAR(36)  NOT NULL WITH DEFAULT,
+        h_main_table            = VARCHAR(36)  NOT NULL WITH DEFAULT,
+        h_table_1               = VARCHAR(36)  NOT NULL WITH DEFAULT,
+        h_table_2               = VARCHAR(36)  NOT NULL WITH DEFAULT,
+        h_index                 = VARCHAR(36)  NOT NULL WITH DEFAULT,
+        h_contributor_reference = CHAR(11)     NOT NULL WITH DEFAULT,
+        h_checkletter           = CHAR(1)      NOT NULL WITH DEFAULT,
+        h_text2                 = VARCHAR(60)  NOT NULL,
+        h_text3                 = VARCHAR(60)  NOT NULL,
+        h_text4                 = VARCHAR(60)  NOT NULL,
+        h_text5                 = VARCHAR(60)  NOT NULL,
+        h_text6                 = VARCHAR(60)  NOT NULL,
+        h_text7                 = VARCHAR(60)  NOT NULL,
+        h_text8                 = VARCHAR(60)  NOT NULL,
+        h_text9                 = VARCHAR(60)  NOT NULL,
+        h_text10                = VARCHAR(60)  NOT NULL,
+        h_cncode1               = VARCHAR(60)  NOT NULL,
+        h_cncode2               = VARCHAR(60)  NOT NULL,
+        h_cncode3               = VARCHAR(60)  NOT NULL,
+        h_cncode4               = VARCHAR(60)  NOT NULL,
+        h_cncode5               = VARCHAR(60)  NOT NULL,
+        h_cncode6               = VARCHAR(60)  NOT NULL,
+        h_cncode7               = VARCHAR(60)  NOT NULL,
+        h_cncode8               = VARCHAR(60)  NOT NULL,
+        h_cncode9               = VARCHAR(60)  NOT NULL,
+        h_tid                   = INTEGER4     NOT NULL,
+        h_lines                 = INTEGER4     NOT NULL,
+
+        lp_error_check       = PROCEDURE RETURNING INTEGER NOT NULL,
+        lp_drop_table        = PROCEDURE RETURNING INTEGER NOT NULL,
+
+{
+
+  h_frpr_name  = 'form_print_03_pr';
+  h_year_table = 'y_' + LOWER(:g_form_type) 
+               + 'pr_question_data_'+varchar(:g_period);
+  h_main_table = LOWER(:g_form_type) +'pr_form_q_data';
+  h_temp_table = 'tt_form_print_03';
+  h_table_1    = 'tt_form_print_03a';
+  h_table_2    = 'tt_form_print_03b';
+
+  /*------------------------------------------------------------------
+      Log start of process.
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'STARTING: Process 3 starting.');
+
+  /*----------------------------------------------------------------------
+      Prepare working table. 
+  ----------------------------------------------------------------------*/
+
+  MESSAGE '[14/45] Creating Second Working Table...';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 14 of 45.');
+
+  h_return = lp_drop_table (p_table_name = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+  IF g_form_type = 'F'
+  THEN 
+
+    CREATE TABLE :h_temp_table
+    AS 
+    SELECT 
+      'Q' AS  col_type,
+      a.contributor_reference,
+      a.contributor_industry,
+      INT4(b.quest_order) AS q_n_l_code,
+      b.question AS q_n_order,
+      0 AS q_desc_code,
+      0 AS q_count,
+      0 AS q_line,
+      0 AS need_count,
+      '                                                             ' AS text1,
+      '                                                             ' AS text2,
+      '                                                             ' AS text3,
+      '                                                             ' AS text4,
+      '                                                             ' AS text5,
+      '                                                             ' AS text6,
+      '                                                             ' AS text7,
+      '                                                             ' AS text8,
+      '                                                             ' AS text9,
+      '                                                             ' AS text10,
+      c.unit_1 AS unit1,
+      '                                                      ' AS cn_code1,
+      '                                                      ' AS cn_code2,
+      '                                                      ' AS cn_code3,
+      '                                                      ' AS cn_code4,
+      '                                                      ' AS cn_code5,
+      '                                                      ' AS cn_code6,
+      '                                                      ' AS cn_code7,
+      '                                                      ' AS cn_code8,
+      '                                                      ' AS cn_code9
+    FROM   contributor_period a,
+           cqpv b,
+           question_library c
+    WHERE  a.period = :g_period
+      AND  b.period = a.period
+      AND  c.period = a.period
+      AND  b.contributor_reference = a.contributor_reference
+      AND  b.question = c.question
+      AND  b.quest_order NOT IN (8,9);
+
+  ELSEIF g_form_type = 'R'
+  THEN 
+
+    CREATE TABLE :h_temp_table
+    AS 
+    SELECT 
+      'Q' AS  col_type,
+      a.contributor_reference,
+      a.contributor_industry,
+      INT4(b.quest_order) AS q_n_l_code,
+      b.question AS q_n_order,
+      0 AS q_desc_code,
+      0 AS q_count,
+      0 AS q_line,
+      0 AS need_count,
+      '                                                             ' AS text1,
+      '                                                             ' AS text2,
+      '                                                             ' AS text3,
+      '                                                             ' AS text4,
+      '                                                             ' AS text5,
+      '                                                             ' AS text6,
+      '                                                             ' AS text7,
+      '                                                             ' AS text8,
+      '                                                             ' AS text9,
+      '                                                             ' AS text10,
+      c.unit_1 AS unit1,
+      '                                                      ' AS cn_code1,
+      '                                                      ' AS cn_code2,
+      '                                                      ' AS cn_code3,
+      '                                                      ' AS cn_code4,
+      '                                                      ' AS cn_code5,
+      '                                                      ' AS cn_code6,
+      '                                                      ' AS cn_code7,
+      '                                                      ' AS cn_code8,
+      '                                                      ' AS cn_code9
+    FROM   contributor_period a,
+           cqpv b,
+           question_library c,
+           rpr_form_c_data d
+    WHERE  a.period = :g_period
+      AND  b.period = a.period
+      AND  c.period = a.period
+      AND  d.period = a.period
+      AND  b.contributor_reference = a.contributor_reference
+      AND  d.contributor_reference = a.contributor_reference
+      AND  c.question = b.question
+      AND  b.quest_order NOT IN (8,9);
+
+  ENDIF;
+         
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create working table ' +:h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+      Update with the question text in 60-character chunks
+  ----------------------------------------------------------------------*/
+
+  MESSAGE '[15/45] Updating question text. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 15 of 45.');
+
+    UPDATE :h_temp_table a
+    FROM   fpr_question_texts b
+    SET    q_count = b.line_count,
+           text1 = b.text1,
+           text2 = b.text2,
+           text3 = b.text3,
+           text4 = b.text4,
+           text5 = b.text5,
+           text6 = b.text6,
+           text7 = b.text7,
+           text8 = b.text8,
+           text9 = b.text9,
+           text10 = b.text10
+    WHERE  a.q_n_order = b.question
+      AND  b.period = :g_period;
+ 
+   
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update ' +:h_temp_table +' with question texts.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+    Insert note details.
+  ----------------------------------------------------------------------*/
+
+  MESSAGE '[16/45] Inserting question notes. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 16 of 45.');
+
+  INSERT INTO :h_temp_table 
+            ( q_n_l_code,
+              col_type,
+              contributor_reference,
+              contributor_industry,
+              q_n_order,
+              q_desc_code,
+              q_count,
+              q_line,
+              need_count,
+              text1,
+              text2,
+              text3,
+              text4,
+              text5,
+              text6,
+              text7,
+              text8,
+              text9,
+              text10,
+              unit1,
+              cn_code1,
+              cn_code2,
+              cn_code3,
+              cn_code4,
+              cn_code5,
+              cn_code6,
+              cn_code7,
+              cn_code8,
+              cn_code9)
+  SELECT DISTINCT b.note_code,
+                  'N',
+                  a.contributor_reference,
+                  a.contributor_industry,
+                  c.line_no,
+                  0,
+                  c.line_count,
+                  0,
+                  0,
+                  c.text1,
+                  c.text2,
+                  c.text3,
+                  c.text4,
+                  c.text5,
+                  c.text6,
+                  c.text7,
+                  c.text8,
+                  c.text9,
+                  c.text10,
+                  '',
+                  '',
+                  '',
+                  '',
+                  '',
+                  '',
+                  '',
+                  '',
+                  '',
+                  ''
+  FROM  contributor_period a,
+        question_note_link b,
+        fpr_form_notes c,
+        cqpv d
+  WHERE a.period = :g_period
+    AND b.period = a.period
+    AND c.period = a.period
+    AND d.period = a.period
+    AND a.contributor_reference = d.contributor_reference
+    AND d.question = b.question
+    AND b.note_code = c.note_code;
+ 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to insert notes into ' + :h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+      MODIFY working table to BTREE UNIQUE structure.
+  ----------------------------------------------------------------------*/
+
+  MESSAGE '[17/45] Modifying second working table. . .';
+  SLEEP 1;
+ 
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 17 of 45.');
+
+  MODIFY :h_temp_table TO BTREE UNIQUE
+  ON     q_n_order,
+         q_n_l_code,
+         col_type,
+         contributor_reference;
+  
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify working table ' +:h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+      Prepare yearly data record before all the extra rows are added
+      for printing purposes.
+  ----------------------------------------------------------------------*/
+
+  MESSAGE '[18/45] Creating Yearly Data Record Table...';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 18 of 45.');
+
+  h_return = lp_drop_table (p_table_name = :h_year_table);
+
+  IF h_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_year_table
+  AS
+  SELECT *
+  FROM   :h_temp_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create ' + :h_year_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+      MODIFY yearly form data table to BTREE UNIQUE structure.
+  ----------------------------------------------------------------------*/
+
+  MESSAGE '[19/45] Modifying yearly data record table. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 19 of 45.');
+
+  MODIFY :h_year_table TO BTREE UNIQUE
+  ON contributor_industry, 
+     contributor_reference,
+     q_n_l_code,
+     q_n_order;
+  
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify yearly table ' +:h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+     Create Val and Vol reference tables as using MOD's in selects
+     hammers performance.
+  ----------------------------------------------------------------------*/
+
+  MESSAGE '[20/45] Creating value question reference table. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 20 of 45.');
+
+  h_return = lp_drop_table (p_table_name = :h_table_1);
+
+  IF h_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table_1
+  AS
+  SELECT DISTINCT q_n_order
+  FROM   :h_temp_table
+  WHERE  MOD(q_n_order,10) = 1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create table ' +:h_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :h_table_1 TO HASH
+  ON      q_n_order;
+        
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify table ' +:h_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  MESSAGE '[21/45] Creating volume question reference table. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 21 of 45.');
+
+  h_return = lp_drop_table (p_table_name = :h_table_2);
+
+  IF h_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table_2
+  AS
+  SELECT DISTINCT q_n_order,
+                  q_n_l_code
+  FROM   :h_temp_table
+  WHERE  MOD(q_n_order,10) IN (2,4,5,6);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create table ' +:h_table_2 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :h_table_2 TO HASH
+  ON      q_n_order, q_n_l_code;
+        
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify table ' +:h_table_2 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+      Updating CN codes.
+  ----------------------------------------------------------------------*/
+
+  MESSAGE '[22/45] Updating with CN codes. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 22 of 45.');
+
+  UPDATE :h_temp_table a
+  FROM   prodcom_cncodes b
+  SET    cn_code1 = IFNULL(b.cn_code1,''),
+         cn_code2 = IFNULL(b.cn_code2,''),
+         cn_code3 = IFNULL(b.cn_code3,''),
+         cn_code4 = IFNULL(b.cn_code4,''),
+         cn_code5 = IFNULL(b.cn_code6,''),
+         cn_code7 = IFNULL(b.cn_code7,''),
+         cn_code8 = IFNULL(b.cn_code8,''),
+         cn_code9 = IFNULL(b.cn_code9,'')
+  WHERE  a.q_n_order = b.prodcom_code
+    AND  b.period = :g_period;
+  
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update CN codes on ' +:h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+      Finalising the rows needed to print each question.
+  ----------------------------------------------------------------------*/
+
+  MESSAGE '[23/45] Updating question lines required. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 23 of 45.');
+
+  h_count = 0;
+  h_total = 0;
+
+  SELECT COUNT(a.q_n_order) AS h_total
+  FROM   :h_temp_table a,
+         :h_table_1 b
+  WHERE  a.q_n_order = b.q_n_order 
+  AND    a.q_n_l_code = 1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to count for first total on ' + :h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  SELECT a.text2 AS h_text2,
+         a.text3 AS h_text3,
+         a.text4 AS h_text4,
+         a.text5 AS h_text5,
+         a.text6 AS h_text6,
+         a.text7 AS h_text7,
+         a.text8 AS h_text8,
+         a.text9 AS h_text9,
+         a.text10 AS h_text10,
+         a.cn_code1 AS h_cncode1,
+         a.cn_code2 AS h_cncode2,
+         a.cn_code3 AS h_cncode3,
+         a.cn_code4 AS h_cncode4,
+         a.cn_code5 AS h_cncode5,
+         a.cn_code6 AS h_cncode6,
+         a.cn_code7 AS h_cncode7,
+         a.cn_code8 AS h_cncode8,
+         a.cn_code9 AS h_cncode9,
+         a.tid AS h_tid
+  FROM   :h_temp_table a,
+         :h_table_1 b
+  WHERE  a.q_n_order = b.q_n_order
+  AND    a.q_n_l_code = 1
+  BEGIN  
+
+    h_count = :h_count +1;
+
+    IF MOD(h_count,1000) = 0
+    THEN
+      MESSAGE '[23/45] Updating question lines required (' 
+            + VARCHAR(:h_count)
+            + '/' +VARCHAR(:h_total) +'). . .';
+    ENDIF;
+ 
+    /*----------------------------------------------------------------------
+       Initial Count of 6 =
+       1 for the blank line before the first line of text, plus
+       1 for the first line of text (there's always at least one line
+       of text), plus
+       1 for the blank line after the question text, plus
+       3 for the 'Value of Sales' and the 2 blank lines following it.
+    ----------------------------------------------------------------------*/
+
+    h_lines = 6;
+
+    IF h_text2  != '' THEN h_lines = h_lines + 1; ENDIF;
+    IF h_text3  != '' THEN h_lines = h_lines + 1; ENDIF;
+    IF h_text4  != '' THEN h_lines = h_lines + 1; ENDIF;
+    IF h_text5  != '' THEN h_lines = h_lines + 1; ENDIF;
+    IF h_text6  != '' THEN h_lines = h_lines + 1; ENDIF;
+    IF h_text7  != '' THEN h_lines = h_lines + 1; ENDIF;
+    IF h_text8  != '' THEN h_lines = h_lines + 1; ENDIF;
+    IF h_text9  != '' THEN h_lines = h_lines + 1; ENDIF;
+    IF h_text10 != '' THEN h_lines = h_lines + 1; ENDIF;
+
+    /*------------------------------------------------------------------------
+      If there's CN Text, include an extra one for the blank line after it.
+    ------------------------------------------------------------------------*/
+
+    IF h_cncode1 != '' THEN h_lines = h_lines + 2; ENDIF;
+    IF h_cncode2 != '' THEN h_lines = h_lines + 1; ENDIF;
+    IF h_cncode3 != '' THEN h_lines = h_lines + 1; ENDIF;
+    IF h_cncode4 != '' THEN h_lines = h_lines + 1; ENDIF;
+    IF h_cncode5 != '' THEN h_lines = h_lines + 1; ENDIF;
+    IF h_cncode6 != '' THEN h_lines = h_lines + 1; ENDIF;
+    IF h_cncode7 != '' THEN h_lines = h_lines + 1; ENDIF;
+    IF h_cncode8 != '' THEN h_lines = h_lines + 1; ENDIF;
+    IF h_cncode9 != '' THEN h_lines = h_lines + 1; ENDIF;
+
+    UPDATE :h_temp_table
+    SET    need_count = :h_lines
+    WHERE  tid = :h_tid;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to update rows needed on ' +:h_temp_table +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select for row need loop from ' 
+           + :h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Update the 01 question with +3 to the need_count for all
+     subsequent volumes
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[24/45] Updating volume question lines required. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 24 of 45.');
+
+  h_count = 0;
+  h_total = 0;
+
+  SELECT COUNT(a.q_n_order) AS h_total
+  FROM   :h_temp_table a,
+         :h_table_2 b
+  WHERE  a.q_n_order = b.q_n_order;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to count for secondt total on ' +:h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  SELECT a.q_n_order AS h_question,
+         a.contributor_reference AS h_contributor_reference
+  FROM   :h_temp_table a,
+         :h_table_2 b
+  WHERE  a.q_n_order = b.q_n_order
+  BEGIN
+
+    h_count = h_count +1;
+
+    IF MOD(h_count,1000) = 0
+    THEN
+      MESSAGE '[24/45] Updating volume question lines required (' 
+            + VARCHAR(:h_count)
+            + '/' +VARCHAR(:h_total) +'). . .';
+    ENDIF;
+ 
+    h_val_qst = :h_question / 10 * 10 + 1;
+
+    UPDATE :h_temp_table
+    SET    need_count = need_count + 3
+    WHERE  q_n_order = :h_val_qst
+      AND  contributor_reference = :h_contributor_reference;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Failed to update volume rows needed on ' 
+             + :h_temp_table +'.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select for second row need loop from ' 
+           + :h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+
+  /*------------------------------------------------------------------
+   Update q_line for 'Q' col_type rows - this field is used by the SPC
+   program to determine when and how to draw the lines on the form:
+
+   0 = Don't draw a line,
+   2 = Draw a line across the page
+
+   (A line is drawn after the highest eleven digit question within 
+    each 10 digit question base.a)
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[25/45] Setting deviding line markers. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 25 of 45.');
+
+  h_return = lp_drop_table (p_table_name = :h_table_1);
+
+  IF h_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table_1
+  AS SELECT    contributor_reference,
+               q_n_order/10 AS base,
+               q_n_order AS question
+  FROM         :h_temp_table
+  WHERE        col_type = 'Q'
+  AND          q_n_l_code = 1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create ' + :h_table_1 +' for q_line markers.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  h_return = lp_drop_table (p_table_name = :h_table_2);
+
+  IF h_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table_2
+  AS SELECT    contributor_reference,
+               base,
+               MAX(question) AS question
+  FROM         :h_table_1
+  GROUP BY     contributor_reference,
+               base;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create ' + :h_table_2 +' for q_line markers.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  UPDATE :h_temp_table a
+  FROM   :h_table_2 b
+  SET    q_line = 2
+  WHERE  a.col_type = 'Q'
+  AND    a.contributor_reference = b.contributor_reference
+  AND    a.q_n_order = b.question
+  AND    a.q_n_l_code = 1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update ' +:h_temp_table +' with q_line markers.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Remove existing data for current period from main question
+      data table.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[26/45] Removing any existing data from main table and heaping. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 26 of 45.');
+
+  DELETE FROM :h_main_table
+  WHERE  period = :g_period;
+ 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to delete current period data from ' 
+           + :h_main_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :h_main_table TO HEAP;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to modify ' + :h_main_table +' to HEAP.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Insert working table data into main table.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[27/45] Inserting question data into main table. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 27 of 45.');
+
+  INSERT INTO :h_main_table
+  SELECT :g_period,
+         a.col_type,
+         a.contributor_reference,
+         CHAR(a.contributor_industry),
+         a.q_n_l_code,
+         CHAR(a.q_n_order),
+         a.q_desc_code,
+         a.q_count,
+         a.q_line,
+         a.need_count,
+         a.text1,
+         a.text2,
+         a.text3,
+         a.text4,
+         a.text5,
+         a.text6,
+         a.text7,
+         a.text8,
+         a.text9,
+         a.text10,
+         a.unit1,
+         a.cn_code1,
+         a.cn_code2,
+         a.cn_code3,
+         a.cn_code4,
+         a.cn_code5,
+         a.cn_code6,
+         a.cn_code7,
+         a.cn_code8,
+         a.cn_code9,
+         b.phone_contact,
+         b.phone_area_code,
+         b.phone,
+         b.phone_extension,
+         b.fax_area_code,
+         b.fax,
+         b.email
+  FROM   :h_temp_table a,
+         contributor b
+  WHERE  a.contributor_reference = b.contributor_reference;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to insert current period data into ' 
+           + :h_main_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Remodify main table.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[28/45] Inserting question data into main table. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 28 of 45.');
+
+  MODIFY :h_main_table to BTREE UNIQUE 
+  ON      period, contributor_reference, q_n_order, q_n_l_code;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to remodify ' + :h_main_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+   Padding industry numbers
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[29/45] Padding contributor industries on main table. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 29 of 45.');
+
+  UPDATE :h_main_table
+  SET    contributor_industry = '0' + contributor_industry
+  WHERE  period = :g_period
+    AND  length(contributor_industry) = 4;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to pad industry numbers on ' + :h_main_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+   Padding question numbers.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[30/45] Padding question numbers on main table. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 30 of 45.');
+
+  UPDATE :h_main_table
+  SET    q_n_order = '0' + q_n_order
+  WHERE  period = :g_period
+    AND  length(q_n_order) = 8;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to pad industry numbers on ' + :h_main_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+     Tidy up.
+  ----------------------------------------------------------------------*/
+
+  MESSAGE '[31/45] Tidying up. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 31 of 45.');
+
+  h_return = lp_drop_table (p_table_name = :h_table_1);
+
+  IF h_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+  h_return = lp_drop_table (p_table_name = :h_table_2);
+
+  IF h_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+
+  /*------------------------------------------------------------------
+      Log end of process.
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'COMPLETE: Process 3 completed.');
+
+  RETURN 0;
+    
+}
+
+/*************************** LOCAL PROCEDURES *****************************/
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL WITH DEFAULT) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(36) NOT NULL WITH DEFAULT
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  h_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF h_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+
+

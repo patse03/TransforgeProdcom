@@ -1,0 +1,288 @@
+/*-s--------------------------------------------------------------------
+Sets up major tables used for the Forms Printing:
+
+   data_analysts
+   prodcom_cn_codes
+   form_note_text
+   form_quest_text
+
+Deletes from first_table and form_table to clear out for the new period
+
+Called separately:
+
+  $IMAGES/form_print_app -dprodlivedb msada_fp_setup -a 15
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msada_fp_setup () =
+
+DECLARE ret_val              = INTEGER4 NOT NULL,
+        h_param_list         = VARCHAR(20) NOT NULL,
+        h_varchar_variable   = VARCHAR(20) NOT NULL,
+        h_integer_variable   = INTEGER2 NOT NULL,
+        h_param1             = VARCHAR(10) NOT NULL,
+        h_frpr_name          = VARCHAR(25) NOT NULL
+{
+
+    h_frpr_name = 'msada_fp_setup';
+
+    h_param_list = CALLPROC COMMANDLINEPARAMETERS();
+
+    h_varchar_variable = SQUEEZE (h_param_list);
+
+    h_integer_variable = LOCATE (h_varchar_variable, ' ');
+    h_param1           = LEFT   (h_varchar_variable,h_integer_variable - 1);
+    IF h_param1 <> '14' AND h_param1 <> '15'
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid Inquiry = ' + :h_param1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    g_inquiry = INT1(:h_param1);
+
+    /*-s------------------------------------------------------------
+    Select the current period for the inquiry
+    ------------------------------------------------------------e-*/
+
+    SELECT span_end AS g_period
+    FROM   inquiry
+    WHERE  inquiry = :g_inquiry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error selecting span_end on inquiry',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s------------------------------------------------------------
+     Convert period to use when selecting from question_library
+     in called procedure
+    ------------------------------------------------------------e-*/
+
+    IF :g_inquiry = 14
+    THEN
+        g_annual_period = :g_period;
+    ELSE
+        g_annual_period = :g_period / 100 * 100;
+    ENDIF;
+
+   /*-s-----------------------------------------------------------------
+    g_print_table holds the names of the print files ready for the
+    printing at a later stage (temp_form_prints_14 or 15)
+   -----------------------------------------------------------------e-*/
+
+    g_print_table = 'form_prints_' + VARCHAR(:g_inquiry);
+
+    ret_val = CALLPROC batch_fp_drop_table (
+              h_table = :g_print_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :g_print_table (
+        output_category CHAR(2) NOT NULL,
+        print_name      CHAR(40) NOT NULL,
+        print_no        INTEGER2 NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :g_print_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Create table to hold the data analysts
+    ------------------------------------------------------------------*/
+
+    g_analysts_table = 'forms_data_analysts';
+
+    MESSAGE 'Creating Data Analysts . . .';
+
+    ret_val = CALLPROC batch_fp_drop_table (
+              h_table = :g_analysts_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_get_analysts (
+              h_contributor_industry = 'ALL',
+              h_table                = :g_analysts_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Create a new cncode table
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msada_fp_create_cncodes ();
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create a notes table in the required format
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC msada_fp_create_notes ();
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Convert question library text to chunks of 63 characters
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC msada_fp_create_questions ();
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update contributor_luaddress to set unproven units selected
+    from the IDBR to start with a dummy digit of '8' on instead of 'X'
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Updating LU Address . . .';
+
+    UPDATE contributor_luaddress
+    SET    lu_reference = CONCAT('8',RIGHT(lu_reference,7))
+    WHERE  lu_reference LIKE 'X%'
+    OR     lu_reference LIKE 'x%';
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating contributor_luaddress',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update industry_cycle_point once "setup" has run
+    ----------------------------------------------------------------e-*/
+
+    UPDATE industry
+    SET    industry_cycle_point = 'S'
+    WHERE  inquiry = :g_inquiry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating industry_cycle_point',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Remove existing rows from firts_table       
+    ----------------------------------------------------------------e-*/
+
+    MODIFY first_table TO TRUNCATED;  
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 0,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error deleting from first_table',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Remove existing rows from form_table       
+    ----------------------------------------------------------------e-*/
+
+    MODIFY form_table TO TRUNCATED;  
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 0,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error deleting from form_table',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+
+    RETURN 0;
+}

@@ -1,0 +1,632 @@
+/******************************************************************************
+  Rewrite of msada_fp_create_notes to fit in with new main print program.
+
+  This process cretaes the notes page for the form.
+
+  (Not many changes, just tidied and converted to recent programing standards)
+
+  MANUAL RUN:
+
+    $<image dir>/form_print_app -d<database> form_print_01b_pr -a <period>
+
+  e.g.
+
+    $IMAGES/form_print_app -dprodlivedb form_print_01b_pr -a 201200
+
+  Invalid>parameters are recorded as error code 2 on the fpr_process_log table.
+
+  D> 2012
+
+******************************************************************************/
+
+PROCEDURE form_print_01b_pr ()=
+
+
+DECLARE h_frpr_name            = VARCHAR(24) NOT NULL WITH DEFAULT,
+        h_return               = INTEGER1    NOT NULL WITH DEFAULT,
+        h_log                  = VARCHAR(70) NOT NULL WITH DEFAULT,
+        h_text                 = VARCHAR(62) NOT NULL WITH DEFAULT,
+        h_table                = VARCHAR(24) NOT NULL WITH DEFAULT,
+        h_temp_table           = VARCHAR(24) NOT NULL WITH DEFAULT,
+        h_period               = INTEGER4    NOT NULL WITH DEFAULT,
+        h_note_code            = INTEGER2    NOT NULL WITH DEFAULT,
+        h_text1                = VARCHAR(62) NOT NULL WITH DEFAULT,
+        h_text2                = VARCHAR(62) NOT NULL WITH DEFAULT,
+        h_text3                = VARCHAR(62) NOT NULL WITH DEFAULT,
+        h_text4                = VARCHAR(62) NOT NULL WITH DEFAULT,
+        h_text5                = VARCHAR(62) NOT NULL WITH DEFAULT,
+        h_text6                = VARCHAR(62) NOT NULL WITH DEFAULT,
+        h_text7                = VARCHAR(62) NOT NULL WITH DEFAULT,
+        h_text8                = VARCHAR(62) NOT NULL WITH DEFAULT,
+        h_text9                = VARCHAR(62) NOT NULL WITH DEFAULT,
+        h_text10               = VARCHAR(62) NOT NULL WITH DEFAULT,
+        h_text11               = VARCHAR(62) NOT NULL WITH DEFAULT,
+        h_text12               = VARCHAR(62) NOT NULL WITH DEFAULT,
+        h_counter              = INTEGER1    NOT NULL WITH DEFAULT,
+        h_check_1              = INTEGER1    NOT NULL WITH DEFAULT,
+        h_check_2              = INTEGER1    NOT NULL WITH DEFAULT,
+        h_check_3              = INTEGER1    NOT NULL WITH DEFAULT,
+        h_param_list           = CHAR(10)    NOT NULL WITH DEFAULT,
+        h_varchar_variable     = CHAR(10)    NOT NULL WITH DEFAULT,
+        h_param1               = VARCHAR(10) NOT NULL WITH DEFAULT,
+        h_integer_variable     = INTEGER1    NOT NULL WITH DEFAULT,
+        h_line_count           = INTEGER2    NOT NULL WITH DEFAULT,
+
+        lp_error_check         = PROCEDURE RETURNING INTEGER,
+        lp_drop_table          = PROCEDURE RETURNING INTEGER,
+
+{
+
+  h_frpr_name  = 'form_print_01b_pr';
+  h_table      = 'fpr_form_notes';
+  h_temp_table = 'tt_form_print_01b';
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_procs (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = :h_return,
+           p_text      = 'STARTING: Subprocess 1b starting.');
+
+  /*------------------------------------------------------------------
+    Checks to see if a valid period parameter has been supplied.
+    If it hasn't, report error code two and abort.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating Form Notes (1/7) . . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Setup - Form Notes 1 of 7.');
+
+  h_param_list = CALLPROC CommandLineParameters ();
+
+  h_varchar_variable = SQUEEZE(h_param_list);
+  h_integer_variable = LOCATE(h_varchar_variable, ' ');
+  h_param1           = LEFT(h_varchar_variable, h_integer_variable-1);
+
+  IF g_period = 0
+  THEN
+    SELECT MAX(period) AS g_period
+    FROM   inquiry_period
+    WHERE  inquiry = 14;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_log = 'ERROR: Failed to select max period from inquiry_period.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_log);
+      RETURN h_return;
+    ENDIF;
+
+  ENDIF;
+
+  IF  INT4(h_param1) != :g_period + 100
+  AND INT4(h_param1) != :g_period
+  AND INT4(h_param1) != :g_period - 100
+  THEN
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 2,
+             p_text      = 'ERROR: ' +:h_param1 +' is not a period that '
+                         + 'this program can process.');
+    RETURN 9;
+  ENDIF;
+
+  g_period = INT4(:h_param1);
+
+  /*------------------------------------------------------------------
+    Drop and create working table.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating Form Notes (2/7) . . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Setup - Form Notes 2 of 7.');
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    RETURN h_return;
+  ENDIF;
+
+  CREATE TABLE :h_temp_table
+             ( note_code     INTEGER2    NOT NULL WITH DEFAULT,
+               period        INTEGER4    NOT NULL WITH DEFAULT,
+               line_no       INTEGER2    NOT NULL WITH DEFAULT,
+               line_count    INTEGER2    NOT NULL WITH DEFAULT,
+               text1         VARCHAR(62) NOT NULL WITH DEFAULT,
+               text2         VARCHAR(62) NOT NULL WITH DEFAULT,
+               text3         VARCHAR(62) NOT NULL WITH DEFAULT,
+               text4         VARCHAR(62) NOT NULL WITH DEFAULT,
+               text5         VARCHAR(62) NOT NULL WITH DEFAULT,
+               text6         VARCHAR(62) NOT NULL WITH DEFAULT,
+               text7         VARCHAR(62) NOT NULL WITH DEFAULT,
+               text8         VARCHAR(62) NOT NULL WITH DEFAULT,
+               text9         VARCHAR(62) NOT NULL WITH DEFAULT,
+               text10        VARCHAR(62) NOT NULL WITH DEFAULT,
+               text11        VARCHAR(62) NOT NULL WITH DEFAULT,
+               text12        VARCHAR(62) NOT NULL WITH DEFAULT);
+         
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_log = 'ERROR: Failed to create table ' +:h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+ 
+  /*------------------------------------------------------------------
+    Populate working table
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating Form Notes (3/7) . . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Setup - Form Notes 3 of 7.');
+
+  INSERT INTO :h_temp_table
+            ( note_code,
+              period,
+              line_no,
+              line_count) 
+  SELECT DISTINCT(note_code) AS note_code,
+         :g_period           AS period,
+	 1                   AS line_no,
+	 0                   AS line_count
+  FROM   note_text_line
+  WHERE  period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_log = 'ERROR: Failed to populate table ' +:h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+ 
+  /*------------------------------------------------------------------
+     Modify
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating Form Notes (4/7) . . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Setup - Form Notes 4 of 7.');
+
+  MODIFY :h_temp_table TO BTREE UNIQUE 
+      ON note_code;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_log = 'ERROR: Failed to modify table ' +:h_temp_table +' ' 
+          + 'to btree unique.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Update with text by looping through each note code.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating Form Notes (5/7) . . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Setup - Form Notes 5 of 7.');
+
+  SELECT note_code AS h_note_code
+  FROM   :h_temp_table
+  BEGIN
+
+    h_line_count = 1;
+    h_counter    = 1;
+    h_text1      = '';
+    h_text2      = '';
+    h_text3      = '';
+    h_text4      = '';
+    h_text5      = '';
+    h_text6      = '';
+    h_text7      = '';
+    h_text8      = '';
+    h_text9      = '';
+    h_text10     = '';
+    h_text11     = '';
+    h_text12     = '';
+
+    SELECT note_text as h_text
+    FROM   note_text_line
+    WHERE  note_code = :h_note_code
+      AND  period = :g_period
+    BEGIN    
+      IF :h_counter = 1
+      THEN
+        h_text1 = :h_text;
+      ELSEIF :h_counter = 2
+      THEN
+        h_text2 = :h_text;
+      ELSEIF :h_counter = 3
+      THEN
+        h_text3 = :h_text;
+      ELSEIF :h_counter = 4
+      THEN
+        h_text4 = :h_text;
+      ELSEIF :h_counter = 5
+      THEN
+        h_text5 = :h_text;
+      ELSEIF :h_counter = 6
+      THEN
+        h_text6 = :h_text;
+      ELSEIF :h_counter = 7
+      THEN
+        h_text7 = :h_text;
+      ELSEIF :h_counter = 8
+      THEN
+        h_text8 = :h_text;
+      ELSEIF :h_counter = 9
+      THEN
+        h_text9 = :h_text;
+      ELSEIF :h_counter = 10
+      THEN
+        h_text10 = :h_text;
+      ELSEIF :h_counter = 11
+      THEN
+        h_text11 = :h_text;
+      ELSEIF :h_counter = 12
+      THEN
+        h_text12 = :h_text;
+      ENDIF;
+
+      h_line_count = :h_counter;
+      h_counter = :h_counter + 1;
+
+    END;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_log = 'ERROR: Failed to select note_texts from note_text_line.';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_log);
+      RETURN h_return;
+    ENDIF;
+
+    UPDATE :h_temp_table
+    SET    line_count = :h_line_count,
+           text1 = :h_text1,
+           text2 = :h_text2,
+           text3 = :h_text3,
+           text4 = :h_text4,
+           text5 = :h_text5,
+           text6 = :h_text6,
+           text7 = :h_text7,
+           text8 = :h_text8,
+           text9 = :h_text9,
+           text10 = :h_text10,
+           text11 = :h_text11,
+           text12 = :h_text12
+    WHERE  note_code = :h_note_code;
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_log = 'ERROR: Failed to update table ' +:h_temp_table +' ' 
+            + 'with text variables.'; 
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_log);
+      RETURN h_return;
+    ENDIF;
+
+  END;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_log = 'ERROR: Failed to select note_codes for loop from '
+          + 'table ' +:h_temp_table +'.'; 
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Delete from and add to the permanent table
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating Form Notes (6/7) . . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Setup - Form Notes 6 of 7.');
+
+  DELETE FROM :h_table
+  WHERE       period = :g_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_log = 'ERROR: Failed to delete existing ' +VARCHAR(:g_period) + ' '
+          + 'records from table ' +:h_table +'.'; 
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  INSERT INTO :h_table
+  SELECT      *
+  FROM        :h_temp_table;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_log = 'ERROR: Failed to insert ' +VARCHAR(:g_period) + ' '
+          + 'notes into table ' +:h_table +'.'; 
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Check if all three setups have been done and if so set 
+      form status for period to "S".
+  ------------------------------------------------------------------*/
+
+  h_check_1 = 0;
+  h_check_2 = 0;
+  h_check_3 = 0;
+
+  SELECT period AS h_period
+  FROM   prodcom_cncodes
+  WHERE  period = :g_period;
+ 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1 
+  THEN
+    h_log = 'ERROR: Failed to check ' +VARCHAR(:g_period) + ' '
+          + 'records present on table prodcom_cncodes.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  IF h_return = 0
+  THEN
+    h_check_1 = 1;
+  ENDIF; 
+
+
+  SELECT period AS h_period
+  FROM   fpr_form_notes
+  WHERE  period = :g_period;
+ 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1 
+  THEN
+    h_log = 'ERROR: Failed to check ' +VARCHAR(:g_period) + ' '
+          + 'records present on table fpr_form_notes.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  IF h_return = 0
+  THEN
+    h_check_2 = 1;
+  ENDIF; 
+
+
+  SELECT period AS h_period
+  FROM   fpr_question_texts
+  WHERE  period = :g_period;
+ 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1 
+  THEN
+    h_log = 'ERROR: Failed to check ' +VARCHAR(:g_period) + ' '
+          + 'records present on table fpr_question_texts.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_log);
+    RETURN h_return;
+  ENDIF;
+
+  IF h_return = 0
+  THEN
+    h_check_3 = 1;
+  ENDIF; 
+
+  IF h_check_1 = 1
+  AND h_check_2 = 1
+  AND h_check_3 = 1
+  THEN
+    UPDATE industry
+    SET    industry_cycle_point = 'S';
+
+    h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+    IF h_return > 1 
+    THEN
+      h_log = 'ERROR: Failed to update industry_cycle_point to "S".';
+      CALLPROC write_to_process_log
+             ( p_frpr_name = :h_frpr_name,
+               p_code      = :h_return,
+               p_text      = :h_log);
+      RETURN h_return;
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Tidy up and complete.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Creating From Notes (7/7) . . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Setup - Form Notes 7 of 7.');
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = 'WARNING: Failed to drop ' +:h_temp_table +'. '
+                         + 'Please delete it manually asap.');
+  ENDIF;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = :h_return,
+           p_text      = 'COMPLETE: Subprocess 1b completed successfully.');
+
+  RETURN 0;
+
+}
+
+/************************ LOCAL PROCEDURES ***********************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(24) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(20) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  h_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF h_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+

@@ -1,0 +1,563 @@
+/*****************************************************************************
+ Displays a table to control and dev staff when they log on to the system
+ that displays any outstanding entries in teh process logs that have non-zero
+ error codes that need investigating.
+
+ Once investigated, the cleared entries are coppied to process_log_cleared
+ and excluded from further searches, even if they still exist on the actual
+ process logs themselves.
+
+ Display sorted by tid so that entries with the same time are shown
+ in the order they were written to the table.
+
+ No access check needed as only user class C and D can get here.
+*****************************************************************************/
+
+INITIALIZE (p_first_check = CHAR(1) NOT NULL WITH DEFAULT) =
+
+
+DECLARE h_retries_allowed = INTEGER1     NOT NULL WITH DEFAULT,
+        h_retries         = INTEGER1     NOT NULL WITH DEFAULT,
+        h_retry_or_not    = CHAR(5)      NOT NULL WITH DEFAULT,
+        h_frpr_name       = VARCHAR(24)  NOT NULL WITH DEFAULT,
+        h_field_name      = VARCHAR(24)  NOT NULL WITH DEFAULT,
+        h_return          = INTEGER1     NOT NULL WITH DEFAULT,
+        h_return2         = INTEGER1     NOT NULL WITH DEFAULT,
+        h_prompt          = CHAR(1)      NOT NULL WITH DEFAULT,
+        h_temp_table      = VARCHAR(36)  NOT NULL WITH DEFAULT,
+        h_log_table       = VARCHAR(36)  NOT NULL WITH DEFAULT,
+        h_process         = VARCHAR(24)  NOT NULL WITH DEFAULT,
+        h_ref             = CHAR(3)      NOT NULL WITH DEFAULT,
+        h_curr_row        = INTEGER2     NOT NULL WITH DEFAULT,
+        h_count           = INTEGER4     NOT NULL WITH DEFAULT,
+        h_mode            = INTEGER1     NOT NULL WITH DEFAULT,
+
+  lp_load_data            = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_error_check          = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_full_error_check     = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  msa_date          = 'now';
+  h_frpr_name       = 'msae_fr_check_process_logs';
+  h_retries_allowed = 3;
+  h_mode            = 1;
+  h_temp_table      = 'tt_process_log_check';
+
+  s_title = 'UNCLEARED PROCESS LOG WARNINGS AND ERRORS';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+  IF p_first_check = ''
+  THEN
+    p_first_check = 'N'
+  ENDIF;
+
+  /*-------------------------------------------------------------------------
+     Drop then create temp table to hold uncleared log errors.
+  -------------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_drop_table (h_table = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_temp_table
+             ( ref       CHAR(3)     NOT NULL WITH DEFAULT,
+               process   CHAR(22)    NOT NULL WITH DEFAULT,
+               time      INGRESDATE  NOT NULL WITH DEFAULT,
+               log_no    INTEGER2    NOT NULL WITH DEFAULT,
+               code      INTEGER1    NOT NULL WITH DEFAULT, 
+               text      VARCHAR(70) NOT NULL WITH DEFAULT,
+               frpr_name VARCHAR(36) NOT NULL WITH DEFAULT);
+  
+  h_return = lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to create working table for process log errors. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+         
+  /*---------------------------------------------------------------------------
+     Loop through process logs to insert any rows with non-zero error codes.
+  ---------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT UPPER(LEFT(table_name,3)) AS h_ref,
+       '* Unrecorded Process *'      AS h_process
+    FROM iitables
+    WHERE table_name LIKE '%_process_log%'
+      AND table_name != 'tt_process_log_check'
+      AND table_name != 'frp_process_log'
+    ORDER BY h_ref
+    BEGIN
+
+      h_log_table = LOWER(:h_ref) +'_process_log';
+      
+      INSERT INTO :h_temp_table
+                ( ref,
+                  process,
+                  time,
+                  log_no,
+                  code,
+                  text,
+                  frpr_name)
+      SELECT      :h_ref,
+                  :h_process,
+                  time,
+                  log_no,
+                  code,
+                  text,
+                  frpr_name 
+      FROM        :h_log_table
+      WHERE       code > 0;
+
+      h_return2 = lp_error_check (p_num_row_ck = 1);
+
+      IF h_return2 > 1
+      THEN 
+        MESSAGE 'ERROR: Failed to insert data from ' +h_log_table + ' '
+              + 'into temporary working table. '
+              + 'Error code ' +VARCHAR(:h_return2) +'. '
+              + 'Please contact IM immediately.'
+        WITH STYLE = POPUP;
+        RETURN 9;
+      ENDIF;
+
+    END;
+
+    h_return = lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN 
+    MESSAGE 'ERROR: Failed to select for loop from process log table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*---------------------------------------------------------------------------
+     Delete from working table if previously cleared.
+     (Quicker here than excluding from multiple selects in loop.)
+  ---------------------------------------------------------------------------*/
+
+  DELETE FROM :h_temp_table a 
+  WHERE EXISTS 
+      ( SELECT *  
+        FROM   process_logs_cleared b
+        WHERE  b.ref    = a.ref
+          AND  b.time   = a.time
+          AND  b.log_no = a.log_no );
+
+  h_return = lp_error_check (p_num_row_ck = 1);   
+
+  IF h_return > 1
+  THEN 
+    MESSAGE 'ERROR: Failed to delete previously cleared logs from temp table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+
+  /*---------------------------------------------------------------------------
+     Update default with recorded process names from process_logs table.
+  ---------------------------------------------------------------------------*/
+  
+  UPDATE :h_temp_table a
+  FROM   process_logs b
+  SET    process = b.process
+  WHERE  a.ref   = b.ref;
+     
+  h_return = lp_error_check (p_num_row_ck = 1);   
+
+  IF h_return > 1
+  THEN 
+    MESSAGE 'ERROR: Failed to update process full names on temp table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*---------------------------------------------------------------------------
+     If first check and no warnings or errors, move invisibly and swiftly on. 
+  ---------------------------------------------------------------------------*/
+
+  IF p_first_check = 'Y'
+  THEN 
+
+    SELECT COUNT(*) as h_count
+    FROM   :h_temp_table;
+
+    h_return = lp_error_check (p_num_row_ck = 1);   
+
+    IF h_return > 1
+    THEN 
+      MESSAGE 'ERROR: Failed to count remaining rows on temp table. '
+            + 'Error code ' +VARCHAR(:h_return) +'. '
+            + 'Please contact IM immediately.'
+      WITH STYLE = POPUP;
+      RETURN 9;
+    ENDIF;
+
+    IF h_count = 0
+    THEN
+
+      h_return = CALLPROC msa_fp_drop_table (h_table = :h_temp_table);
+
+      IF h_return != 0
+      THEN
+        /* Error message handled in external procedure */
+        RETURN 9;
+      ENDIF;
+
+      RETURN 0;
+
+    ENDIF;
+
+  ENDIF;
+
+  /*---------------------------------------------------------------------------
+     Call local procedure to populate table.
+  ---------------------------------------------------------------------------*/
+
+  h_return = CALLPROC lp_load_data;
+
+  IF h_return != 0
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  RESUME FIELD tf;
+
+}
+
+/*************************** KEY ACTIVATIONS ****************************/
+
+'Actioned', KEY FRSKEY4 =
+{
+  /*-----------------------------------------------------------------------
+     Only works in mode 1. 
+  -----------------------------------------------------------------------*/
+
+  IF h_mode != 1
+  THEN
+    MESSAGE 'WARNING: This is not available when viewing actioned errors.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+     Make sure row selected. Just in case something daft has happened.
+  -----------------------------------------------------------------------*/
+
+  INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+  IF :h_field_name != 'tf'
+  THEN
+    MESSAGE 'WARNING: Please highlight the entry you want to mark as actioned.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+    
+  /*-----------------------------------------------------------------------
+     Prompt for confirmation as permanent move.
+  -----------------------------------------------------------------------*/
+
+  h_prompt = PROMPT 'NOTE: This will take no other action other than remove '
+                  + 'this particular error note from future display. '
+                  + 'Please confirm you have dealt with the issue. [Y/N] : '
+             WITH STYLE = POPUP;
+
+  IF UPPER(:h_prompt) != 'Y'
+  THEN
+    RESUME;
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+     Record clearance action. 
+  -----------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO process_logs_cleared
+              ( ref,
+                time,
+                log_no,
+                code,
+                text,
+                process,
+                frpr_name,
+                cleared,
+                who )
+    VALUES    ( :tf.ref,
+                :tf.time,
+                :tf.log_no,
+                :tf.code,
+                :tf.text,
+                :tf.process,
+                :tf.frpr_name,
+                'now',
+                :g_user_id );
+
+    h_return = lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN 
+    MESSAGE 'ERROR: Failed to insert record of clearance into clearance table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*-----------------------------------------------------------------------
+     Remove from temp table and table field.
+  -----------------------------------------------------------------------*/
+
+  DELETE 
+  FROM  :h_temp_table a  
+  WHERE a.ref    = :tf.ref
+    AND a.time   = :tf.time
+    AND a.log_no = :tf.log_no;
+
+  h_return = lp_error_check (p_num_row_ck = 1);   
+
+  IF h_return != 0
+  THEN 
+    MESSAGE 'ERROR: Failed to delete newly cleared log from temp table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  INQUIRE_FORMS TABLE '' ( h_curr_row = rowno(tf) );
+  DELETEROW tf[:h_curr_row];
+  REDISPLAY;
+
+  RESUME FIELD tf;
+
+}
+
+'Info', KEY FRSKEY8 =
+{
+  
+  IF h_mode = 1
+  THEN 
+    MESSAGE '' + UPPER(:tf.process) +'.' +X'0D'
+          + :tf.text  +X'0D'
+    WITH STYLE = POPUP;
+  ELSE
+    MESSAGE '' + UPPER(:tf.process) +'.' +X'0D'
+          + :tf.text  +X'0D'
+          + 'Cleared by ' +VARCHAR(:tf.who) + ' on ' +VARCHAR(:tf.cleared) +'.'
+    WITH STYLE = POPUP;
+  ENDIF;
+
+}
+
+'Mode', KEY FRSKEY12 = 
+{
+
+  IF h_mode = 1
+  THEN 
+    h_mode = 2
+  ELSE
+    h_mode = 1
+  ENDIF;
+
+  h_return = CALLPROC lp_load_data;
+
+  IF h_return != 0
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  RESUME FIELD tf;
+
+}
+
+
+
+'End', KEY FRSKEY14 =
+{
+  h_return = CALLPROC msa_fp_drop_table (h_table = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure */
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+}
+
+/************************* LOCAL PROCEDURES *********************************/
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+/*=======================================================================
+   Local procedure to load data to dable field.
+=======================================================================*/
+
+PROCEDURE lp_load_data (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4    NOT NULL WITH DEFAULT,
+          lp_table    = VARCHAR(32) NOT NULL WITH DEFAULT,
+
+{
+
+  IF h_mode = 1
+  THEN
+
+    s_title = 'UNCLEARED PROCESS LOG WARNINGS AND ERRORS';
+    SET_FORMS FIELD '' (REVERSE(s_title) = 1);
+    lp_table = :h_temp_table;
+
+    tf =
+    SELECT   ref,
+             time,
+             log_no,
+             code,
+             frpr_name,
+             text,
+             process,
+             tid
+    FROM     :lp_table
+    ORDER BY tid;
+
+  ELSE
+
+    s_title = ' CLEARED PROCESS LOG WARNINGS AND ERRORS';
+    SET_FORMS FIELD '' (REVERSE(s_title) = 0);
+    lp_table = 'process_logs_cleared';
+
+    tf =
+    SELECT   ref,
+             time,
+             log_no,
+             code,
+             frpr_name,
+             text,
+             process,
+             cleared,
+             who,
+             tid
+    FROM     :lp_table
+    ORDER BY tid;
+  ENDIF;    
+
+  h_return = lp_error_check (p_num_row_ck = 1);   
+
+  IF h_return = 1
+  THEN 
+
+    MESSAGE 'NOTE: There are no uncleared warnings or errors to display.'
+    WITH STYLE = POPUP;
+
+    RETURN 0;
+
+  ELSEIF h_return > 1
+  THEN 
+
+    MESSAGE 'ERROR: Failed to select data for display from ' +:lp_table +'. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+
+    h_return = CALLPROC msa_fp_drop_table (h_table = :h_temp_table);
+
+    RETURN 9
+
+  ENDIF;
+
+  REDISPLAY;
+
+  RETURN 0;
+
+}
+

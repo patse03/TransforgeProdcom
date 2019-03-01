@@ -1,0 +1,111 @@
+INITIALIZE ( p_ref = CHAR(3) NOT NULL WITH DEFAULT,
+             p_text1 = VARCHAR(60) NOT NULL WITH DEFAULT,
+             p_text2 = VARCHAR(60) NOT NULL WITH DEFAULT,
+             p_text3 = VARCHAR(60) NOT NULL WITH DEFAULT,
+             p_text4 = VARCHAR(60) NOT NULL WITH DEFAULT,
+             p_text5 = VARCHAR(60) NOT NULL WITH DEFAULT) =
+
+DECLARE
+
+  h_frpr_name       = VARCHAR(24)  NOT NULL,
+  h_return          = INTEGER      NOT NULL,
+  h_attempts        = INTEGER1     NOT NULL,
+  h_retries         = INTEGER1     NOT NULL,
+  h_retries_allowed = INTEGER1     NOT NULL,
+  h_retry_or_not    = CHAR(5)      NOT NULL,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name       = 'msa_fr_display_motd';
+  h_attempts        = 0;
+  h_retries_allowed = 3;
+
+  SELECT DBMSINFO('username') AS g_user_id;
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+  
+  s_text1 = SHIFT(:p_text1, (((60-LENGTH(p_text1))/2)*1));
+  s_text2 = SHIFT(:p_text2, (((60-LENGTH(p_text2))/2)*1));
+  s_text3 = SHIFT(:p_text3, (((60-LENGTH(p_text3))/2)*1));
+  s_text4 = SHIFT(:p_text4, (((60-LENGTH(p_text4))/2)*1));
+  s_text5 = SHIFT(:p_text5, (((60-LENGTH(p_text5))/2)*1));
+
+  REDISPLAY;
+
+  RESUME MENU;
+
+}
+/**************************** KEY ACTIVATIONS *****************************/
+
+'I confirm that I have read and understood this...', KEY FRSKEY4 =
+{
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+  h_retries_allowed   = 3;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO msg_cleared_messages
+              ( ref,
+                user_id,
+                confirmed )
+    VALUES    ( :p_ref,
+                :g_user_id,
+                'now');
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to record broadcast confirmation. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN;
+  ENDIF;
+
+  RETURN;
+}     
+
+'', KEY FRSKEY14 = 
+{
+  RETURN;
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

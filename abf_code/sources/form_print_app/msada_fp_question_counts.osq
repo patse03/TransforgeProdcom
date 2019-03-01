@@ -1,0 +1,170 @@
+/*-s--------------------------------------------------------------------
+msada_fp_question_counts
+
+Creates a temporary table to count the number of  01 questions and then
+update the column on table industry_period - questions_selected. 
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msada_fp_question_counts () =
+
+DECLARE ret_val      = INTEGER4 NOT NULL,
+        h_frpr_name  = VARCHAR(24) NOT NULL,
+        h_table      = VARCHAR(24) NOT NULL,
+        h_count      = INTEGER1 NOT NULL
+
+{
+    h_frpr_name = 'msada_fp_question_counts';
+    h_table = 'question_count';
+
+    ret_val = CALLPROC batch_fp_drop_table (
+	      h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_table 
+    AS SELECT    a.period,
+                 a.industry,
+                 COUNT(b.question) AS questions
+    FROM         industry_period a,
+                 cqpv b
+    WHERE        a.inquiry = :g_inquiry
+    AND          a.inquiry = b.contributor_inquiry
+    AND          a.period = :g_period
+    AND          a.period = b.period
+    AND          a.industry = b.contributor_industry
+    AND          b.quest_order = 1
+    GROUP BY     a.period,
+                 a.industry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    UPDATE industry_period a
+    FROM   question_count b
+    SET    questions_selected = b.questions
+    WHERE  a.industry = b.industry
+    AND    a.period = b.period;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating industry_period',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Save despatch reference details
+    ----------------------------------------------------------------e-*/
+
+    DELETE FROM despatch_history
+    WHERE       period = :g_period;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error deleting from despatch_history',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    INSERT INTO despatch_history (
+                contributor_reference,
+                contributor_industry,
+                period,
+                register_emp) 
+    SELECT      contributor_reference,
+                contributor_industry,
+                period,
+                register_emp
+    FROM        contributor_period
+    WHERE       period = :g_period;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error inserting into despatch_history',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+ 
+    /*-s----------------------------------------------------------------
+    Update industry cycle point on table industry to  'F' which 
+    indicates that forms are finished.
+    ----------------------------------------------------------------e-*/
+
+    UPDATE industry 
+    SET    industry_cycle_point = 'F'      
+    WHERE  inquiry = :g_inquiry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating industry_cycle_point to F',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table (
+	      h_table = :h_table);
+
+    RETURN 0;
+}

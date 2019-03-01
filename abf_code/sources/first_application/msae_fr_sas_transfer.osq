@@ -1,0 +1,451 @@
+/*-----------------------------------------------------------------------
+This program is called by top_utilities.
+-----------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE 
+  h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name       = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_now             = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_reference       = VARCHAR(11) NOT NULL WITH DEFAULT,
+  h_return          = INTEGER1    NOT NULL WITH DEFAULT,
+  h_inquiry         = INTEGER1    NOT NULL WITH DEFAULT,
+  h_prev_period1    = INTEGER4    NOT NULL WITH DEFAULT,
+  h_prev_period2    = INTEGER4    NOT NULL WITH DEFAULT,
+  h_prev_period3    = INTEGER4    NOT NULL WITH DEFAULT,
+  h_row             = INTEGER4    NOT NULL WITH DEFAULT,
+  h_count           = INTEGER4    NOT NULL WITH DEFAULT,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_retries_allowed = 3;
+  h_frpr_name = 'msae_fr_sas_transfer';
+  msa_date = 'now';
+
+  SELECT DBMSINFO('database') AS g_database;
+  SELECT DBMSINFO('username') AS g_user_id;
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+  /*------------------------------------------------------------------
+    Display week number on screen.
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+	    
+    SELECT week AS s_week_no
+    FROM   weekno_dates
+    WHERE  date('today') BETWEEN start_date aND end_date
+      AND  inquiry = 14
+      AND  end_date != '31/12/2050';
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select week number for display. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+}
+
+/************************ FIELD ACTIVATIONS **************************/
+
+FIELD 's_contributor_reference' =
+{
+
+  IF s_contributor_reference NOT LIKE '\[0-9\]\[0-9\]\[0-9\]\[0-9\]\[0-9\]\[0-9\]\[0-9\]\[0-9\]\[0-9\]\[0-9\]\[0-9\]' escape '\'
+  THEN
+    MESSAGE 'WARNING: Contributor Reference must be 11 digits.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_contributor_reference;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Validate contributor reference.
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT contributor_reference AS s_contributor_reference
+    FROM   contributor
+    WHERE  contributor_reference = :s_contributor_reference;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: That contributor does not exist on the ProdCom system.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_contributor_reference;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed whilst validating contributor reference. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  RESUME FIELD s_run_period;
+
+}
+
+
+FIELD 's_run_period' =
+{
+
+  MESSAGE 'Checking run period . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT period AS s_run_period
+    FROM   inquiry_period
+    WHERE  inquiry = 14
+      AND  period = :s_run_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: That run period is not valid. Please try again...'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_run_period;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed whilst validating the run period. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  h_prev_period1 = :s_run_period - 100;
+  h_prev_period2 = :s_run_period - 200;
+  h_prev_period3 = :s_run_period - 300;
+
+  RESUME FIELD s_data_for_period;
+
+}
+
+FIELD 's_data_for_period' =
+{
+
+  MESSAGE 'Checking Data_For_Period . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT period AS s_data_for_period
+    FROM   inquiry_period
+    WHERE  inquiry = 14
+      AND  period = :s_data_for_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: That data period is not valid. Please try again...'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_run_period;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed whilst validating the data period. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*-----------------------------------------------------------------
+     Check that data-for-period is in the span
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Checking Span . . .';
+   
+  IF  :s_data_for_period != :s_run_period
+  AND :s_data_for_period != :h_prev_period1
+  AND :s_data_for_period != :h_prev_period2
+  AND :s_data_for_period != :h_prev_period3
+  THEN
+    MESSAGE 'WARNING: The data period must be in the four year span. '
+    WITH STYLE = POPUP;
+    RESUME FIELD s_data_for_period;
+  ENDIF;
+
+  RESUME FIELD s_question;
+
+}
+
+
+FIELD 's_question' =
+{
+
+  /*------------------------------------------------------------------
+    Check existence on question library
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT question AS s_question
+    FROM   question_library
+    where  question = :s_question
+      AND    period = :s_data_for_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: That question does not exist. Please try again...'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_question;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed whilst validating the question reference. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  REDISPLAY;
+
+  /*-------------------------------------------------------------------------
+   Check contributor and question has not already been requested this week. 
+  -------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT contributor_reference as s_contributor_reference
+    FROM   contributor_sas
+    WHERE  contributor_reference = :s_contributor_reference
+      AND  run_period            = :s_run_period
+      AND  data_for_period       = :s_data_for_period
+      AND  question              = :s_question
+      AND  week_no               = :s_week_no
+      AND  extracted             = 'n';
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 0);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: That data has already been requested for this run.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_run_period;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed whilst checking existing SAS transfers. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  REDISPLAY;
+
+  /*-------------------------------------------------------------------------
+   Insert request into SAS Transfers table.
+  -------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO contributor_sas 
+              ( contributor_reference,
+                question,
+		inquiry,
+                run_period,
+                data_for_period,
+		week_no,
+		user_id,
+		extracted,
+		requested)
+    VALUES    ( :s_contributor_reference,
+		:s_question,
+		14,
+                :s_run_period,
+		:s_data_for_period, 
+		:s_week_no,
+		:g_user_id,
+		'n',
+		'now');
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to insert request into SAS contributors table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  MESSAGE 'NOTE: Request successfully created.'
+  WITH STYLE = POPUP;
+
+  msa_date = 'now';
+
+  REDISPLAY;
+
+  RESUME FIELD s_contributor_reference;
+
+}
+
+/********************** KEY ACTIVATIONS *************************/
+
+'Clear', KEY FRSKEY12 =
+{
+  CLEAR FIELD s_contributor_reference;
+  CLEAR FIELD s_question;
+  CLEAR FIELD s_data_for_period;
+  CLEAR FIELD s_run_period;
+
+  msa_date = 'now';
+
+  REDISPLAY;
+
+  RESUME FIELD s_contributor_reference;
+}
+
+
+'End', KEY FRSKEY14 =
+{
+  RETURN 0;
+}
+
+/*********************** LOCAL PROCEDURES ***************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+

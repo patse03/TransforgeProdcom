@@ -1,0 +1,558 @@
+/*-s--------------------------------------------------------------------
+This frame counts the number of contributors and 
+the number of questions in each sub_class for the period specified.
+--------------------------------------------------------------------e-*/
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed   = INTEGER1 NOT NULL,
+        h_rows              = INTEGER4 NOT NULL,
+        h_retries           = INTEGER1 NOT NULL,
+        h_retry_or_not      = CHAR(5) NOT NULL,
+        h_frpr_name         = VARCHAR(24) NOT NULL,
+        h_question          = INTEGER4 NOT NULL,
+        h_industry          = INTEGER4 NOT NULL,
+        h_current_industry  = INTEGER4 NOT NULL,
+        h_annual_period     = INTEGER4 NOT NULL,
+        h_question_count    = INTEGER4 NOT NULL,
+        h_question_industry = INTEGER4 NOT NULL,
+        h_values            = INTEGER4 NOT NULL,
+        h_volumes           = INTEGER4 NOT NULL,
+        h_volume_02         = INTEGER4 NOT NULL,
+        h_volume_04         = INTEGER4 NOT NULL,
+        h_volume_other      = INTEGER4 NOT NULL,
+        ret_val             = INTEGER1 NOT NULL,
+        inquiry             = INTEGER1 NOT NULL,
+        h_table             = VARCHAR(24) NOT NULL
+{
+    msa_date = 'now';
+    h_retries_allowed = 3;
+    h_frpr_name = 'msae_fr_analysis_counts';
+    h_table = 'cref_quest_count_table';
+    h_rows = 0;
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+}
+
+FIELD period = 
+{
+    CLEAR FIELD tf;
+    h_rows = 0;
+    REDISPLAY;
+
+    MESSAGE 'Checking Period . . .';
+        
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT inquiry
+        FROM   inquiry_period
+        WHERE  period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE VARCHAR(:period) + ' is not a valid period'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    h_annual_period = :period / 100 * 100;
+
+    /*------------------------------------------------------------------
+     Get contributor_reference counts from contributor_period
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Contributor Data . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table
+        AS SELECT    contributor_industry AS industry,
+                     COUNT(contributor_reference) AS contributor_count,
+                     INT4(0) AS question_count,
+                     INT4(0) AS value_count,
+                     INT4(0) AS volume_02,
+                     INT4(0) AS volume_04,
+                     INT4(0) AS volume_other,
+                     INT4(0) AS volume_total,
+                     INT4(0) AS cutoff
+        FROM         contributor_period
+        WHERE        period = :period
+        AND          inquiry = :inquiry
+        GROUP BY     contributor_industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error creating ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No data found for this period'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Select loop from Question_library
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Question Library Data . . .';
+
+    SELECT   COUNT(question) AS h_question_count,
+             question_industry AS h_question_industry
+    FROM     question_library
+    WHERE    inquiry = :inquiry
+    AND      quest_order = 1
+    AND      period = :h_annual_period
+    AND      MOD(question,10) = 1
+    GROUP BY question_industry
+    ORDER BY h_question_industry
+    {
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+    
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+    
+            h_retries = :h_retries + 1;
+    
+            UPDATE :h_table
+            SET    question_count = :h_question_count
+            WHERE  industry = :h_question_industry;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+    
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+    
+        ENDWHILE;
+    
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+    
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing question_library'
+            WITH STYLE = POPUP;
+            RETURN 9;
+    
+        ENDIF;
+    }; 
+
+    ret_val = CALLPROC check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    /*------------------------------------------------------------------
+     Select loop from cqpv
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Question Data . . .';
+
+    h_current_industry = 0;
+    h_values = 0;
+    h_volume_02 = 0;
+    h_volume_04 = 0;
+    h_volume_other = 0;
+
+    SELECT   question_industry AS h_industry,
+             question AS h_question
+    FROM     cqpv
+    WHERE    period = :period
+    AND      quest_order = 1
+    ORDER BY h_industry 
+    {
+        MESSAGE 'Processing Industry ' + VARCHAR(:h_industry) + ' . . .';
+
+        IF h_current_industry = 0
+        THEN
+            h_current_industry = :h_industry;
+
+        ELSEIF h_current_industry <> :h_industry
+        THEN
+
+            h_retry_or_not      = 'RETRY';
+            h_retries           = 0;
+
+            WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+            DO
+
+                h_retries = :h_retries + 1;
+
+                UPDATE :h_table
+                SET    value_count  = :h_values,
+                       volume_02    = :h_volume_02,
+                       volume_04    = :h_volume_04,
+                       volume_other = :h_volume_other,
+                       volume_total = (:h_volume_02 + :h_volume_04 +
+                                       :h_volume_other)
+                WHERE  industry = :h_current_industry;
+    
+                ret_val = CALLPROC check_inq_ing (
+                          h_num_row_ck      = 1,
+                          h_commit          = 'Y',
+                          h_rollback        = 'N',
+                          h_retries         = :h_retries,
+                          h_retries_allowed = :h_retries_allowed,
+                          h_frpr_name       = :h_frpr_name);
+
+                IF ret_val <> 7
+                THEN
+                    h_retry_or_not = '';
+                ENDIF;
+
+            ENDWHILE;
+
+            IF ret_val = 7
+            THEN
+                RETURN 7;
+
+            ELSEIF ret_val = 9
+            THEN
+                MESSAGE 'System error in updating ' + :h_table +
+                        ' for Industry ' + VARCHAR(:h_current_industry)
+                WITH STYLE = POPUP;
+                RETURN 9;
+
+            ENDIF;
+
+            h_current_industry = :h_industry;
+            h_values = 0;
+            h_volume_02 = 0;
+            h_volume_04 = 0;
+            h_volume_other = 0;
+
+        ENDIF;
+
+        IF MOD(:h_question,10) = 1
+        THEN
+            h_values = :h_values + 1;
+        ELSE
+            IF MOD(:h_question,10) = 2
+            THEN
+                h_volume_02 = :h_volume_02 + 1;
+            ELSEIF MOD(:h_question,10) = 4
+            THEN
+                h_volume_04 = :h_volume_04 + 1;
+            ELSE
+                h_volume_other = :h_volume_other + 1;
+            ENDIF;
+        ENDIF;
+    };
+
+    ret_val = CALLPROC check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    /*------------------------------------------------------------------
+     Final update for the last industry
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table
+        SET    value_count = :h_values,
+               volume_02    = :h_volume_02,
+               volume_04    = :h_volume_04,
+               volume_other = :h_volume_other,
+               volume_total = (:h_volume_02 + :h_volume_04 +
+                               :h_volume_other)
+        WHERE  industry = :h_industry;
+    
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating ' + :h_table +
+                ' for Industry ' + VARCHAR(:h_current_industry)
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Update with cutoffs
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Industry Cutoff Data . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   industry_period b
+        SET    cutoff = b.emp_cutoff
+        WHERE  a.industry = b.industry
+        AND    b.period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating from industry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows updated from industry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Select to screen
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting to Screen . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf = 
+
+        SELECT   industry,
+                 contributor_count,
+                 question_count,
+                 value_count,
+                 volume_02,
+                 volume_04,
+                 volume_other,
+                 volume_total,
+                 cutoff
+        FROM     :h_table
+        ORDER BY industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:h_rows),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in selecting from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows selected from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    REDISPLAY;
+
+    RESUME FIELD tf;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Print' =
+{
+    IF h_rows = 0
+    THEN
+        MESSAGE 'Nothing to Print'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    MESSAGE 'Preparing Report . . .';
+    msa_date = 'now';
+
+    ret_val = CALLPROC msa_cp_callsys (
+              'report ' + 
+              :g_database + 
+              ' ''(h_table = "' + :h_table + '"' + 
+              ',user_name = "' + :g_user_name + '"' +
+              ',period = ' + VARCHAR(:period) + 
+              ')'' -i$REPORTS/msae_rw_analysis_counts.rw' +
+              ' > report.output 2> report.output');
+
+    IF ret_val <> 0
+    THEN
+        MESSAGE 'Error producing report'
+        WITH STYLE = POPUP;
+    ELSE
+        /*--------------------------------------------------------------
+         Remove last line - so a blank end page is not printed
+        --------------------------------------------------------------*/
+
+        ret_val = CALLPROC msa_cp_callsys (
+              'lines=`wc -l < msae_rw_analysis_counts.rpt`;' +
+              'lines=`expr ${lines} - 1`;' +
+              'head -${lines} msae_rw_analysis_counts.rpt | ' +
+              'lp -o12p -d' + :g_printer + 
+              ' >> report.output 2>> report.output');
+
+        IF ret_val <> 0
+        THEN
+            MESSAGE 'Error sending report to printer ' +
+                    :g_printer
+            WITH STYLE = POPUP;
+        ELSE
+            MESSAGE 'Report sent to printer ' +
+                    :g_printer + ' OK'
+            WITH STYLE = POPUP;
+        ENDIF;
+    ENDIF;
+}
+
+'End', KEY FRSKEY6 =
+{
+    MESSAGE 'Exiting Analysis Screen . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = :h_table);
+
+    RETURN 0;
+}

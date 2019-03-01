@@ -1,0 +1,351 @@
+/*-s--------------------------------------------------------------------
+ Procedure msada_fp_setup_print
+
+ This procedure sets up the print files for each output
+ category. Once set up CHMOD the files and run them
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msada_fp_setup_print () =
+
+DECLARE h_frpr_name     = VARCHAR(24) NOT NULL,
+        h_table         = VARCHAR(24) NOT NULL,
+        h_colour        = VARCHAR(10) NOT NULL,
+        output_category = CHAR(2) NOT NULL,
+        h_store_cat     = CHAR(2) NOT NULL,
+        print_name      = VARCHAR(100) NOT NULL,
+        directory       = VARCHAR(100) NOT NULL,
+        h_print         = VARCHAR(50) NOT NULL,
+        h_line          = VARCHAR(100) NOT NULL,
+        print_no        = INTEGER4 NOT NULL,
+        ret_val         = INTEGER1 NOT NULL
+
+{
+    h_frpr_name = 'msada_fp_setup_print';
+    h_table = 'temp_setup_print' ;
+
+    directory = CALLPROC msa_cp_getvar('FORMS');
+
+    /*h_colour = 'WHITE';*/
+
+    ret_val = CALLPROC batch_fp_drop_table ( h_table = :h_table);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_table ( print_command    VARCHAR(80) NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    h_store_cat = '0';
+
+    SELECT   output_category,
+             print_name,
+             print_no
+    FROM     :g_print_table
+    ORDER BY output_category,
+             print_no
+    {
+        IF output_category <> h_store_cat
+        THEN
+            IF :h_store_cat <> '0'
+            THEN
+                COPY TABLE :h_table (print_command  = c0nl)
+                INTO       :directory + '/' +
+                           'form_print_' + :h_store_cat;
+
+
+                ret_val = CALLPROC batch_check_inq_ing (
+                          h_num_row_ck = 1,
+                          h_commit     = 'Y',
+                          h_rollback   = 'N',
+                          h_frpr_name  = :h_frpr_name);
+
+                IF ret_val = 9
+                THEN
+                    INSERT INTO error_log
+                    VALUES(     'now',
+                                'Error copying table for ' + :h_store_cat,
+                                :h_frpr_name,
+                                :ret_val,
+                                :g_user_id);
+                    COMMIT;
+                    RETURN ret_val;
+                ENDIF;
+            ENDIF;
+
+            MODIFY :h_table TO TRUNCATED;
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9
+            THEN
+                INSERT INTO error_log
+                VALUES(     'now',
+                            'Error emptying ' + :h_table,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+        ENDIF;
+
+
+        IF :g_inquiry = 15
+        THEN
+            IF print_no < 10
+            THEN
+                h_line = '_RD_STP' +
+			 '+:Zprodq15:' +
+                         '+%D050%+?' +
+			 '015__' +
+                         TRIM(:output_category) +
+                         TRIM('00') +
+                         VARCHAR(:print_no)  +
+                         CONCAT('? ', :print_name);
+
+            ELSEIF (print_no > 9 AND print_no < 100)
+            THEN
+                h_line = '_RD_STP' +
+			 '+:Zprodq15:' +
+                         '+%D050%+?' +
+			 '015__' +
+                         TRIM(:output_category) +
+                         TRIM('0') +
+                         VARCHAR(:print_no)  +
+                         CONCAT('? ', :print_name);
+
+            ELSE
+                h_line = '_RD_STP' +
+			 '+:Zprodq15:' +
+                         '+%D050%+?' +
+			 '015__' +
+                         TRIM(:output_category) +
+                          VARCHAR(:print_no) +
+                          CONCAT('? ', :print_name);
+
+            ENDIF;
+
+        ELSE
+            IF print_no < 10
+            THEN
+                h_line = '_RD_STP' +
+			 '+:Zproda14:' +
+                         '+%D050%+?' +
+			 '014__' +
+                         TRIM(:output_category) +
+                         TRIM('00') + VARCHAR(:print_no)  +
+                         CONCAT('? ', :print_name);
+
+            ELSEIF (print_no > 9 AND print_no < 100)
+            THEN
+                h_line = '_RD_STP' +
+			 '+:Zproda14:' +
+			 '+%D050%+?' +
+			 '014__' +
+                         TRIM(:output_category) +
+                         TRIM('0') +
+                         VARCHAR(:print_no)  +
+                         CONCAT('? ', :print_name);
+
+            ELSE
+                h_line = '_RD_STP' +
+			 '+:Zproda14:' +
+                         '+%D050%+?' +
+			 '014__' +
+                         TRIM(:output_category) +
+                         VARCHAR(:print_no)  +
+                         CONCAT('? ', :print_name);
+
+            ENDIF;
+
+        ENDIF;
+
+        IF :g_inquiry = 15
+        THEN
+            IF :output_category = 'Y'
+            THEN
+                h_line = 'lp -drxp -n4 -o' + :h_line;
+            ELSE
+                h_line = 'lp -drxp -o' + :h_line;
+            ENDIF;
+        ELSE
+            IF :output_category = 'Y'
+            THEN
+                h_line = 'lp -drxp -n4 -o' + :h_line;
+            ELSE
+                h_line = 'lp -drxp -o' + :h_line;
+            ENDIF;
+        ENDIF;
+
+        INSERT INTO :h_table
+        VALUES (:h_line);
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error inserting lp command into ' + :h_table,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+        h_store_cat = :output_category;
+
+    };
+
+    COPY TABLE :h_table (print_command   =  c0nl)
+    INTO       :directory + '/' +
+               'form_print_' + :h_store_cat;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error copying ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC batch_fp_drop_table ( h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    SELECT DISTINCT(output_category) AS output_category
+    FROM   :g_print_table
+    {
+        /*--------------------------------------------------------------
+         Print lists for Control of form_control_ tables
+        --------------------------------------------------------------*/
+
+        h_table = 'form_control_' + :output_category;
+        h_print = '$FORMS/' + :h_table + '.rpt';
+
+        ret_val = CALLPROC msa_cp_callsys (
+        'report ' +
+         :g_database + ' ' +
+         '''(period = ' + VARCHAR(:g_period) +
+         ', output_category = "' + :output_category + '"' +
+         ', h_table = "' + :h_table +
+         '")''' +
+         ' -f' + :h_print +
+         ' -i$REPORTS/msada_rw_control_counts.rw ' +
+         '>> $FORMS/report.output');
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error calling msada_rw_control_counts.rw',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+
+        ret_val = CALLPROC msa_cp_callsys (
+                  'lines=`wc -l < ' + :h_print + '`;' +
+                  'lines=`expr ${lines} - 1`;' +
+                  'head -${lines} ' + :h_print + ' | ' +
+                  'lp -o12p ' +
+                  ' >> $FORMS/report.output');
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error printing ' + :h_print,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+         Print lists for Printing of form_control_ tables
+        --------------------------------------------------------------*/
+
+        ret_val = CALLPROC msa_cp_callsys (
+                  'lp -o12p $FORMS/form_print_' + :output_category +
+                  ' >> $FORMS/report.output');
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'Error printing form_print_' + :output_category,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+    };
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error in select loop from ' + :g_print_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    RETURN 0;
+}

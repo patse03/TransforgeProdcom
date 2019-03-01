@@ -1,0 +1,316 @@
+/*----------------------------------------------------------------------
+This creates the question text in char(57) slices
+----------------------------------------------------------------------*/
+
+PROCEDURE msada_fp_create_questions () =
+
+DECLARE h_frpr_name            = VARCHAR(24) NOT NULL,
+        h_table                = VARCHAR(24) NOT NULL,
+        h_question             = INTEGER4 NOT NULL,
+        h_counter              = INTEGER4 NOT NULL,
+        ret_val                = INTEGER1 NOT NULL,
+        industry               = INTEGER4 NOT NULL,
+        h_text1                = VARCHAR(57) NOT NULL,
+        h_text2                = VARCHAR(57) NOT NULL,
+        h_text3                = VARCHAR(57) NOT NULL,
+        h_text4                = VARCHAR(57) NOT NULL,
+        h_text5                = VARCHAR(57) NOT NULL,
+        h_text6                = VARCHAR(57) NOT NULL,
+        h_text7                = VARCHAR(57) NOT NULL,
+        h_text8                = VARCHAR(57) NOT NULL,
+        h_text9                = VARCHAR(57) NOT NULL,
+        h_text10               = VARCHAR(57) NOT NULL,
+        h_param_list           = CHAR(10) NOT NULL,
+        h_varchar_variable     = CHAR(10) NOT NULL,
+        h_param1               = VARCHAR(10) NOT NULL,
+        h_integer_variable     = INTEGER1 NOT NULL
+{
+
+    h_frpr_name = 'msada_fp_create_questions';
+    MESSAGE 'Creating Questions . . .';
+
+    /*------------------------------------------------------------------
+    See if this is the EntryPoint into the application
+    Parameters = AnnualPeriod
+    ------------------------------------------------------------------*/
+
+    h_param_list = CALLPROC CommandLineParameters ();
+
+    h_varchar_variable = SQUEEZE(h_param_list);
+    h_integer_variable = LOCATE(h_varchar_variable, ' ');
+    h_param1           = LEFT(h_varchar_variable, h_integer_variable-1);
+
+    IF g_annual_period = 0
+    THEN
+        SELECT MAX(period) AS g_annual_period
+        FROM   inquiry_period
+        WHERE  inquiry = 14;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        'System Error on Inquiry_period',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+	IF INT4(h_param1) <> :g_annual_period + 100
+	AND INT4(h_param1) <> :g_annual_period
+	AND INT4(h_param1) <> :g_annual_period - 100
+	AND INT4(h_param1) <> :g_annual_period - 200
+        THEN
+            INSERT INTO error_log
+            VALUES(     'now',
+                        :h_param1 + ' is not a valid Annual period ',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN 9;
+        ENDIF;
+	g_annual_period = INT4(:h_param1);
+    ENDIF;
+
+    h_table = 'form_quest_text';
+
+    ret_val = CALLPROC batch_fp_drop_table (
+	      h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CREATE TABLE :h_table (
+                 question   INTEGER4 NOT NULL,
+                 line_count INTEGER4 NOT NULL,
+                 text1      VARCHAR(57) NOT NULL,
+                 text2      VARCHAR(57) NOT NULL,
+                 text3      VARCHAR(57) NOT NULL,
+                 text4      VARCHAR(57) NOT NULL,
+                 text5      VARCHAR(57) NOT NULL,
+                 text6      VARCHAR(57) NOT NULL,
+                 text7      VARCHAR(57) NOT NULL,
+                 text8      VARCHAR(57) NOT NULL,
+                 text9      VARCHAR(57) NOT NULL,
+                 text10     VARCHAR(57) NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    The only questions whose text is required are lags 0, 2 & 5 for
+    value questions (not standard headings)
+    ------------------------------------------------------------------*/
+
+    INSERT INTO :h_table 
+    SELECT   question,
+	     int4(0) AS line_count,
+             text_line1 AS text1,
+             text_line2 AS text2,
+             text_line3 AS text3,
+             text_line4 AS text4,
+             text_line5 AS text5,
+             text_line6 AS text6,
+             text_line7 AS text7,
+             text_line8 AS text8,
+             text_line9 AS text9,
+             text_line10 AS text10
+    FROM     question_library
+    WHERE    period = :g_annual_period
+    AND      quest_order = 1
+    AND      MOD(question,10) = 1
+    AND      lag IN (0,2,5);
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error inserting into ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    SELECT question as h_question, 
+             text1 AS h_text1,
+             text2 AS h_text2,
+             text3 AS h_text3,
+             text4 AS h_text4,
+             text5 AS h_text5,
+             text6 AS h_text6,
+             text7 AS h_text7,
+             text8 AS h_text8,
+             text9 AS h_text9,
+             text10 AS h_text10
+	     FROM :h_table
+    ORDER BY h_question
+	     {
+             MESSAGE 'Question ' + VARCHAR(:h_question) + ' . . .';
+
+	    h_counter = 0;
+
+            IF h_text10 <> ''
+            THEN
+		h_counter = 10;
+            ELSEIF h_text9 <> ''  
+            THEN
+		h_counter = 9;
+            ELSEIF h_text8 <> ''   
+            THEN
+		h_counter = 8;
+            ELSEIF h_text7 <> ''    
+            THEN
+		h_counter = 7;           
+            ELSEIF h_text6 <> ''     
+            THEN
+		h_counter = 6;           
+            ELSEIF h_text5 <> ''      
+            THEN
+		h_counter = 5;           
+            ELSEIF h_text4 <> ''       
+            THEN
+		h_counter = 4;           
+            ELSEIF  h_text3 <> ''       
+            THEN
+		h_counter = 3;           
+            ELSEIF  h_text2 <> ''        
+            THEN
+		h_counter = 2;           
+            ELSEIF h_text1 <> ''                                        
+	    THEN
+		h_counter = 1;           
+            ENDIF;
+
+	    /*
+            IF h_text10 <> ''
+            THEN
+		h_counter = 10;
+            ELSEIF h_text9 <> ''  
+            THEN
+		h_counter = 9;
+            IF h_text1 <> ''                                        
+	    THEN
+		h_counter = h_counter + 1
+
+            ELSEIF  h_text2 <> ''        
+            THEN
+		h_counter = h_counter + 1
+            ELSEIF  h_text3 <> ''       
+            THEN
+		h_counter = h_counter + 1
+            ELSEIF h_text4 <> ''       
+            THEN
+		h_counter = h_counter + 1
+            ELSEIF h_text5 <> ''      
+            THEN
+		h_counter = h_counter + 1
+            ELSEIF h_text6 <> ''     
+            THEN
+		h_counter = h_counter + 1
+            ELSEIF h_text7 <> ''    
+            THEN
+		h_counter = h_counter + 1
+            ELSEIF h_text8 <> ''   
+            THEN
+		h_counter = h_counter + 1
+            ENDIF;
+	    */
+
+	    UPDATE :h_table
+	    SET line_count = :h_counter
+	    WHERE question = :h_question;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error in update in loop ' + :h_table,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+	    };
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error in select loop ' + :h_table,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+    MODIFY    :h_table TO BTREE
+    UNIQUE ON question;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error modifying ' + :h_table,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    RETURN 0;
+}

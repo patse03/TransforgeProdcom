@@ -1,0 +1,616 @@
+/************************************************************************** 
+
+  New print form process designed to be run using the ProdCom Production 
+  Control program.
+  
+  Two mandatory parameters (usually passed from PPC program):
+    *  g_annual_period: yyyy00 
+    *  g_form_type    : F/R       [Form or Reminder]
+
+  Two optional parameters (Used in manual mode):
+    *  g_setup: Y/N   [Run the setup components?]  
+    *  g_final: Y/N   [Run the spc file output procedure?]  
+
+  e.g. Normal run called by PPC: 
+       $IMAGES/form_print_app -dprodlivedb -a 201200 F
+  or   Manual run following failure of reminders, where setup worked OK:
+       $IMAGES/form_print_app -dprodlivedb -a 201200 R N N
+
+  THIS IS STAGE FOUR OF FOUR STAGES:
+   1) Setup routines
+   2) Contributor information for front page.
+   3) Question information for other pages.
+   4) SPC file creation.
+
+  DF 2012
+
+***********************************************************************/
+
+PROCEDURE form_print_04_pr () =
+
+DECLARE h_return                = INTEGER4     NOT NULL WITH DEFAULT,
+        h_text                  = VARCHAR(70)  NOT NULL WITH DEFAULT,
+        h_c_output              = VARCHAR(99)  NOT NULL WITH DEFAULT,
+        h_q_output              = VARCHAR(99)  NOT NULL WITH DEFAULT,
+        h_frpr_name             = VARCHAR(25)  NOT NULL WITH DEFAULT,
+        h_temp_table            = VARCHAR(36)  NOT NULL WITH DEFAULT,
+        h_table_1               = VARCHAR(36)  NOT NULL WITH DEFAULT,
+        h_table_2               = VARCHAR(36)  NOT NULL WITH DEFAULT,
+        h_idbr_year             = INTEGER4     NOT NULL WITH DEFAULT,
+
+        lp_error_check       = PROCEDURE RETURNING INTEGER NOT NULL,
+        lp_drop_table        = PROCEDURE RETURNING INTEGER NOT NULL,
+
+{
+
+  h_frpr_name  = 'form_print_04_pr';
+
+  h_table_1    = LOWER(:g_form_type) +'pr_form_c_data';
+  h_table_2    = LOWER(:g_form_type) +'pr_form_q_data';
+  h_temp_table = 'tt_form_print_04';
+
+  h_idbr_year  = :g_period + 12;
+
+  /*------------------------------------------------------------------
+      Log start of process.
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'STARTING: Process 4 starting.');
+
+  /*------------------------------------------------------------------
+      Set output file locations and names.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[32/45] Setting file locations and names. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 32 of 45.');
+
+  IF g_final = 'N'
+  OR g_database != 'prodlivedb'
+  THEN
+   
+    IF g_form_type = 'F'
+    THEN 
+      
+      h_c_output = '/admin/scratch/DUMMY_form_c_data_014_' +VARCHAR(:g_period);
+      h_q_output = '/admin/scratch/DUMMY_form_q_data_014_' +VARCHAR(:g_period);
+
+    ELSE
+
+      h_c_output = '/admin/scratch/DUMMY_rmnd_c_data_014_' +VARCHAR(:g_period);
+      h_q_output = '/admin/scratch/DUMMY_rmnd_q_data_014_' +VARCHAR(:g_period);
+
+    ENDIF;
+
+  ELSE
+
+    IF g_form_type = 'F'
+    THEN 
+      
+      h_c_output = '/prodcom/live5/files/forms/finalsel014_'
+                 + VARCHAR(:h_idbr_year);
+      h_q_output = '/prodcom/live5/files/forms/finalselquestions014_'
+                 + VARCHAR(:h_idbr_year);
+
+    ELSE
+
+      h_c_output = '/prodcom/live5/files/forms/rem2dets014_'
+                 + VARCHAR(:h_idbr_year);
+      h_q_output = '/prodcom/live5/files/forms/rem2detsquestions014_'
+                 + VARCHAR(:h_idbr_year);
+
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Create temp table from form contributor data table.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[33/45] Creating third working table. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 33 of 45.');
+
+  h_return = lp_drop_table (p_table_name = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_temp_table
+  AS
+  SELECT DISTINCT 
+         contributor_reference,
+         check_letter,
+         CHAR(contributor_industry) AS contributor_industry,
+         CHAR(legal_status) AS legal_status,
+         region,
+         add_name1,
+         add_name2,
+         add_name3,
+         add_line1,
+         add_line2,
+         add_line3,
+         add_line4,
+         add_line5,
+         add_postcode,
+         add_tradstyle1,
+         add_tradstyle2,
+         add_tradstyle3,
+         addressee,
+         inclexcl,
+         formtype,
+         ons_tel,
+         currency,
+         welsh,
+         new,
+         osm, 
+         ''  AS str_dummy,
+         0   AS int_dummy,
+         '0' AS nil_dummy
+  FROM   :h_table_1
+  WHERE  period = :g_period;  
+ 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create table ' +:h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Modify temp table
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[34/45] Modifying working table. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 34 of 45.');
+
+  MODIFY :h_temp_table TO BTREE UNIQUE
+  ON     contributor_reference;
+ 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify table ' +:h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Pad contributor_industry. 
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[35/45] Padding contributor industry numbers. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 35 of 45.');
+
+  UPDATE  :h_temp_table
+  SET     contributor_industry = '0' + contributor_industry
+  WHERE   length(contributor_industry) = 4;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to pad contributor_industry on '+:h_temp_table+'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Output contributor data to file
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[36/45] Sending contributor data to file. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 36 of 45.');
+
+  COPY TABLE :h_temp_table
+           ( contributor_reference =  c(0)':',
+             check_letter          =  c(0)':',
+             str_dummy             =  c(0)':',
+             str_dummy             =  c(0)':',
+             str_dummy             =  c(0)':',
+             contributor_industry  =  c(0)':',
+             int_dummy             =  c(0)':',
+             int_dummy             =  c(0)':',
+             int_dummy             =  c(0)':',
+             int_dummy             =  c(0)':',
+             int_dummy             =  c(0)':',
+             int_dummy             =  c(0)':',
+             int_dummy             =  c(0)':',
+             int_dummy             =  c(0)':',
+             str_dummy             =  c(0)':',
+             str_dummy             =  c(0)':',
+             str_dummy             =  c(0)':',
+             str_dummy             =  c(0)':',
+             str_dummy             =  c(0)':',
+             int_dummy             =  c(0)':',
+             int_dummy             =  c(0)':',
+             int_dummy             =  c(0)':',
+             legal_status          =  c(0)':',
+             str_dummy             =  c(0)':',
+             region                =  c(0)':',
+             str_dummy             =  c(0)':',
+             str_dummy             =  c(0)':',
+             str_dummy             =  c(0)':',
+             str_dummy             =  c(0)':',
+             add_name1             =  c(0)':',
+             add_name2             =  c(0)':',
+             add_name3             =  c(0)':',
+             add_line1             =  c(0)':',
+             add_line2             =  c(0)':',
+             add_line3             =  c(0)':',
+             add_line4             =  c(0)':',
+             add_line5             =  c(0)':',
+             add_postcode          =  c(0)':',
+             add_tradstyle1        =  c(0)':',
+             add_tradstyle2        =  c(0)':',
+             add_tradstyle3        =  c(0)':',
+             addressee             =  c(0)':',
+             str_dummy             =  c(0)':',
+             str_dummy             =  c(0)':',
+             str_dummy             =  c(0)':',
+             inclexcl              =  c(0)':',
+             int_dummy             =  c(0)':',
+             formtype              =  c(0)':',
+             ons_tel               =  c(0)':',
+             currency              =  c(0)':',
+             welsh                 =  c(0)':',
+             new                   =  c(0)':',
+             nil_dummy             =  c(0)':',
+             osm                   =  c0nl)
+  INTO h_c_output;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to copy data to contributor data file';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Create temp table from form question data table.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[37/45] Creating fourth working table. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 37 of 45.');
+
+  h_return = lp_drop_table (p_table_name = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_temp_table
+  AS
+  SELECT '      ' AS period,
+         col_type,
+         contributor_reference,
+         contributor_industry,
+         q_n_l_code,
+         q_n_order,
+         q_desc_code,
+         q_count,
+         q_line,
+         need_count,
+         text1,
+         text2,
+         text3,
+         text4,
+         text5,
+         text6,
+         text7,
+         text8,
+         text9,
+         text10,
+         unit1,
+         cn_code1,
+         cn_code2,
+         cn_code3,
+         cn_code4,
+         cn_code5,
+         cn_code6,
+         cn_code7,
+         cn_code8,
+         cn_code9,
+         phone_contact,
+         phone_area_code,
+         phone,
+         phone_extension,
+         fax_area_code,
+         fax,
+         email
+  FROM   :h_table_2
+  WHERE  period = :g_period
+  WITH   STRUCTURE = HEAP;  
+ 
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create second instance of table ' 
+           + :h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Change period to idbr format.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[38/45] Changing period to idbr version. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 38 of 45.');
+
+  UPDATE  :h_temp_table
+  SET     period = VARCHAR(:h_idbr_year);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to update period on '+:h_temp_table+'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Modify temp table
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[39/45] Modifying working table. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 39 of 45.');
+
+  MODIFY :h_temp_table TO BTREE UNIQUE
+  ON     period, contributor_reference, q_n_order, q_n_l_code;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to modify second instance of table ' 
+           + :h_temp_table +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Output question data to file
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[40/45] Sending question data to file. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 40 of 45.');
+
+  COPY TABLE :h_temp_table
+           ( period = c0$,
+             col_type = c0$,
+             contributor_reference = c0$,
+             contributor_industry = c0$,
+             q_n_l_code = c0$,
+             q_n_order = c0$,
+             q_desc_code = c0$,
+             q_count = c0$,
+             q_line = c0$,
+             need_count = c0$,
+             text1 = c0$,
+             text2 = c0$,
+             text3 = c0$,
+             text4 = c0$,
+             text5 = c0$,
+             text6 = c0$,
+             text7 = c0$,
+             text8 = c0$,
+             text9 = c0$,
+             text10 = c0$,
+             unit1 = c0$,
+             cn_code1 = c0$,
+             cn_code2 = c0$,
+             cn_code3 = c0$,
+             cn_code4 = c0$,
+             cn_code5 = c0$,
+             cn_code6 = c0$,
+             cn_code7 = c0$,
+             cn_code8 = c0$,
+             cn_code9 = c0$,
+             phone_contact = c0$,
+             phone_area_code = c0$,
+             phone = c0$,
+             phone_extension = c0$,
+             fax_area_code = c0$,
+             fax = c0$,
+             email = c0nl)
+  INTO h_q_output;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to copy data to question data file';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+     Tidy up.
+  ----------------------------------------------------------------------*/
+
+  MESSAGE '[41/45] Tidying up. . .';
+  SLEEP 1;
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'Running: Stage 41 of 45.');
+
+  h_return = lp_drop_table (p_table_name = :h_temp_table);
+
+  IF h_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Log end of process.
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'COMPLETE: Process 4 completed.');
+
+  RETURN 0;
+    
+}
+
+/*************************** LOCAL PROCEDURES *****************************/
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL WITH DEFAULT) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(36) NOT NULL WITH DEFAULT
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    MESSAGE 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping, '
+          + 'with error code ' + VARCHAR(:lp_return) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  h_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF h_return != 0 
+  THEN 
+    MESSAGE 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+          + 'Process cannot continue so exiting.';
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+
+

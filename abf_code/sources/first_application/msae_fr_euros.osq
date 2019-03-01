@@ -1,0 +1,199 @@
+INITIALIZE () =
+
+DECLARE 
+  h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name       = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_field_name      = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_rows            = INTEGER4    NOT NULL WITH DEFAULT,
+  h_return          = INTEGER1    NOT NULL WITH DEFAULT,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name = 'msae_fr_euros';
+  h_retries_allowed = 3;
+  msa_date = 'now';
+
+  SELECT DBMSINFO('database') AS g_database;
+  SELECT DBMSINFO('username') AS g_user_id;
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+  SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+  /*----------------------------------------------------------------------
+       Load exchange rates to table field.
+  ----------------------------------------------------------------------*/
+  
+
+  MESSAGE 'Loading Exchange Rates . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    tf =
+
+    SELECT   period,
+             euros,
+             fixed
+    FROM     euro_exchange_rate
+    ORDER BY period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0 
+  THEN
+    MESSAGE 'ERROR: Failed to select from euro_exchange_rate table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  SCROLL tf TO END;
+}
+
+/*************************** KEY ACTIVATIONS *****************************/
+
+'Go', KEY FRSKEY4 =
+{
+
+  INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+  IF :h_field_name != 'tf'
+  THEN
+    MESSAGE 'WARNING: Please highlight the exchange rate you wish to update.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+  IF :h_rows = 0
+  THEN
+    MESSAGE 'WARNING: Please highlight the exchange rate you wish to update.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  IF tf.fixed = 'Y'
+  THEN
+    MESSAGE 'WARNING: This Exchange Rate can not be updated as it ' 
+          + 'has already been fixed.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  h_return = CALLFRAME msae_fr_up_euros 
+                     ( s_period = :tf.period,
+                       s_euros  = BYREF(:tf.euros));
+
+  IF h_return != 0
+  THEN
+    /* No sql in called frame, just returns 1 for abort or 0 for save. */
+    RESUME;
+  ENDIF;
+
+  REDISPLAY;
+
+  MESSAGE 'Updating Exchange Rates . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE euro_exchange_rate
+    SET    euros = :tf.euros,
+           fixed = 'Y'
+    WHERE  period = :tf.period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to update rate on euro_exchange_rate table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  tf.fixed = 'Y';
+
+  REDISPLAY;
+
+  MESSAGE 'NOTE: Exchange Rate for ' + VARCHAR(:tf.period) 
+        + ' updated successfully.'
+    WITH STYLE = POPUP;
+
+}
+
+'End', KEY FRSKEY14 =
+{
+    RETURN 0;
+}
+
+/************************* LOCAL PROCEDURES ******************************/
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
