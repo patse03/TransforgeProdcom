@@ -1,0 +1,234 @@
+INITIALIZE() =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        h_region          = CHAR(2)  NOT NULL,
+        h_idbr            = CHAR(11) NOT NULL,
+        h_dummy           = CHAR(11) NOT NULL
+
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msai_fr_in_cont_reminders';
+    msa_date    = 'now';
+
+    SET_FORMS FIELD '' (INVISIBLE(country) = 1);
+}
+
+FIELD contributor_reference =
+{
+    MESSAGE 'Checking Contributor . . .';
+
+    ret_val = CALLPROC msa_fp_get_ref(
+              h_dummy               = BYREF(:h_dummy),
+              h_idbr                = BYREF(:h_idbr),
+              contributor_reference = :contributor_reference);
+
+    IF ret_val > 1
+    THEN
+        RETURN ret_val;
+
+    ELSEIF ret_val = 1
+    THEN
+        RESUME FIELD contributor_reference; 
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT add_name1
+        FROM   contributor
+        WHERE  contributor_reference IN (:h_idbr,:h_dummy);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing contributor'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Contributor does exist on contributor table'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC msa_fp_latest_details (
+              region                = BYREF(:h_region),
+              contributor_reference = :contributor_reference);
+
+    IF ret_val > 1
+    THEN
+        RETURN ret_val;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This Contributor has never been selected'
+        WITH STYLE = POPUP;
+        RESUME FIELD contributor_reference;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT country
+        FROM   region
+        WHERE  region = :h_region;
+        
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing region'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Region does not exist'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    IF country <> ''
+    THEN
+        SET_FORMS FIELD '' (INVISIBLE(country)= 0);
+    ENDIF;
+
+    RESUME FIELD period;
+
+}
+
+FIELD period = 
+{
+    MESSAGE 'Checking Period . . .';
+
+    IF period <> 999999
+    THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+    
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+    
+            h_retries = :h_retries + 1;
+    
+            SELECT period
+            FROM   inquiry_period
+            WHERE  period = :period;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+    
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+    
+        ENDWHILE;
+    
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+    
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing inquiry_period'
+            WITH STYLE = POPUP;
+            RETURN 9;
+    
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'Period does not exist'
+            WITH STYLE = POPUP;
+            RESUME FIELD period;
+        ENDIF;
+    ENDIF;
+
+    MESSAGE 'Selecting Reminders Data . . .';
+
+    ret_val = CALLFRAME msai_fr_view_crefs (
+              h_idbr   = :h_idbr, 
+              h_dummy  = :h_dummy, 
+              period   = :period)
+              WITH STYLE = POPUP (
+              startcolumn = 19,
+              startrow    = 10,
+              border      = none);
+
+    RESUME FIELD period; 
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Clear' = 
+{
+    CLEAR FIELD contributor_reference, period, add_name1;
+    msa_date = 'now';
+    SET_FORMS FIELD '' (INVISIBLE(country) = 1);
+    RESUME FIELD contributor_reference;
+}
+
+'End', KEY FRSKEY6 = 
+{ 
+    RETURN 0; 
+}

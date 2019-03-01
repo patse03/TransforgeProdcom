@@ -1,0 +1,234 @@
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_field_name      = VARCHAR(24) NOT NULL,
+        h_yesno           = CHAR(1) NOT NULL,
+        h_rows            = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        lp_load_data      = PROCEDURE RETURNING INTEGER
+
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msab_fr_duplicates';
+    msa_date = 'now';
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+    ret_val = CALLPROC lp_load_data ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    RESUME FIELD tf;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Delete' =
+{
+
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name <> 'tf'
+    THEN
+        MESSAGE 'Please highlight the required Form'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'Please highlight the required Form'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_yesno = '';
+    WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+    DO
+        h_yesno = PROMPT 'Do you really wish to delete this Form' +
+                         ' from the Duplicates Table?' +
+                         ' Type Y/N and press <return>'
+                  WITH STYLE = POPUP;
+        h_yesno = LOWERCASE(:h_yesno);
+    ENDWHILE;
+
+    IF h_yesno = 'n'
+    THEN
+        RESUME;
+    ENDIF;
+
+    MESSAGE 'Deleting Form . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        DELETE FROM bto_duplicates
+        WHERE       contributor_reference = :tf.contributor_reference
+        AND         contributor_industry  = :tf.contributor_industry
+        AND         period                = :tf.period
+        AND         time                  = :tf.time;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in deleting from bto_duplicates'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows deleted from bto_duplicates'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_data ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    RESUME FIELD tf;
+}
+
+'View', KEY FRSKEY4 =
+{
+
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name <> 'tf'
+    THEN
+        MESSAGE 'Please highlight the required Form'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'Please highlight the required Form'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    ret_val = CALLFRAME msab_fr_dup_view (
+              contributor_reference = :tf.contributor_reference,
+              contributor_industry  = :tf.contributor_industry,
+              period                = :tf.period,
+              time                  = :tf.time);
+
+    msa_date = 'now';
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                  L O C A L   P R O C E D U R E
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_data () =
+{
+
+    MESSAGE 'Selecting Duplicate Forms . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+  
+        SELECT   DISTINCT(a.contributor_industry) AS contributor_industry,
+                 a.period,
+                 a.contributor_reference,
+                 a.time
+        FROM     bto_duplicates a,
+                 industry_analysts b
+        WHERE    a.contributor_industry = b.industry
+          AND    a.contributor_reference >= b.low_ref
+          AND    a.contributor_reference <= b.high_ref
+          AND    b.user_id = :g_user_id
+        ORDER BY period,
+                 contributor_industry,
+                 contributor_reference,
+                 time;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(no_forms),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in bto_duplicates'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'You do not have any duplicate forms that have' +
+                ' already been taken on'
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+    msa_date = 'now';
+
+    RETURN 0;
+}

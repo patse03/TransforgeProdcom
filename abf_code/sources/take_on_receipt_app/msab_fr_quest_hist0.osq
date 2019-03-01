@@ -1,0 +1,110 @@
+/*-s--------------------------------------------------------------------
+Displays history for 01, 05 and 06 questions
+--------------------------------------------------------------------e-*/
+
+INITIALIZE (
+
+        h_dummy           = CHAR(11) NOT NULL,
+        h_idbr            = CHAR(11) NOT NULL,
+        period            = INTEGER4 NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_record          = INTEGER4 NOT NULL,
+        alt_question1     = INTEGER4 NOT NULL,
+        alt_question2     = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msab_fr_quest_hist0';
+
+    MESSAGE 'Selecting History Data . . .';
+
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+    ret_val = CALLPROC msab_fp_old_questions (
+              question      = :question,
+              alt_question1 = BYREF(:alt_question1),
+              alt_question2 = BYREF(:alt_question2));
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT   question,
+                 period,
+                 avalue,
+                 acell,
+                 confirmation_code
+        FROM     cqpv
+        WHERE    contributor_reference IN (:h_idbr,:h_dummy)
+        AND      question IN (:question,:alt_question1,:alt_question2)
+        ORDER BY period DESC;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing cqpv'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No previous values are held'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+    UNLOADTABLE tf (h_record = _RECORD)
+    {
+         IF :tf.period = :period
+         THEN
+             SCROLL tf TO :h_record;
+             RESUME FIELD tf;
+         ENDIF;
+    };
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'End', KEY FRSKEY14 =
+{
+    RETURN 0;
+}

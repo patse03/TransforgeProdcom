@@ -1,0 +1,231 @@
+
+INITIALIZE(
+
+        h_idbr                = CHAR(11) NOT NULL,
+        h_dummy               = CHAR(11) NOT NULL,
+        period                = INTEGER4 NOT NULL) =
+
+DECLARE h_retries_allowed     = INTEGER1 NOT NULL,
+        h_retries             = INTEGER1 NOT NULL,
+        h_retry_or_not        = CHAR(5) NOT NULL,
+        h_frpr_name           = VARCHAR(24) NOT NULL,
+        key_disp              = CHAR(3)  NOT NULL,
+        h_table               = VARCHAR(24) NOT NULL,
+        ret_val               = INTEGER1 NOT NULL
+
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msai_fr_view_crefs';
+
+    h_table = 'temp_reminders_tab';
+
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+    /*------------------------------------------------------------------
+      Create table of all periods for required contributor
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Reminders Data . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE (:h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY')
+    DO
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table
+        AS SELECT    a.inquiry, 
+                     a.reminder, 
+                     a.rem_type, 
+                     a.period,
+                     a.date_created, 
+                     a.industry,
+                     ' ' AS key_disp,
+                     b.keyresp
+        FROM         stop_reminder a,
+                     contributor_period b
+        WHERE        a.contributor_reference IN (:h_idbr,:h_dummy)
+        AND          a.contributor_reference = b.contributor_reference
+        AND          a.period = b.period;
+
+        ret_val = CALLPROC check_inq_ing(
+                       h_num_row_ck      = 1,
+                       h_rollback        = 'N',
+                       h_commit          = 'Y',
+                       h_retries         = :h_retries,
+                       h_retries_allowed = :h_retries_allowed,
+                       h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+    ELSEIF ret_val = 9
+    THEN
+        RETURN 9;
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No data exists for this Contributor and this Period'
+        WITH STYLE = POPUP;
+        RESUME FIELD tf;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Add keyresp marker
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Adding Keyresp Display Marker . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table
+        SET    key_disp = 'Key'
+        WHERE  keyresp = 1;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+       Set up screen table
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting to Screen . . .';
+
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        IF period = 999999
+        THEN
+            tf = 
+
+            SELECT   inquiry, 
+                     reminder, 
+                     rem_type, 
+                     period,
+                     date_created, 
+                     key_disp,
+                     industry
+            FROM     :h_table
+            ORDER BY period,
+                     reminder;
+        ELSE
+            tf = 
+
+            SELECT   inquiry, 
+                     reminder, 
+                     rem_type, 
+                     period,
+                     date_created, 
+                     key_disp,
+                     industry
+            FROM     :h_table
+            WHERE    period = :period
+            ORDER BY reminder;
+
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing ' + :h_table 
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        IF :period = 999999
+        THEN
+            MESSAGE 'No Stop Reminders details are held for this' +
+                    ' Contributor.'
+            WITH STYLE = POPUP;
+        ELSE
+            MESSAGE 'No Stop Reminders details are held for this' +
+                    ' Contributor and this Period.'
+            WITH STYLE = POPUP;
+        ENDIF;
+        RETURN 0;
+    ENDIF;
+
+    RESUME FIELD tf; 
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'End', KEY FRSKEY6 = 
+{ 
+    RETURN 0; 
+}

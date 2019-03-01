@@ -1,0 +1,276 @@
+/*----------------------------------------------------------------------
+Adds added-questions to cqpv and question_insert_log
+----------------------------------------------------------------------*/
+
+PROCEDURE msab_fp_ins_added (
+
+        currency              = CHAR(1) NOT NULL,
+        contributor_reference = CHAR(11) NOT NULL,
+        period                = INTEGER4 NOT NULL,
+        inquiry               = INTEGER1 NOT NULL,
+        contributor_industry  = INTEGER4 NOT NULL,
+        temp_cqpv             = VARCHAR(24) NOT NULL) =
+
+DECLARE h_retries_allowed     = INTEGER1 NOT NULL,
+        h_retries             = INTEGER1 NOT NULL,
+        h_retry_or_not        = CHAR(5) NOT NULL,
+        h_frpr_name           = VARCHAR(24) NOT NULL,
+        h_quest_order         = INTEGER1 NOT NULL,
+        h_question            = INTEGER4 NOT NULL,
+        h_question_industry   = INTEGER4 NOT NULL,
+        h_acell               = CHAR(2) NOT NULL,
+        h_avalue              = INTEGER4 NOT NULL,
+        h_evalue              = INTEGER4 NOT NULL,
+        h_acell_type          = CHAR(2) NOT NULL,
+        h_aconstruction_type  = INTEGER1 NOT NULL,
+        ret_val               = INTEGER2 NOT NULL,
+        h_return              = INTEGER2 NOT NULL,
+
+  lp_write_to_audit_trail = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+    h_frpr_name = 'msab_fp_ins_added';
+    h_retries_allowed = 3;
+
+    SELECT quest_order         AS h_quest_order,
+           question            AS h_question,
+           question_industry   AS h_question_industry,
+           acell               AS h_acell,
+           avalue              AS h_avalue,
+           evalue              AS h_evalue,
+           acell_type          AS h_acell_type,
+           aconstruction_type  AS h_aconstruction_type
+    FROM   :temp_cqpv
+    WHERE  update_type = 'i'
+    {
+
+    /*--------------------------------------------------------------
+          Note creation in audit trail.
+    --------------------------------------------------------------*/
+
+        h_return = CALLPROC lp_write_to_audit_trail
+                 ( p_contributor_reference = :contributor_reference,
+                   p_period                = :period,
+                   p_question              = :h_question,
+                   p_code                  = 1);
+
+        IF h_return != 0
+        THEN
+          /* Error reported by external procedure */
+          RETURN 9;
+        ENDIF;
+       
+        h_return = CALLPROC lp_write_to_audit_trail
+                 ( p_contributor_reference = :contributor_reference,
+                   p_period                = :period,
+                   p_question              = :h_question,
+                   p_val_1                 = 0,
+                   p_val_2                 = :h_avalue,
+                   p_code                  = 12);
+
+        IF h_return != 0
+        THEN
+          /* Error reported by external procedure */
+          RETURN 9;
+        ENDIF;
+       
+        /*--------------------------------------------------------------
+        If it's a Euro form, don't insert volume figures into the evalue
+        column
+        --------------------------------------------------------------*/
+
+        IF :currency = 'E' AND MOD(:h_question,10) <> 1
+        THEN
+            h_evalue = 0;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        Insert into cqpv
+        --------------------------------------------------------------*/
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < :h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+            h_retries = :h_retries + 1;
+
+            INSERT INTO cqpv (contributor_reference,
+                              quest_order,
+                              question,
+                              period,
+                              contributor_inquiry,
+                              contributor_industry,
+                              question_industry,
+                              acell,
+                              avalue,
+                              evalue,
+                              acell_type,
+                              aconstruction_type,
+                              fcell,
+                              fvalue,
+                              fcell_type,
+                              fconstruction_type,
+                              confirmation_code,
+                              confirmation_date,
+                              atypical)
+            VALUES (          :contributor_reference,
+                              :h_quest_order,
+                              :h_question,
+                              :period,
+                              :inquiry,
+                              :contributor_industry,
+                              :h_question_industry,
+                              :h_acell,
+                              :h_avalue,
+                              :h_evalue,
+                              :h_acell_type,
+                              :h_aconstruction_type,
+                              'N',
+                              0,
+                              '',
+                              0,
+                              '',
+                              '',
+                              'N');
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_rollback   = 'N',
+                      h_commit     = 'Y',
+                      h_retries    = :h_retries,
+                      h_retries_allowed  = :h_retries_allowed,
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+        ELSEIF ret_val = 9 OR ret_val = 1
+        THEN
+            MESSAGE 'Extra Question was not inserted into cqpv'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        Add inserted questions to question_insert_log.
+        Don't add uncoded entries (W) as these are not real questions:
+        when they're coded out, then they will be added.
+        --------------------------------------------------------------*/
+
+        IF :h_acell <> 'W'
+        THEN
+            h_retry_or_not      = 'RETRY';
+            h_retries           = 0;
+
+            WHILE :h_retries < :h_retries_allowed AND :h_retry_or_not = 'RETRY'
+            DO
+                h_retries = :h_retries + 1;
+
+                INSERT INTO question_insert_log (
+                            contributor_reference,
+                            period,
+                            contributor_industry,
+                            inquiry,
+                            question,
+                            avalue,
+                            evalue,
+                            question_industry,
+                            user_id,
+                            time)
+                VALUES (    :contributor_reference,
+                            :period,
+                            :contributor_industry,
+                            :inquiry,
+                            :h_question,
+                            :h_avalue,
+                            :h_evalue,
+                            :h_question_industry,
+                            :g_user_id,
+                            'now');
+
+                ret_val = CALLPROC check_inq_ing (
+                          h_num_row_ck = 1,
+                          h_rollback   = 'N',
+                          h_commit     = 'Y',
+                          h_retries    = :h_retries,
+                          h_retries_allowed  = :h_retries_allowed,
+                          h_frpr_name  = :h_frpr_name);
+
+                IF ret_val <> 7
+                THEN
+                    h_retry_or_not = '';
+                ENDIF;
+
+            ENDWHILE;
+
+            IF ret_val = 7
+            THEN
+                RETURN 7;
+            ELSEIF ret_val = 9 OR ret_val = 1
+            THEN
+                MESSAGE 'Unable to log extra question'
+                WITH STYLE = POPUP;
+                RETURN ret_val;
+            ENDIF;
+        ENDIF;
+
+    };
+
+    ret_val = CALLPROC check_inq_ing (
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        MESSAGE 'Select loop fails to insert extra questions'
+        WITH STYLE = POPUP;
+        RETURN ret_val;
+    ENDIF;
+
+    RETURN 0;
+}
+/**************************** LOCAL PROCEDURES ****************************/
+
+
+/*=======================================================================
+    Local procedure to write to audit trail.
+=======================================================================*/
+
+PROCEDURE lp_write_to_audit_trail
+        ( p_contributor_reference = CHAR(11)    NOT NULL WITH DEFAULT,
+          p_question              = INTEGER4    NOT NULL WITH DEFAULT,
+          p_period                = INTEGER4    NOT NULL WITH DEFAULT,
+          p_code                  = INTEGER1    NOT NULL WITH DEFAULT,
+          p_val_1                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_val_2                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_val_3                 = VARCHAR(20) NOT NULL WITH DEFAULT,
+          p_frpr_name             = VARCHAR(36) NOT NULL WITH DEFAULT )=
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC write_to_audit_trail 
+            ( p_contributor_reference = :p_contributor_reference, 
+              p_question              = :p_question,
+              p_period                = :p_period,
+              p_code                  = :p_code, 
+              p_val_1                 = :p_val_1,
+              p_val_2                 = :p_val_2,
+              p_val_3                 = :p_val_3,
+              p_frpr_name             = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

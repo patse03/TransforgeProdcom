@@ -1,0 +1,380 @@
+/******************************************************************************
+
+   Receipts a form without taking on any data. Form moves to form status 1.
+
+******************************************************************************/
+
+INITIALIZE () =
+
+DECLARE 
+  h_retries_allowed = INTEGER1    NOT NULL,
+  h_retries         = INTEGER1    NOT NULL,
+  h_retry_or_not    = CHAR(5)     NOT NULL,
+  h_frpr_name       = VARCHAR(24) NOT NULL,
+  h_output_category = CHAR(1)     NOT NULL,
+  h_yesno           = CHAR(1)     NOT NULL,
+  h_receipt_date    = DATE        NOT NULL,
+  h_keyresp         = INTEGER1    NOT NULL,
+  h_return          = INTEGER1    NOT NULL,
+
+  lp_full_error_check = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_retries_allowed = 3;
+  h_frpr_name = 'msab_fr_rec_form';
+  s_key = 'KEY';
+  msa_date = 'now';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+  SET_FORMS FIELD '' (INVISIBLE (s_key) = 1,
+
+                      DISPLAYONLY(s_contributor_reference) = 0,
+                      UNDERLINE  (s_contributor_reference) = 1,
+                      REVERSE    (s_contributor_reference) = 0,
+
+                      DISPLAYONLY(s_period) = 0,
+                      UNDERLINE  (s_period) = 1,
+                      REVERSE    (s_period) = 0);
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+
+}
+
+/*************************** FIELD ACTIVATIONS *****************************/
+
+FIELD s_contributor_reference =
+{
+ /*------------------------------------------------------------------
+    Validate contributor reference.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Checking Contributor . . . ';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT add_name1    AS s_add_name1
+    FROM   contributor
+    WHERE  contributor_reference = :s_contributor_reference;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'ERROR: This contributor does not exist on the ProdCom system. '
+          + 'Please try again or exit the screen.'
+    WITH STYLE = POPUP;
+    RESUME FIELD s_contributor_reference;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select contributor details. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  REDISPLAY;
+
+  /*-----------------------------------------------------------------------
+    Get output category for enforcement determination.
+  -----------------------------------------------------------------------*/
+
+  h_return = CALLPROC msa_fp_latest_details 
+           ( contributor_reference = :s_contributor_reference,
+             output_category       = BYREF(:h_output_category));
+             
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This contributor is not recorded as being selected '
+          + 'for any data period currently on the ProdCom system. '
+          + 'The most likely scenario is that it has been deselected. '
+          + 'If you believe this to be wrong, please contact IM immediately. '
+          + 'Otherwise, please try a different reference number of exit '
+          + 'the screen.'
+    WITH STYLE = POPUP;  
+  ELSEIF h_return > 1
+  THEN
+    /* Error message handled in external procedure */
+    RETURN :h_return;
+  ENDIF;
+
+
+  /*--------------------------------------------------------------------------
+     If contributor is in Enforcement, prompt for confirmation of dereceipt.
+  --------------------------------------------------------------------------*/
+
+  IF h_output_category = 'Y'
+  THEN
+
+    h_yesno = '';
+
+    WHILE h_yesno != 'Y' AND h_yesno != 'N'
+    DO
+      h_yesno = PROMPT 'WARNING: This Contributor is in Enforcement.' +X'0D'
+                     + 'Are you sure you want to receipt the form? [Y/N] : '
+                WITH STYLE = POPUP;
+
+      h_yesno = UPPER(h_yesno);
+
+    ENDWHILE;
+
+    IF h_yesno = 'N'
+    THEN
+      RETURN 0;
+    ENDIF;
+
+  ENDIF;
+
+  SET_FORMS FIELD '' (DISPLAYONLY(s_contributor_reference) = 1,
+                      UNDERLINE  (s_contributor_reference) = 0,
+                      REVERSE    (s_contributor_reference) = 1);
+
+  s_period = (DATE_PART('year',DATE('today')) -1 ) * 100;
+
+  REDISPLAY;
+
+  RESUME FIELD s_period;
+
+}
+
+FIELD s_period =
+{
+  MESSAGE 'Checking Period . . .';
+
+  /*------------------------------------------------------------------
+    Validate period.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Checking Period . . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT period AS s_period
+    FROM   inquiry_period
+    WHERE  period = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This period does not exist in the ProdCom system.'
+    WITH STYLE = POPUP;
+    CLEAR FIELD s_period;
+    RESUME FIELD s_period;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to validate inquiry period. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Validate contributor period.
+  ------------------------------------------------------------------*/
+
+  MESSAGE 'Checking Contributor Period. . .';
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT receipt_date          AS h_receipt_date,
+           contributor_industry  AS s_industry,
+           keyresp               AS h_keyresp
+    FROM   contributor_period 
+    WHERE  contributor_reference = :s_contributor_reference
+      AND  period                = :s_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 1
+  THEN
+    MESSAGE 'WARNING: This contributor was not selected for this period.'
+    WITH STYLE = POPUP;
+    RETURN 1;
+  ELSEIF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to select contributor periodic data. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN :h_return;
+  ENDIF;
+
+  /*----------------------------------------------------------------------
+     Set screamer fields.
+  ----------------------------------------------------------------------*/
+
+  IF :h_keyresp = 1
+  THEN
+    SET_FORMS FIELD '' (INVISIBLE(s_key) = 0);
+  ELSE
+    SET_FORMS FIELD '' (INVISIBLE(s_key) = 1);
+  ENDIF;
+
+  REDISPLAY;
+
+  /*----------------------------------------------------------------------
+     Validate receipt date.
+  ----------------------------------------------------------------------*/
+
+  IF h_receipt_date != ''
+  THEN
+    MESSAGE 'WARNING: This Contributor has already been receipted on ' 
+          +  VARCHAR(:h_receipt_date) + '.' +X'0D'
+          + 'If you want to change the receipt date, you must de-receipt '
+          + 'the form first.'
+    WITH STYLE = POPUP;
+
+    CLEAR FIELD ALL;
+    msa_date = 'now';
+    s_key = 'KEY';
+ 
+    SET_FORMS FIELD '' (INVISIBLE (s_key) = 1,
+
+                        DISPLAYONLY(s_contributor_reference) = 0,
+                        UNDERLINE  (s_contributor_reference) = 1,
+                        REVERSE    (s_contributor_reference) = 0,
+
+                        DISPLAYONLY(s_period) = 0,
+                        UNDERLINE  (s_period) = 1,
+                        REVERSE    (s_period) = 0);
+
+    RESUME FIELD s_contributor_reference;
+
+  ENDIF;
+
+  h_return = CALLPROC msab_fp_rec_form 
+           ( p_contributor_reference = :s_contributor_reference,
+             p_period                = :s_period);
+
+  IF h_return != 0
+  THEN
+    /* Error message handled in external procedure */
+    RETURN h_return;
+  ENDIF;
+
+  CLEAR FIELD ALL;
+  msa_date = 'now';
+  s_key = 'KEY';
+ 
+  SET_FORMS FIELD '' (INVISIBLE (s_key) = 1,
+
+                      DISPLAYONLY(s_contributor_reference) = 0,
+                      UNDERLINE  (s_contributor_reference) = 1,
+                      REVERSE    (s_contributor_reference) = 0,
+
+                      DISPLAYONLY(s_period) = 0,
+                      UNDERLINE  (s_period) = 1,
+                      REVERSE    (s_period) = 0);
+
+  RESUME FIELD s_contributor_reference;
+
+}
+/***************************** KEY ACTIVATIONS *****************************/
+
+'Clear', KEY FRSKEY12 =
+{
+
+  CLEAR FIELD ALL;
+  msa_date = 'now';
+  s_key = 'KEY';
+ 
+  SET_FORMS FIELD '' (INVISIBLE (s_key) = 1,
+
+                      DISPLAYONLY(s_contributor_reference) = 0,
+                      UNDERLINE  (s_contributor_reference) = 1,
+                      REVERSE    (s_contributor_reference) = 0,
+
+                      DISPLAYONLY(s_period) = 0,
+                      UNDERLINE  (s_period) = 1,
+                      REVERSE    (s_period) = 0);
+
+  RESUME FIELD s_contributor_reference;
+
+}
+
+'End', KEY FRSKEY14 =
+{
+  RETURN 0;
+}
+
+/****************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}

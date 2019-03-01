@@ -1,0 +1,124 @@
+/*-s--------------------------------------------------------------------
+Inserts extra questions into temp_cqpv
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msab_fp_ins_ext (
+
+        currency                 = CHAR(1) NOT NULL,
+        temp_cqpv                = VARCHAR(20) NOT NULL,
+        h_quest_order            = INTEGER1 NOT NULL,
+        h_question               = INTEGER4 NOT NULL,
+        h_cell                   = CHAR(2)  NOT NULL,
+        h_value                  = INTEGER4 NOT NULL,
+        h_cell_type              = CHAR(2)  NOT NULL,
+        h_aconstruction_type     = INTEGER1 NOT NULL,
+        h_confirmation_code      = CHAR(1)  NOT NULL,
+        h_contributor_inquiry    = INTEGER1 NOT NULL,
+        h_inquiry                = INTEGER1 NOT NULL,
+        h_question_industry      = INTEGER4 NOT NULL) =
+
+
+DECLARE h_retries_allowed         = INTEGER1 NOT NULL,
+        h_retries                 = INTEGER1 NOT NULL,
+        h_retry_or_not            = CHAR(5) NOT NULL,
+        h_frpr_name               = VARCHAR(24) NOT NULL,
+        h_avalue                  = INTEGER4 NOT NULL,
+        h_evalue                  = INTEGER4 NOT NULL,
+        ret_val                   = INTEGER1 NOT NULL
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msab_fp_ins_ext';
+
+    /*-s----------------------------------------------------------------
+    Euro Forms and Value Questions  : set evalue (avalue = 0)
+    Euro Forms and Volume Questions : set evalue and avalue
+    Sterling Forms                  : set avalue (evalue = 0)
+    ----------------------------------------------------------------e-*/
+
+    IF currency = 'E'
+    THEN
+        IF MOD(:h_question,10) = 1
+        THEN
+            h_avalue = 0;
+            h_evalue = :h_value;
+        ELSE
+            h_avalue = :h_value;
+            h_evalue = :h_value;
+        ENDIF;
+    ELSE
+        h_avalue = :h_value;
+        h_evalue = 0;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        INSERT INTO :temp_cqpv (
+                    quest_order,
+                    question,
+                    acell,
+                    avalue,
+                    evalue,
+                    acell_type,
+                    rounded,
+                    se_mark,
+                    aconstruction_type,
+                    confirmation_code,
+                    question_industry,
+                    question_inquiry,
+                    update_type,
+                    error_msg)
+        VALUES (    :h_quest_order,
+                    :h_question,
+                    :h_cell,
+                    :h_avalue,
+                    :h_evalue,
+                    '',
+                    ' ',
+                    ' ',
+                    0,
+                    '',
+                    :h_question_industry,
+                    :h_inquiry,
+                    'i',
+                    '');
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing ' + :temp_cqpv
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows inserted into ' + :temp_cqpv
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+}

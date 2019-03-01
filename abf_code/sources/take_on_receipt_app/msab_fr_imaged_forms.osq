@@ -1,0 +1,450 @@
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed       = INTEGER1 NOT NULL,
+        h_retries               = INTEGER1 NOT NULL,
+        h_retry_or_not          = CHAR(5) NOT NULL,
+        h_frpr_name             = VARCHAR(24) NOT NULL,
+        h_field_name            = VARCHAR(24) NOT NULL,
+        h_table                 = VARCHAR(24) NOT NULL,
+        h_yesno                 = CHAR(1) NOT NULL,
+        ret_val                 = INTEGER1 NOT NULL,
+        h_rows                  = INTEGER4 NOT NULL,
+        h_counter               = INTEGER4 NOT NULL,
+        h_goto_counter          = INTEGER4 NOT NULL,
+        lp_load_table           = PROCEDURE RETURNING INTEGER
+
+{
+    msa_date = 'now';
+    h_frpr_name = 'msab_fr_imaged_forms';
+    h_table = 'temp_view_imaged_forms';
+    h_retries_allowed = 3;
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+    MESSAGE 'Creating List of Forms to be Viewed . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table (
+	      h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    There are two types of form failure to be displayed:
+    (1) from imaged_forms, show tick boxes
+    (2) from bto_scanning_errors, show reason for failure
+    Both these errors need to be merged into one display.
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table
+        AS SELECT    DISTINCT a.period,
+                     a.contributor_industry,
+                     a.contributor_reference,
+                     ' ' AS address_change,
+                     ' ' AS lu_change,
+                     ' ' AS comments,
+                     '                              ' AS reason
+        FROM         imaged_forms a,
+                     industry_analysts b
+        WHERE        a.contributor_industry = b.industry
+          AND        a.contributor_reference >= b.low_ref
+          AND        a.contributor_reference <= b.high_ref
+          AND        b.user_id = :g_user_id
+        UNION
+        SELECT       DISTINCT a.period,
+                     a.contributor_industry,
+                     a.contributor_reference,
+                     ' ' AS address_change,
+                     ' ' AS lu_change,
+                     ' ' AS comments,
+                     '                              ' AS reason
+        FROM         bto_scanning_errors a,
+                     industry_analysts b
+        WHERE        a.contributor_industry = b.industry
+          AND        a.contributor_reference >= b.low_ref
+          AND        a.contributor_reference <= b.high_ref
+          AND        b.user_id = :g_user_id;
+                 
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:no_forms),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'There are no Imaged Forms in your Industries' +
+                ' that need to be Viewed'
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Update with imaged_forms
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Updating from imaged_forms . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   imaged_forms b
+        SET    address_change = b.address_change,
+               lu_change = b.lu_change,
+               comments = b.comments
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.period = b.period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating ' + :h_table + 
+                ' from imaged_forms'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Update with bto_scanning_errors
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Updating from bto_scanning_errors . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   bto_scanning_errors b
+        SET    reason = b.reason
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.period = b.period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating ' + :h_table + 
+                ' from bto_scanning_errors'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN 0;
+    ENDIF;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'RemoveFromList', KEY FRSKEY4 =
+{
+
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name <> 'tf'
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_yesno = '';
+    WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+    DO
+        h_yesno = PROMPT 'Do you really wish to remove this Form?' +
+                         ' Type Y/N and press <return>'
+                  WITH STYLE = POPUP;
+        h_yesno = LOWERCASE(:h_yesno);
+    ENDWHILE;
+
+    IF h_yesno = 'n'
+    THEN
+        RESUME;
+    ENDIF;
+
+    h_goto_counter = :tf.counter;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        DELETE FROM imaged_forms
+        WHERE       contributor_reference = :tf.contributor_reference
+        AND         period = :tf.period
+        AND         contributor_industry = :tf.contributor_industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in deleting from imaged_forms'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows deleted from imaged_forms'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        DELETE FROM :h_table
+        WHERE       contributor_reference = :tf.contributor_reference
+        AND         period = :tf.period
+        AND         contributor_industry = :tf.contributor_industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in deleting from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows deleted from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Scroll to line you were on before the delete, except if you've 
+    deleted the last one, in which case go to the new last line
+    ------------------------------------------------------------------*/
+
+    IF h_goto_counter > no_forms
+    THEN
+        h_goto_counter = h_goto_counter - 1;
+    ENDIF;
+
+    SCROLL tf TO :h_goto_counter;
+    RESUME FIELD tf;
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                  L O C A L   P R O C E D U R E
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_table () =
+{
+
+    /*------------------------------------------------------------------
+    Load to screen
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf = 
+
+        SELECT   period,
+                 contributor_industry,
+                 contributor_reference,
+                 address_change,
+                 lu_change,
+                 comments,
+                 reason
+        FROM     :h_table  
+        ORDER BY period,
+                 contributor_industry,
+                 contributor_reference;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows loaded from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    h_counter = 1;
+    UNLOADTABLE tf
+    {
+        tf.counter = :h_counter;
+        h_counter = :h_counter + 1;
+    };
+
+    RETURN 0;
+}

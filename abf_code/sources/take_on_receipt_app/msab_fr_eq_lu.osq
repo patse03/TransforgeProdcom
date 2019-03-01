@@ -1,0 +1,340 @@
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        address_change    = CHAR(1) NOT NULL,
+        h_max_rows        = INTEGER4 NOT NULL,
+        h_counter         = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        lp_create_array   = PROCEDURE RETURNING INTEGER,
+        lp_load_data      = PROCEDURE RETURNING INTEGER
+{
+
+    SET_FORMS FIELD '' (INVISIBLE(action) = 1);
+
+    h_retries_allowed = 3;
+    h_frpr_name = 'msab_fr_eq_lu';
+    msa_date = 'now';
+
+    ret_val = CALLPROC lp_create_array ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_counter = 1;
+
+    ret_val = CALLPROC lp_load_data ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'PreviousLU' =
+{
+    IF h_counter = 1
+    THEN
+        MESSAGE 'No more Local Units'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_counter = h_counter - 1;
+
+    ret_val = CALLPROC lp_load_data ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'NextLU' =
+{
+    IF h_counter = h_max_rows
+    THEN
+        MESSAGE 'No more Local Units'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_counter = h_counter + 1;
+
+    ret_val = CALLPROC lp_load_data ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'CreateLU' =
+{
+    CALL APPLICATION (
+           exec = '$IMAGES/online_cont_sel_app msafd_fr_cr_cont_lu',
+           param = VARCHAR(:contributor_reference) + ' ' +
+                   VARCHAR(:period));
+
+    ret_val = CALLPROC lp_create_array ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_counter = 1;
+
+    ret_val = CALLPROC lp_load_data ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    msa_date = 'now';
+}
+
+'UpdateDeleteLU' =
+{
+    CALL APPLICATION (
+           exec = '$IMAGES/online_cont_sel_app msafd_fr_up_cont_lu',
+           param = VARCHAR(:contributor_reference) + ' ' +
+                   VARCHAR(:period));
+
+    ret_val = CALLPROC lp_create_array ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_counter = 1;
+
+    ret_val = CALLPROC lp_load_data ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    msa_date = 'now';
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                 L O C A L   P R O C E D U R E    1
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_create_array () =
+{
+
+    /*------------------------------------------------------------------
+    Create array of lu_references
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Loading Contributor Details . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        g_luref_array =
+
+        SELECT   DISTINCT lu_reference
+        FROM     contributor_luaddress
+        WHERE    contributor_reference = :contributor_reference
+        AND      period = :period
+        UNION
+        SELECT   lu_reference
+        FROM     eq_lu
+        WHERE    contributor_reference = :contributor_reference
+        AND      period = :period
+        ORDER BY lu_reference;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:h_max_rows),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing contributor_luaddress'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'There are no Local Units for this Contributor' +
+                ' and Period'
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                 L O C A L   P R O C E D U R E    2
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_data () =
+{
+    lu_reference = :g_luref_array[:h_counter].lu_reference;
+    lu_message = VARCHAR(:h_counter) + ' of ' + VARCHAR(:h_max_rows);
+
+    MESSAGE 'Loading LU Reference ' + lu_reference + ' . . .';
+
+    CLEAR FIELD lu_name1, lu_name2, lu_name3, lu_addr1, lu_addr2,
+                lu_addr3, lu_addr4, lu_addr5, lu_postcode,
+                register_emp,
+                eq_name1, eq_name2, eq_name3, 
+                eq_line1, eq_line2, eq_line3, eq_line4, eq_line5,
+                eq_postcode, eq_employment;
+
+    /*------------------------------------------------------------------
+    Load up what's on contributor_luaddress
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT lu_name1,
+               lu_name2,
+               lu_name3,
+               lu_addr1,
+               lu_addr2,
+               lu_addr3,
+               lu_addr4,
+               lu_addr5,
+               lu_postcode,
+               register_emp
+        FROM   contributor_luaddress
+        WHERE  contributor_reference = :contributor_reference
+        AND    lu_reference = :lu_reference
+        AND    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error loading from contributor_luaddress'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Load up what's on eq_lu
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT add_name1 AS eq_name1,
+               add_name2 AS eq_name2,
+               add_name3 AS eq_name3,
+               add_line1 AS eq_line1,
+               add_line2 AS eq_line2,
+               add_line3 AS eq_line3,
+               add_line4 AS eq_line4,
+               add_line5 AS eq_line5,
+               add_postcode AS eq_postcode,
+               employment AS eq_employment,
+               action,
+               date_start,
+               date_cease
+        FROM   eq_lu
+        WHERE  contributor_reference = :contributor_reference
+        AND    lu_reference = :lu_reference
+        AND    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error loading from eq_lu'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    IF action = 'N/C' OR action = ''
+    THEN
+        SET_FORMS FIELD '' (INVISIBLE(action) = 1);
+    ELSE
+        SET_FORMS FIELD '' (INVISIBLE(action) = 0);
+    ENDIF;
+
+    RETURN 0;
+}

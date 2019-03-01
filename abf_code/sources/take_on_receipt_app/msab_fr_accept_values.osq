@@ -1,0 +1,205 @@
+/*--------------------------------------------------------------------
+Wrap around to pass parameters through to msab_fr_take_on_form.
+This screen is entered two ways:
+
+  1. From a menu, with no parameters passed through
+  2. From a table of contributors, passing through the parameters
+
+--------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_frpr_name       = CHAR(24) NOT NULL,
+        ret_val           = INTEGER4 NOT NULL,
+        h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL
+
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msab_fr_accept_values';
+    msa_date = 'now';
+
+    SELECT DBMSINFO('database') AS g_database;
+
+    ret_val = CALLPROC msa_fp_get_user_details (
+	               h_default_printer = BYREF(:g_printer),
+	               h_user_id         = BYREF(:g_user_id),
+	               h_access_level    = BYREF(:g_access_level),
+                       h_user_name       = BYREF(:g_user_name));
+
+
+    IF (:g_access_level < 80 OR :g_access_level > 89)
+    AND :g_access_level <> 99 AND :g_access_level <> 95
+    THEN
+        MESSAGE 'Sorry, but your access level doesn''t allow you' +
+                ' to use this facility'
+        WITH STYLE = POPUP;
+
+        RETURN 0;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    If parameters have been supplied, call the main take_on screen
+    immediately
+    ------------------------------------------------------------------*/
+    
+    IF contributor_reference <> ''
+    THEN
+        ret_val = CALLPROC msab_fp_take_on_form (
+                  contributor_reference = :contributor_reference,
+                  period                = :period,
+                  contributor_industry  = :contributor_industry);
+
+        RETURN ret_val;
+
+    ENDIF;
+    contributor_reference = '';
+
+}
+
+/*----------------------------------------------------------------------
+If no parameters have been supplied, accept parameters from screen,
+validate them and then call the main take_on screen
+----------------------------------------------------------------------*/
+
+FIELD period =
+{
+    MESSAGE 'Checking Period . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT period
+        FROM   inquiry_period
+        WHERE  period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This period is not valid for this inquiry'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    RESUME FIELD contributor_industry;
+}
+
+FIELD contributor_industry =
+{
+    MESSAGE 'Checking Industry . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT industry AS contributor_industry
+        FROM   industry_period
+        WHERE  industry = :contributor_industry
+        AND    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing industry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This Industry is not valid for this Inquiry/Period'
+        WITH STYLE = POPUP;
+        RESUME FIELD contributor_industry;
+    ENDIF;
+
+    RESUME FIELD contributor_reference;
+}
+
+FIELD contributor_reference = 
+{
+
+    /*------------------------------------------------------------------
+    Check Reference actually exists now before calling take_on_form.
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msa_fp_get_ref (
+              contributor_reference = :contributor_reference);
+    IF ret_val <> 0
+    THEN
+        RESUME FIELD contributor_reference;
+    ENDIF;
+
+    ret_val = CALLPROC msab_fp_take_on_form (
+              contributor_reference = :contributor_reference,
+              period                = :period,
+              contributor_industry  = :contributor_industry);
+
+    contributor_reference = '';
+    msa_date = 'now';
+    RESUME FIELD contributor_industry;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'End', KEY FRSKEY14  =
+{
+    RETURN 0;
+}

@@ -1,0 +1,602 @@
+INITIALIZE ()=
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_yesno           = CHAR(1) NOT NULL,
+        h_type            = CHAR(1) NOT NULL,
+        h_return          = INTEGER1 NOT NULL,
+        h_display         = INTEGER1 NOT NULL,
+        h_industry        = INTEGER4 NOT NULL,
+        h_period          = INTEGER4 NOT NULL,
+        h_reminder        = INTEGER1 NOT NULL,
+        h_keyresp         = INTEGER1 NOT NULL,
+        h_idbr            = CHAR(11) NOT NULL,
+        h_dummy           = CHAR(11) NOT NULL
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msai_fr_rem_reminds';
+    msa_date    = 'now';
+
+    SET_FORMS FIELD '' (INVISIBLE(country) = 1,
+                        INVISIBLE(key_disp) = 1,
+                        REVERSE(contributor_reference) = 0,
+                        UNDERLINE(contributor_reference) = 1,
+                        DISPLAYONLY(contributor_reference) = 0,
+                        REVERSE(first_remove) = 1,
+                        UNDERLINE(first_remove) = 0,
+                        DISPLAYONLY(first_remove) = 1,
+                        REVERSE(third_remove) = 1,
+                        UNDERLINE(third_remove) = 0,
+                        DISPLAYONLY(third_remove) = 1,
+                        REVERSE(second_remove) = 1,
+                        UNDERLINE(second_remove) = 0,
+                        DISPLAYONLY(second_remove) = 1);
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT span_end AS period
+        FROM   inquiry
+        WHERE  inquiry = 14;
+
+        h_return = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF h_return != 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF h_return = 9
+    THEN
+        MESSAGE 'System error in accessing period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF h_return = 1
+    THEN
+        MESSAGE 'No row found on inquiry'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    h_period = :period;
+}
+
+FIELD contributor_reference =
+{
+    MESSAGE 'Checking Reference . . .';
+
+    h_return = CALLPROC msa_fp_get_ref(
+              h_dummy = BYREF(:h_dummy),
+              h_idbr = BYREF(:h_idbr),
+              contributor_reference = :contributor_reference);
+
+    IF h_return > 0
+    THEN
+        RETURN 9;
+    ELSEIF h_return = 1
+    THEN
+        RESUME FIELD contributor_reference;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT add_name1
+        FROM   contributor
+        WHERE  contributor_reference IN (:h_idbr,:h_dummy);
+
+        h_return = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF h_return != 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF h_return = 9
+    THEN
+        MESSAGE 'System error in accessing contributor'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF h_return = 1
+    THEN
+        MESSAGE 'Contributor does not exist on contributor table'
+        WITH STYLE = POPUP;
+        RESUME FIELD contributor_reference;
+    ENDIF;
+
+    REDISPLAY;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT a.contributor_reference,
+	       a.keyresp AS h_keyresp,
+               b.country
+        FROM   contributor_period a,
+               region b
+        WHERE  a.contributor_reference IN (:h_idbr,:h_dummy)
+        AND    a.period = :period
+        AND    a.region = b.region;
+
+        h_return = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF h_return != 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF h_return = 9
+    THEN
+        MESSAGE 'System error in accessing contributor_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF h_return = 1
+    THEN
+        MESSAGE 'This Contributor was not selected for ' +
+                VARCHAR(:period)
+        WITH STYLE = POPUP;
+        CLEAR FIELD ALL;
+        period = :h_period;
+        msa_date    = 'now';
+        RESUME FIELD contributor_reference;
+    ENDIF;
+
+    IF country != ''
+    THEN
+        SET_FORMS FIELD '' (INVISIBLE(country) = 0);
+    ENDIF;
+
+    IF :h_keyresp = 1
+    THEN
+	key_disp = 'KEY';
+        SET_FORMS FIELD '' (INVISIBLE(key_disp) = 0);
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    existing reminders
+    ------------------------------------------------------------------*/
+
+    first_exist = 'N';
+    second_exist = 'N';
+    third_exist = 'N';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT rem_type AS h_type,
+               reminder AS h_reminder
+        FROM   stop_reminder
+        WHERE  contributor_reference = :contributor_reference
+        AND    inquiry  = 14
+        AND    period   = :period
+        BEGIN
+
+          IF h_reminder = 1 THEN
+            first_exist  = :h_type;
+          ELSEIF h_reminder = 2 THEN
+            second_exist = :h_type;
+          ELSE
+            third_exist  = :h_type
+          ENDIF;
+
+        END;
+
+        h_return = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF h_return != 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF h_return = 9
+    THEN
+        MESSAGE 'System error in accessing stop_reminder'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF h_return = 1
+    THEN
+        MESSAGE 'No Stop Reminders exist for this Contributor'
+        WITH STYLE = POPUP;
+
+        CLEAR FIELD ALL;
+        period = :h_period;
+        msa_date    = 'now';
+        SET_FORMS FIELD '' (INVISIBLE(country) = 1,
+                            INVISIBLE(key_disp) = 1);
+        RESUME FIELD contributor_reference;
+
+    ENDIF;
+
+    SET_FORMS FIELD '' (REVERSE(contributor_reference) = 1,
+                        DISPLAYONLY(contributor_reference) = 1,
+                        UNDERLINE(contributor_reference) = 0);
+
+    first_remove  = 'N';
+    second_remove = 'N';
+    third_remove  = 'N';
+
+    IF first_exist != 'N'
+    THEN
+        SET_FORMS FIELD '' (REVERSE(first_remove) = 0,
+                            DISPLAYONLY(first_remove) = 0,
+                            UNDERLINE(first_remove) = 1);
+    ENDIF;
+
+    IF second_exist != 'N'
+    THEN
+        SET_FORMS FIELD '' (REVERSE(second_remove) = 0,
+                            DISPLAYONLY(second_remove) = 0,
+                            UNDERLINE(second_remove) = 1);
+    ENDIF;
+
+    IF third_exist != 'N'
+    THEN
+        SET_FORMS FIELD '' (REVERSE(third_remove) = 0,
+                            DISPLAYONLY(third_remove) = 0,
+                            UNDERLINE(third_remove) = 1);
+    ENDIF;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Clear' =
+{
+    CLEAR FIELD ALL;
+    period = :h_period;
+    msa_date    = 'now';
+
+    SET_FORMS FIELD '' (INVISIBLE(country) = 1,
+                        INVISIBLE(key_disp) = 1,
+                        REVERSE(contributor_reference) = 0,
+                        UNDERLINE(contributor_reference) = 1,
+                        DISPLAYONLY(contributor_reference) = 0,
+                        REVERSE(first_remove) = 1,
+                        UNDERLINE(first_remove) = 0,
+                        DISPLAYONLY(first_remove) = 1,
+                        REVERSE(second_remove) = 1,
+                        UNDERLINE(second_remove) = 0,
+                        DISPLAYONLY(second_remove) = 1,
+                        REVERSE(third_remove) = 1,
+                        UNDERLINE(third_remove) = 0,
+                        DISPLAYONLY(third_remove) = 1);
+
+    RESUME FIELD contributor_reference;
+
+}
+
+'Delete', KEY FRSKEY4 =
+{
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(contributor_reference));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Reference' WITH STYLE = POPUP;
+        RESUME FIELD contributor_reference;
+    ENDIF;
+
+    IF first_remove != 'N' AND first_remove != 'Y'
+    THEN
+        MESSAGE '1st Delete should be either Y or N.'
+        WITH STYLE = POPUP;
+        RESUME FIELD first_remove;
+    ENDIF;
+
+    IF second_remove != 'N' AND second_remove != 'Y'
+    THEN
+        MESSAGE '2nd Delete should be either Y or N.'
+        WITH STYLE = POPUP;
+        RESUME FIELD second_remove;
+    ENDIF;
+
+    IF third_remove != 'N' AND third_remove != 'Y'
+    THEN
+        MESSAGE '3rd Delete should be either Y or N.'
+        WITH STYLE = POPUP;
+        RESUME FIELD third_remove;
+    ENDIF;
+
+    IF first_remove = 'N' AND second_remove = 'N' AND third_remove = 'N'
+    THEN
+        MESSAGE 'No Stop Reminders will be deleted.'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    IF second_exist != 'N' AND second_remove = 'N' AND first_remove = 'Y'
+    THEN
+        MESSAGE '1st Stop Reminders cannot be deleted when 2nd Stop' +
+                ' Reminders still exist.'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    IF first_exist = 'P'
+    THEN
+        IF first_remove = 'N'
+        THEN
+            MESSAGE 'For Permanent Stop Reminders, a Delete-First' +
+                    ' value of N will not delete ANY records'
+            WITH STYLE = POPUP;
+            RESUME;
+        ENDIF;
+        second_remove = :first_remove;
+    ENDIF;
+
+    h_yesno = '';
+
+    WHILE h_yesno != 'y' AND h_yesno != 'n'
+    DO
+        h_yesno = PROMPT 'Do you really wish to delete these Stop ' 
+                       + 'Reminders? [Y/N] '
+                  WITH STYLE = POPUP;
+        h_yesno = LOWERCASE(:h_yesno);
+    ENDWHILE;
+
+    IF h_yesno = 'n'
+    THEN
+        RESUME;
+    ENDIF;
+
+
+    MESSAGE 'Deleting Stop Reminders . . .';
+
+    IF first_remove = 'Y' AND first_exist != 'N'
+    THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            DELETE FROM stop_reminder
+            WHERE       contributor_reference = :contributor_reference
+            AND         period = :period
+            AND         reminder = 1;
+
+            h_return = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF h_return != 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF h_return = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF h_return != 0
+        THEN
+            MESSAGE 'ERROR: Failed to remove 1st stop reminder. '
+                  + 'Error code ' +VARCHAR(:h_return) +'. '
+                  + 'Please contact IM immediately.'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+    ENDIF;
+
+    IF second_remove = 'Y' AND second_exist != 'N'
+    THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            DELETE FROM stop_reminder
+            WHERE       contributor_reference = :contributor_reference
+            AND         period = :period
+            AND         reminder = 2;
+
+            h_return = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF h_return != 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF h_return = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF h_return != 0
+        THEN
+            MESSAGE 'ERROR: Failed to remove 2nd stop reminder. '
+                  + 'Error code ' +VARCHAR(:h_return) +'. '
+                  + 'Please contact IM immediately.'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+    ENDIF;
+
+    IF third_remove = 'Y' AND third_exist != 'N'
+    THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            DELETE FROM stop_reminder
+            WHERE       contributor_reference = :contributor_reference
+            AND         period = :period
+            AND         reminder = 3;
+
+            h_return = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF h_return != 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF h_return = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF h_return != 0
+        THEN
+            MESSAGE 'ERROR: Failed to remove 3rd stop reminder. '
+                  + 'Error code ' +VARCHAR(:h_return) +'. '
+                  + 'Please contact IM immediately.'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+    ENDIF;
+
+    MESSAGE 'Stop reminders deleted OK'
+    WITH STYLE = POPUP;
+
+    CLEAR FIELD ALL;
+    period = :h_period;
+    msa_date    = 'now';
+
+    SET_FORMS FIELD '' (INVISIBLE(country) = 1,
+                        INVISIBLE(key_disp) = 1,
+                        REVERSE(contributor_reference) = 0,
+                        UNDERLINE(contributor_reference) = 1,
+                        DISPLAYONLY(contributor_reference) = 0,
+                        REVERSE(first_remove) = 1,
+                        UNDERLINE(first_remove) = 0,
+                        DISPLAYONLY(first_remove) = 1,
+                        REVERSE(third_remove) = 1,
+                        UNDERLINE(third_remove) = 0,
+                        DISPLAYONLY(third_remove) = 1,
+                        REVERSE(second_remove) = 1,
+                        UNDERLINE(second_remove) = 0,
+                        DISPLAYONLY(second_remove) = 1);
+
+    RESUME FIELD contributor_reference;
+
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}

@@ -1,0 +1,188 @@
+/*----------------------------------------------------------------------
+If it's the first time that data is being taken-on, store the values
+in fvalue, fcell, etc, too, and update the form_taken_on marker on
+contributor_period to "O" (for "Online")
+----------------------------------------------------------------------*/
+
+PROCEDURE msab_fp_store_first (
+
+        inquiry               = INTEGER1 NOT NULL,
+        period                = INTEGER4 NOT NULL,
+        h_dummy               = CHAR(11) NOT NULL,
+        h_idbr                = CHAR(11) NOT NULL) =
+
+DECLARE h_retries_allowed     = INTEGER1 NOT NULL,
+        h_retries             = INTEGER1 NOT NULL,
+        h_retry_or_not        = CHAR(5) NOT NULL,
+        h_frpr_name           = VARCHAR(24) NOT NULL,
+        ret_val               = INTEGER1 NOT NULL,
+        h_form_taken_on       = CHAR(1) NOT NULL
+
+{
+    h_frpr_name = 'msab_fp_insert_atq';
+    h_retries_allowed = 3;
+
+    /*------------------------------------------------------------------
+    Check if form has been taken on previously: if so, then end
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT form_taken_on AS h_form_taken_on
+        FROM   contributor_period
+        WHERE  contributor_reference IN (:h_idbr,:h_dummy)
+        AND    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error selecting from contributor_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No row found on contributor_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    IF h_form_taken_on <> 'N'
+    THEN
+        RETURN 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Store fvalues
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Saving Initial TakeOn Values . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE cqpv
+        SET    fvalue             = avalue,
+               fcell              = acell,
+               fcell_type         = acell_type,
+               fconstruction_type = aconstruction_type
+        WHERE  contributor_reference IN (:h_idbr,:h_dummy)
+        AND    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error updating cqpv'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows updated on cqpv'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    MESSAGE 'Initial TakeOn Values have been stored OK'
+    WITH STYLE = POPUP;
+
+    /*------------------------------------------------------------------
+    Update taken-on marker
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE contributor_period
+        SET    form_taken_on = 'O'
+        WHERE  contributor_reference IN (:h_idbr,:h_dummy)
+        AND    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error updating contributor_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No row updated on contributor_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    RETURN 0;
+}

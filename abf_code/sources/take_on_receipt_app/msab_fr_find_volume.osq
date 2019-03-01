@@ -1,0 +1,160 @@
+INITIALIZE (
+
+	avalue                = INTEGER4 NOT NULL,
+        period                = INTEGER4 NOT NULL) =
+
+DECLARE h_retries_allowed     = INTEGER1 NOT NULL,
+        h_retries             = INTEGER1 NOT NULL,
+        h_retry_or_not        = CHAR(5) NOT NULL,
+        h_avalue              = INTEGER4 NOT NULL,
+        h_value               = INTEGER4 NOT NULL,
+        h_record              = INTEGER4 NOT NULL,
+        h_rowstate            = INTEGER4 NOT NULL,
+        h_frpr_name           = VARCHAR(24) NOT NULL,
+        h_yn                  = CHAR(1) NOT NULL,
+        ret_val               = INTEGER1 NOT NULL
+
+{
+
+    h_retries_allowed = 3;
+    h_frpr_name = 'msab_fr_find_volume';
+
+    SET_FORMS FIELD '' (REVERSE(value_01) = 0,
+			UNDERLINE(value_01) = 1,
+			DISPLAYONLY(value_01) = 0,
+			INVISIBLE(uv) = 1,
+			INVISIBLE(calc_vol) = 1);
+
+    CLEAR FIELD calc_vol;
+
+    RESUME FIELD value_01;
+}
+
+
+AFTER FIELD value_01 = 
+{
+ 
+    /*------------------------------------------------------------------
+    Calculate volume figure based on agg U/V
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT returned_uv AS uv
+	FROM   unit_values
+	WHERE  period = :period
+	AND    question = :question;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error selecting from unit_values'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows found on unit_values for ' +
+		VARCHAR(:question) + ' in ' + VARCHAR(:period)
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+/* Changed by MJE 23/09/2009 
+    calc_vol = float8((:value_01 * 1.0 * :uv) + 0.5);
+*/
+    calc_vol = float8((:value_01 * 1000.0 / :uv) + 0.5);
+
+/* divide by 1000 ... but only for 01s */
+
+    SET_FORMS FIELD '' (REVERSE(value_01) = 1,
+			UNDERLINE(value_01) = 0,
+			DISPLAYONLY(value_01) = 1,
+			INVISIBLE(uv) = 0,
+			INVISIBLE(calc_vol) = 0);
+}
+
+
+'Accept' =
+{
+    h_yn = '';
+    WHILE h_yn <> 'y' AND h_yn <> 'n'
+    DO
+        h_yn = PROMPT 'Do you wish to insert the' +
+                      ' Calculated Volume?' +
+                      ' Type Y/N and press <return>'
+                  WITH STYLE = POPUP;
+        h_yn = LOWERCASE(:h_yn);
+    ENDWHILE;
+
+    IF h_yn = 'n'
+    THEN
+        CLEAR FIELD value_01;
+        CLEAR FIELD uv;
+        CLEAR FIELD calc_vol;
+        SET_FORMS FIELD '' (REVERSE(value_01) = 0,
+    			    UNDERLINE(value_01) = 1,
+    			    DISPLAYONLY(value_01) = 0,
+			    INVISIBLE(uv) = 1,
+			    INVISIBLE(calc_vol) = 1);
+  	calc_vol = avalue;
+        RESUME FIELD value_01;
+    ENDIF;
+
+    RETURN 0;
+}
+
+
+'Clear' =
+{
+    CLEAR FIELD value_01;
+    CLEAR FIELD uv;
+    CLEAR FIELD calc_vol;
+
+    SET_FORMS FIELD '' (REVERSE(value_01) = 0,
+			UNDERLINE(value_01) = 1,
+    			DISPLAYONLY(value_01) = 0,
+			INVISIBLE(uv) = 1,
+			INVISIBLE(calc_vol) = 1);
+
+    RESUME FIELD value_01;
+}
+
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+}
+
+
+'Quit', KEY FRSKEY6 =
+{
+    calc_vol = avalue;
+    RETURN 0;
+}
+

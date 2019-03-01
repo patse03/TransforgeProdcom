@@ -1,0 +1,818 @@
+/*-s--------------------------------------------------------------------
+        INGRES 4GL code for frame: fr_del_uncoded
+
+    This frame deletes unwanted uncoded entries
+    (ie. questions nnnn9701, nnnn9711 etc with a quest_order of 9).
+  Associated volumes are also deleted.
+
+     a) If update_type is 'u', the question already exists on cqpv
+   and must therefore be deleted from temp_cqpv, and inserted
+   into temp_del_aos for later deletion from cqpv.
+
+     b) If update_type is 'i', the question does not yet exist on
+   cqpv and therefore only requires to be deleted from temp_cqpv.
+--------------------------------------------------------------------e-*/
+
+INITIALIZE (
+
+        h_questions_changed      = CHAR(1) NOT NULL,
+        temp_cqpv                = VARCHAR(20) NOT NULL,
+        temp_del_aos             = VARCHAR(20) NOT NULL)=
+
+DECLARE h_retries_allowed        = INTEGER1 NOT NULL,
+        h_retries                = INTEGER1 NOT NULL,
+        h_retry_or_not           = CHAR(5) NOT NULL,
+        h_frpr_name              = VARCHAR(24) NOT NULL,
+        h_form_changed           = CHAR(1) NOT NULL,
+        ret_val                  = INTEGER1 NOT NULL,
+        h_vol_quest              = INTEGER4 NOT NULL,
+        h_vol_quest_2            = INTEGER4 NOT NULL,
+        h_vol_quest_4            = INTEGER4 NOT NULL,
+        h_vol_2_found            = CHAR(1) NOT NULL,
+        h_vol_4_found            = CHAR(1) NOT NULL,
+        h_avalue_2               = INTEGER4 NOT NULL,
+        h_avalue_4               = INTEGER4 NOT NULL,
+        h_update_type            = CHAR(1) NOT NULL,
+        h_record                 = INTEGER4 NOT NULL,
+        h_rowstate               = INTEGER4 NOT NULL,
+        reply                    = CHAR(1) NOT NULL
+
+{
+    h_frpr_name = 'msab_fr_del_uncoded';
+    h_retries_allowed = 3;
+
+    h_form_changed = 'n';
+
+    INITTABLE tf UPDATE;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT question,
+               avalue,
+               acell,
+               acell_type,
+               'N' AS del
+        FROM   :temp_cqpv
+        WHERE  quest_order = 9
+        AND    MOD(question,10000) IN (9701,9711,9721,9731,9741,
+                                       9751,9761,9771,9781,9791);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing ' + :temp_cqpv
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'There are no uncoded entries to delete'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+       Check for volume questions 02 & 04
+       Set vol_pres to 'Y' if either exists.
+    ----------------------------------------------------------------e-*/
+
+    UNLOADTABLE tf
+    {
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            SELECT question AS h_vol_quest
+            FROM   :temp_cqpv
+            WHERE  question = :tf.question + 1
+            OR     question = :tf.question + 3;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing ' + :temp_cqpv
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 0
+        THEN
+            tf.vol_pres := 'Y';
+        ENDIF;
+
+    };
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Delete', KEY FRSKEY11 =
+{
+    h_form_changed := 'n';
+
+    UNLOADTABLE tf(h_record = _record)
+    {
+        IF tf.del <> 'Y' AND tf.del <> 'N'
+        THEN
+            SCROLL tf TO :h_record;
+            REDISPLAY;
+            MESSAGE 'Delete must be Y or N'
+            WITH STYLE = POPUP;
+            RESUME FIELD tf;
+        ENDIF;
+
+        IF tf.del = 'Y'
+        THEN
+            h_questions_changed := 'y';
+            h_form_changed := 'y';
+            /*-s--------------------------------------------------------
+             store update_type ('i' or 'u'), so that we know whether
+             to delete just from temp_cqpv, or from both temp_cqpv
+             and temp_del_aos.
+            --------------------------------------------------------e-*/
+
+            h_retry_or_not      = 'RETRY';
+            h_retries           = 0;
+
+            WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+            DO
+
+                h_retries = :h_retries + 1;
+
+                SELECT update_type AS h_update_type
+                FROM   :temp_cqpv
+                WHERE  question = :tf.question;
+
+                ret_val = CALLPROC check_inq_ing (
+                          h_num_row_ck      = 1,
+                          h_commit          = 'Y',
+                          h_rollback        = 'N',
+                          h_retries         = :h_retries,
+                          h_retries_allowed = :h_retries_allowed,
+                          h_frpr_name       = :h_frpr_name);
+
+                IF ret_val <> 7
+                THEN
+                    h_retry_or_not = '';
+                ENDIF;
+
+            ENDWHILE;
+
+            IF ret_val = 7
+            THEN
+                RETURN 7;
+
+            ELSEIF ret_val = 9
+            THEN
+                MESSAGE 'System error in accessing ' + :temp_cqpv
+                WITH STYLE = POPUP;
+                RETURN 9;
+
+            ELSEIF ret_val = 1
+            THEN
+                MESSAGE 'No rows selecting updatetype from ' + :temp_cqpv
+                WITH STYLE = POPUP;
+                RETURN 9;
+            ENDIF;
+
+            /*-s--------------------------------------------------------
+              Check for volume question 02. Set flag
+              h_vol_2_found if it exists, so that it
+              can be deleted along with the value code.
+            --------------------------------------------------------e-*/
+
+            h_retry_or_not      = 'RETRY';
+            h_retries           = 0;
+
+            WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+            DO
+
+                h_retries = :h_retries + 1;
+
+                SELECT question AS h_vol_quest_2,
+		       avalue AS h_avalue_2
+                FROM   :temp_cqpv
+                WHERE  question = :tf.question + 1;
+
+                ret_val = CALLPROC check_inq_ing (
+                          h_num_row_ck      = 1,
+                          h_commit          = 'Y',
+                          h_rollback        = 'N',
+                          h_retries         = :h_retries,
+                          h_retries_allowed = :h_retries_allowed,
+                          h_frpr_name       = :h_frpr_name);
+
+                IF ret_val <> 7
+                THEN
+                    h_retry_or_not = '';
+                ENDIF;
+
+            ENDWHILE;
+
+            IF ret_val = 7
+            THEN
+                RETURN 7;
+
+            ELSEIF ret_val = 9
+            THEN
+                MESSAGE 'System error selecting 02 from ' + :temp_cqpv
+                WITH STYLE = POPUP;
+                RETURN 9;
+
+            ELSEIF ret_val = 1
+            THEN
+                h_vol_2_found := 'n';
+
+            ELSE
+                h_vol_2_found := 'y';
+            ENDIF;
+
+            /*-s--------------------------------------------------------
+             Check for volume question 04. Set flag
+             h_vol_4_found if it exists, so that it
+             can be deleted along with the value code.
+            --------------------------------------------------------e-*/
+
+            h_retry_or_not      = 'RETRY';
+            h_retries           = 0;
+
+            WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+            DO
+
+                h_retries = :h_retries + 1;
+
+                SELECT question AS h_vol_quest_4,
+		       avalue AS h_avalue_4
+                FROM   :temp_cqpv
+                WHERE  question = :tf.question + 3;
+
+                ret_val = CALLPROC check_inq_ing (
+                          h_num_row_ck      = 1,
+                          h_commit          = 'Y',
+                          h_rollback        = 'N',
+                          h_retries         = :h_retries,
+                          h_retries_allowed = :h_retries_allowed,
+                          h_frpr_name       = :h_frpr_name);
+
+                IF ret_val <> 7
+                THEN
+                    h_retry_or_not = '';
+                ENDIF;
+
+            ENDWHILE;
+
+            IF ret_val = 7
+            THEN
+                RETURN 7;
+
+            ELSEIF ret_val = 9
+            THEN
+                MESSAGE 'System error selecting 04 from ' + :temp_cqpv
+                WITH STYLE = POPUP;
+                RETURN 9;
+
+            ELSEIF ret_val = 1
+            THEN
+                h_vol_4_found := 'n';
+
+            ELSE
+                h_vol_4_found := 'y';
+            ENDIF;
+
+            /*-s--------------------------------------------------------
+                   Carry out deletions.
+            --------------------------------------------------------e-*/
+
+            IF :h_update_type = 'u'
+            THEN
+                /*-s----------------------------------------------------
+                 Delete value from temp_cqpv, and insert into
+                 temp_del_aos for later deletion from cqpv.
+                ----------------------------------------------------e-*/
+
+                h_retry_or_not      = 'RETRY';
+                h_retries           = 0;
+
+                WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+                DO
+
+                    h_retries = :h_retries + 1;
+
+                    DELETE FROM :temp_cqpv
+                    WHERE       question = :tf.question;
+
+                    ret_val = CALLPROC check_inq_ing (
+                              h_num_row_ck      = 1,
+                              h_commit          = 'Y',
+                              h_rollback        = 'N',
+                              h_retries         = :h_retries,
+                              h_retries_allowed = :h_retries_allowed,
+                              h_frpr_name       = :h_frpr_name);
+
+                    IF ret_val <> 7
+                    THEN
+                        h_retry_or_not = '';
+                    ENDIF;
+
+                ENDWHILE;
+
+                IF ret_val = 7
+                THEN
+                    RETURN 7;
+
+                ELSEIF ret_val = 9
+                THEN
+                    MESSAGE 'System error in deleting from ' + :temp_cqpv
+                    WITH STYLE = POPUP;
+                    RETURN 9;
+
+                ELSEIF ret_val = 1
+                THEN
+                    MESSAGE 'No rows deleted from ' + :temp_cqpv
+                    WITH STYLE = POPUP;
+                    RETURN 9;
+                ENDIF;
+
+                h_retry_or_not      = 'RETRY';
+                h_retries           = 0;
+
+                WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+                DO
+
+                    h_retries = :h_retries + 1;
+
+                    INSERT INTO :temp_del_aos
+                    VALUES (    :tf.question,
+				:tf.avalue);
+
+                    ret_val = CALLPROC check_inq_ing (
+                              h_num_row_ck      = 1,
+                              h_commit          = 'Y',
+                              h_rollback        = 'N',
+                              h_retries         = :h_retries,
+                              h_retries_allowed = :h_retries_allowed,
+                              h_frpr_name       = :h_frpr_name);
+    
+                    IF ret_val <> 7
+                    THEN
+                        h_retry_or_not = '';
+                    ENDIF;
+    
+                ENDWHILE;
+    
+                IF ret_val = 7
+                THEN
+                    RETURN 7;
+    
+                ELSEIF ret_val = 9
+                THEN
+                    MESSAGE 'System error inserting into ' + :temp_del_aos
+                    WITH STYLE = POPUP;
+                    RETURN 9;
+    
+                ELSEIF ret_val = 1
+                THEN
+                    MESSAGE 'No rows inserted into ' + :temp_del_aos
+                    WITH STYLE = POPUP;
+                    RETURN 9;
+                ENDIF;
+
+                /*-s----------------------------------------------------
+                  If volume question nn..n2 exists, delete this from 
+                  temp_cqpv and insert into temp_del_aos.
+                ----------------------------------------------------e-*/
+
+                IF h_vol_2_found = 'y'
+                THEN
+
+                    h_retry_or_not      = 'RETRY';
+                    h_retries           = 0;
+
+                    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+                    DO
+
+                        h_retries = :h_retries + 1;
+
+                        DELETE FROM :temp_cqpv
+                        WHERE       question = :h_vol_quest_2;
+
+                        ret_val = CALLPROC check_inq_ing (
+                                  h_num_row_ck      = 1,
+                                  h_commit          = 'Y',
+                                  h_rollback        = 'N',
+                                  h_retries         = :h_retries,
+                                  h_retries_allowed = :h_retries_allowed,
+                                  h_frpr_name       = :h_frpr_name);
+
+                        IF ret_val <> 7
+                        THEN
+                            h_retry_or_not = '';
+                        ENDIF;
+
+                    ENDWHILE;
+
+                    IF ret_val = 7
+                    THEN
+                        RETURN 7;
+
+                    ELSEIF ret_val = 9
+                    THEN
+                        MESSAGE 'System error deleting 02 from ' +:temp_cqpv
+                        WITH STYLE = POPUP;
+                        RETURN 9;
+
+                    ELSEIF ret_val = 1
+                    THEN
+                        MESSAGE 'No 02 rows deleted from ' + :temp_cqpv
+                        WITH STYLE = POPUP;
+                        RETURN 9;
+                    ENDIF;
+
+                    h_retry_or_not      = 'RETRY';
+                    h_retries           = 0;
+
+                    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+                    DO
+
+                        h_retries = :h_retries + 1;
+
+                        INSERT INTO :temp_del_aos
+                        VALUES (    :h_vol_quest_2,
+				    :h_avalue_2);
+
+                        ret_val = CALLPROC check_inq_ing (
+                                  h_num_row_ck      = 1,
+                                  h_commit          = 'Y',
+                                  h_rollback        = 'N',
+                                  h_retries         = :h_retries,
+                                  h_retries_allowed = :h_retries_allowed,
+                                  h_frpr_name       = :h_frpr_name);
+
+                        IF ret_val <> 7
+                        THEN
+                            h_retry_or_not = '';
+                        ENDIF;
+
+                    ENDWHILE;
+
+                    IF ret_val = 7
+                    THEN
+                        RETURN 7;
+
+                    ELSEIF ret_val = 9
+                    THEN
+                        MESSAGE 'System error inserting 02 into ' + :temp_del_aos
+                        WITH STYLE = POPUP;
+                        RETURN 9;
+
+                    ELSEIF ret_val = 1
+                    THEN
+                        MESSAGE 'No 02 rows inserted into ' + :temp_del_aos
+                        WITH STYLE = POPUP;
+                        RETURN 9;
+                    ENDIF;
+
+                ENDIF;
+
+                /*-s----------------------------------------------------
+                  If volume question 04 exists, delete this from 
+                  temp_cqpv and insert into temp_del_aos.
+                ----------------------------------------------------e-*/
+
+                IF h_vol_4_found = 'y'
+                THEN
+
+                    h_retry_or_not      = 'RETRY';
+                    h_retries           = 0;
+
+                    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+                    DO
+
+                        h_retries = :h_retries + 1;
+
+                        DELETE FROM :temp_cqpv
+                        WHERE       question = :h_vol_quest_4;
+
+                        ret_val = CALLPROC check_inq_ing (
+                                  h_num_row_ck      = 1,
+                                  h_commit          = 'Y',
+                                  h_rollback        = 'N',
+                                  h_retries         = :h_retries,
+                                  h_retries_allowed = :h_retries_allowed,
+                                  h_frpr_name       = :h_frpr_name);
+
+                        IF ret_val <> 7
+                        THEN
+                            h_retry_or_not = '';
+                        ENDIF;
+
+                    ENDWHILE;
+
+                    IF ret_val = 7
+                    THEN
+                        RETURN 7;
+
+                    ELSEIF ret_val = 9
+                    THEN
+                        MESSAGE 'System error deleting 04 from ' + :temp_cqpv
+                        WITH STYLE = POPUP;
+                        RETURN 9;
+
+                    ELSEIF ret_val = 1
+                    THEN
+                        MESSAGE 'No 04 rows deleted from ' + :temp_cqpv
+                        WITH STYLE = POPUP;
+                        RETURN 9;
+                    ENDIF;
+
+                    h_retry_or_not      = 'RETRY';
+                    h_retries           = 0;
+
+                    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+                    DO
+
+                        h_retries = :h_retries + 1;
+
+                        INSERT INTO :temp_del_aos
+                        VALUES (    :h_vol_quest_4,
+				    :h_avalue_4);
+
+                        ret_val = CALLPROC check_inq_ing (
+                                  h_num_row_ck      = 1,
+                                  h_commit          = 'Y',
+                                  h_rollback        = 'N',
+                                  h_retries         = :h_retries,
+                                  h_retries_allowed = :h_retries_allowed,
+                                  h_frpr_name       = :h_frpr_name);
+
+                        IF ret_val <> 7
+                        THEN
+                            h_retry_or_not = '';
+                        ENDIF;
+
+                    ENDWHILE;
+
+                    IF ret_val = 7
+                    THEN
+                        RETURN 7;
+
+                    ELSEIF ret_val = 9
+                    THEN
+                        MESSAGE 'System error inserting 04 into ' + :temp_del_aos
+                        WITH STYLE = POPUP;
+                        RETURN 9;
+
+                    ELSEIF ret_val = 1
+                    THEN
+                        MESSAGE 'No 04 rows inserted into ' + :temp_del_aos
+                        WITH STYLE = POPUP;
+                        RETURN 9;
+                    ENDIF;
+
+                ENDIF;
+
+            ELSEIF :h_update_type = 'i'
+            THEN
+                /*-s----------------------------------------------------
+                 Delete value from temp_cqpv.
+                ----------------------------------------------------e-*/
+
+                h_retry_or_not      = 'RETRY';
+                h_retries           = 0;
+
+                WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+                DO
+
+                    h_retries = :h_retries + 1;
+
+                    DELETE FROM :temp_cqpv
+                    WHERE       question = :tf.question;
+
+                    ret_val = CALLPROC check_inq_ing (
+                              h_num_row_ck      = 1,
+                              h_commit          = 'Y',
+                              h_rollback        = 'N',
+                              h_retries         = :h_retries,
+                              h_retries_allowed = :h_retries_allowed,
+                              h_frpr_name       = :h_frpr_name);
+
+                    IF ret_val <> 7
+                    THEN
+                        h_retry_or_not = '';
+                    ENDIF;
+
+                ENDWHILE;
+
+                IF ret_val = 7
+                THEN
+                    RETURN 7;
+
+                ELSEIF ret_val = 9
+                THEN
+                    MESSAGE 'System error deleting from ' + :temp_cqpv
+                    WITH STYLE = POPUP;
+                    RETURN 9;
+
+                ENDIF;
+
+                /*-s----------------------------------------------------
+                If volume question 02 exists, delete this from temp_cqpv
+                ----------------------------------------------------e-*/
+
+                IF h_vol_2_found = 'y'
+                THEN
+
+                    h_retry_or_not      = 'RETRY';
+                    h_retries           = 0;
+
+                    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+                    DO
+
+                        h_retries = :h_retries + 1;
+
+                        DELETE FROM :temp_cqpv
+                        WHERE       question = :h_vol_quest_2;
+
+                        ret_val = CALLPROC check_inq_ing (
+                                  h_num_row_ck      = 1,
+                                  h_commit          = 'Y',
+                                  h_rollback        = 'N',
+                                  h_retries         = :h_retries,
+                                  h_retries_allowed = :h_retries_allowed,
+                                  h_frpr_name       = :h_frpr_name);
+
+                        IF ret_val <> 7
+                        THEN
+                            h_retry_or_not = '';
+                        ENDIF;
+
+                    ENDWHILE;
+
+                    IF ret_val = 7
+                    THEN
+                        RETURN 7;
+
+                    ELSEIF ret_val = 9
+                    THEN
+                        MESSAGE 'System error deleting 02 from ' + :temp_cqpv
+                        WITH STYLE = POPUP;
+                        RETURN 9;
+
+                    ELSEIF ret_val = 1
+                    THEN
+                        MESSAGE 'No 02 rows deleted from ' + :temp_cqpv
+                        WITH STYLE = POPUP;
+                        RETURN 9;
+                    ENDIF;
+
+                ENDIF;
+
+                /*-s----------------------------------------------------
+                If volume question 04 exists, delete this from temp_cqpv
+                ----------------------------------------------------e-*/
+
+                IF h_vol_4_found = 'y'
+                THEN
+
+                    h_retry_or_not      = 'RETRY';
+                    h_retries           = 0;
+
+                    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+                    DO
+
+                        h_retries = :h_retries + 1;
+
+                        DELETE FROM :temp_cqpv
+                        WHERE       question = :h_vol_quest_4;
+
+                        ret_val = CALLPROC check_inq_ing (
+                                  h_num_row_ck      = 1,
+                                  h_commit          = 'Y',
+                                  h_rollback        = 'N',
+                                  h_retries         = :h_retries,
+                                  h_retries_allowed = :h_retries_allowed,
+                                  h_frpr_name       = :h_frpr_name);
+
+                        IF ret_val <> 7
+                        THEN
+                            h_retry_or_not = '';
+                        ENDIF;
+
+                    ENDWHILE;
+
+                    IF ret_val = 7
+                    THEN
+                        RETURN 7;
+
+                    ELSEIF ret_val = 9
+                    THEN
+                        MESSAGE 'System error deleting 04 from ' + :temp_cqpv
+                        WITH STYLE = POPUP;
+                        RETURN 9;
+
+                    ELSEIF ret_val = 1
+                    THEN
+                        MESSAGE 'No 04 rows deleted from ' + :temp_cqpv
+                        WITH STYLE = POPUP;
+                        RETURN 9;
+                    ENDIF;
+
+                ENDIF;
+            ENDIF;
+        ENDIF;
+    };
+
+    IF h_form_changed = 'y'
+    THEN
+        CLEAR FIELD ALL;
+        MESSAGE 'Uncoded Questions deleted OK'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ELSE
+        MESSAGE 'No questions have been marked for deletion.' +
+                ' If you wish to quit without deleting anything,' +
+                ' please press END.'
+        WITH STYLE = POPUP;
+        RESUME FIELD tf;
+    ENDIF;
+}
+
+'End', KEY FRSKEY14  =
+{
+    UNLOADTABLE tf
+    {
+        IF :tf.del = 'Y'
+        THEN
+            reply = '';
+            WHILE reply <> 'y' AND reply <> 'n'
+            DO
+                reply = PROMPT 'Do you really wish to exit without' +
+                               ' deleting? Type Y/N and press <return>'
+                WITH STYLE = POPUP;
+                reply = LOWERCASE(reply);
+            ENDWHILE;
+
+            IF reply = 'y'
+            THEN
+                RETURN 0;
+            ELSE
+                RESUME FIELD tf;
+            ENDIF;
+        ENDIF;
+    };
+
+    RETURN 0;
+}

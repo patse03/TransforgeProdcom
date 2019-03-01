@@ -1,0 +1,418 @@
+/******************************************************************************
+
+    Process to dereceipt a form for a given contributor period.
+
+******************************************************************************/
+
+PROCEDURE msab_fp_derec_form 
+        ( p_contributor_reference = CHAR(11) NOT NULL,
+          p_period                = INTEGER4 NOT NULL,
+          p_contributor_industry  = INTEGER4 NOT NULL) =
+
+DECLARE 
+  h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+  h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+  h_frpr_name       = VARCHAR(24) NOT NULL WITH DEFAULT,
+  h_return          = INTEGER1    NOT NULL WITH DEFAULT,
+  h_count_q         = INTEGER4    NOT NULL WITH DEFAULT,
+  h_receipt_date    = DATE        NOT NULL WITH DEFAULT,
+  h_form_rec   = CHAR(1)     NOT NULL WITH DEFAULT,
+
+  lp_full_error_check     = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+  lp_write_to_audit_trail = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+  h_frpr_name = 'msab_fp_derec_form';
+  h_retries_allowed = 3;
+
+
+  /*-------------------------------------------------------------------------
+      Check for returned values on form.
+      If any, abort. 
+  -------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT IFNULL(count (*),0) as h_count_q 
+    FROM   cqpv
+    WHERE  contributor_reference = :p_contributor_reference
+      AND  period                = :p_period
+      AND  (avalue > 0 OR acell != 'N');
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return > 1
+  THEN
+    MESSAGE 'ERROR: Failed to access data on CQPV table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  IF h_count_q > 0
+  THEN
+    MESSAGE 'WARNING: This form has already been taken on. ' 
+          + 'If you wish to de-receipt it, you need to ' 
+          + 'remove the Contributor''s taken-on data.' +X'0D' 
+          + 'Please use "REMOVE CONTRIBUTOR VALUES" in the ' 
+          + 'Online Contributor Selection option from the ' 
+          + 'Selection and Despatches menu.'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+  /*-------------------------------------------------------------------------
+      Check for same day de-receipting.  If detected, abort. 
+  -------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT form_received AS h_form_rec
+    FROM   contributor_period
+    WHERE  contributor_reference = :p_contributor_reference
+      AND  period                = :p_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to select data from contributor period table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  IF :h_form_rec = 'N'
+  THEN
+    MESSAGE 'WARNING: This form has not been receipted so cannot '
+          + 'be dereceipted.'
+    WITH STYLE = POPUP;
+    RETURN 0;
+  ENDIF;
+
+ /*------------------------------------------------------------------
+    Note derecipting in audit trail.
+  ------------------------------------------------------------------*/
+
+  h_return = CALLPROC lp_write_to_audit_trail
+            ( p_contributor_reference = :p_contributor_reference,
+              p_period                = :p_period,
+              p_code                  = 11);
+
+  IF h_return != 0
+  THEN
+    /* Error reported by external procedure */
+    RETURN 9;
+  ENDIF;
+
+ /*------------------------------------------------------------------
+    Reset contributor_period values
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    UPDATE contributor_period
+    SET    receipt_date   = '',
+           correct_date   = '',
+           rec_week_no    = 0,
+           corr_week_no   = 0,
+           form_received  = 'N',
+           form_taken_on  = 'N',
+           f9_count       = 0,
+           user_id        = '',
+           form_status    = 0
+    WHERE  contributor_reference = :p_contributor_reference
+      AND  period                = :p_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to reset form on contributor period table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  /*-------------------------------------------------------------------
+     Deleting from bto_reference_score, bto_reference_acu, 
+     bto_question_score, bto_unscored, bto_unscored_cleared for any 
+     forms left on the input table.
+  -------------------------------------------------------------------*/
+  /*..................................................................
+      (a) bto_reference_score
+  ..................................................................*/
+    
+  DELETE FROM bto_reference_score 
+  WHERE  contributor_reference = :p_contributor_reference
+    AND  period                = :p_period;
+
+  h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1 
+    THEN
+    MESSAGE 'ERROR: Failed whilst deleting from bto_reference_score. ' 
+          + 'Error code = ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN h_return;
+  ENDIF;
+
+ /*..................................................................
+    (b) bto_reference_acu
+ ..................................................................*/
+  
+  h_return = 0;
+
+  DELETE FROM bto_reference_acu 
+  WHERE  contributor = :p_contributor_reference
+    AND  period      = :p_period;
+
+  h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1 
+  THEN
+    MESSAGE 'ERROR: Failed whilst deleting from bto_reference_acu. ' 
+          + 'Error code = ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN h_return;
+  ENDIF;
+
+ /*..................................................................
+    (c) bto_question_score
+ ..................................................................*/
+  
+  h_return = 0;
+
+  DELETE FROM bto_question_score a
+  WHERE  contributor_reference = :p_contributor_reference
+    AND  period                = :p_period;
+
+  h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1 
+  THEN
+    MESSAGE 'ERROR: Failed whilst deleting from bto_question_score. ' 
+          + 'Error code = ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN h_return;
+  ENDIF;
+
+ /*..................................................................
+    (d) bto_unscored
+ ..................................................................*/
+  
+  h_return = 0;
+
+  DELETE FROM bto_unscored a
+  WHERE  contributor_reference = :p_contributor_reference
+    AND  period                = :p_period;
+
+  h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1 
+  THEN
+    MESSAGE 'ERROR: Failed whilst deleting from bto_unscored. ' 
+          + 'Error code = ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN h_return;
+  ENDIF;
+
+ /*..................................................................
+    (e) bto_unscored_cleared
+ ..................................................................*/
+  
+  h_return = 0;
+
+  DELETE FROM bto_unscored_cleared a
+  WHERE  contributor_reference = :p_contributor_reference
+    AND  period                = :p_period;
+
+  h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1 
+  THEN
+    MESSAGE 'ERROR: Failed whilst deleting from bto_unscored_cleared. ' 
+          + 'Error code = ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN h_return;
+  ENDIF;
+
+ /*..................................................................
+    (f) bto_scoring_debug
+ ..................................................................*/
+  
+  h_return = 0;
+
+  DELETE FROM bto_scoring_debug a
+  WHERE  contributor_reference = :p_contributor_reference
+    AND  period                = :p_period;
+
+  h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1 
+  THEN
+    MESSAGE 'ERROR: Failed whilst deleting from bto_scoring_debug. ' 
+          + 'Error code = ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+   Make a note on the dereceipt-log
+  ------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    INSERT INTO dereceipt_log (
+                contributor_reference,
+                inquiry,
+                period,
+                contributor_industry,
+                user_id,
+                time)
+    VALUES (    :p_contributor_reference,
+                14,
+                :p_period,
+                :p_contributor_industry,
+                :g_user_id,
+                'now');
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    MESSAGE 'ERROR: Failed to record action in dereceipt log table. '
+          + 'Error code ' +VARCHAR(:h_return) +'. '
+          + 'Please contact IM immediately.'
+    WITH STYLE = POPUP;
+    RETURN 9;
+  ENDIF;
+
+  MESSAGE 'NOTE: Form successfully de-receipted.'
+  WITH STYLE = POPUP;
+
+  RETURN 0;
+
+}
+
+/************************** LOCAL PROCEDURES *******************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing 
+            ( h_num_row_ck      = :p_num_row_ck,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_retries         = :h_retries,
+              h_retries_allowed = :h_retries_allowed,
+              h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+
+/*=======================================================================
+    Local procedure to write to audit trail.
+=======================================================================*/
+
+PROCEDURE lp_write_to_audit_trail
+        ( p_contributor_reference = CHAR(11)    NOT NULL WITH DEFAULT,
+          p_question              = CHAR(9)     NOT NULL WITH DEFAULT,
+          p_period                = INTEGER4    NOT NULL WITH DEFAULT,
+          p_code                  = INTEGER1    NOT NULL WITH DEFAULT,
+          p_val_1                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_val_2                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_frpr_name             = VARCHAR(36) NOT NULL WITH DEFAULT )=
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC write_to_audit_trail 
+            ( p_contributor_reference = :p_contributor_reference, 
+              p_question              = :p_question,
+              p_period                = :p_period,
+              p_code                  = :p_code, 
+              p_val_1                 = :p_val_1,
+              p_val_2                 = :p_val_2,
+              p_frpr_name             = :h_frpr_name);
+
+  /* Error messages handled by external procedure */ 
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

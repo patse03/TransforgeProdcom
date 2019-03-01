@@ -1,0 +1,530 @@
+/*----------------------------------------------------------------------
+Displays unit values from the unit_values table
+----------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_table           = VARCHAR(24) NOT NULL,
+        h_inquiry         = INTEGER1 NOT NULL,
+        h_return           = INTEGER1 NOT NULL
+
+{
+  msa_date = 'now';
+  h_retries_allowed = 3;
+  h_frpr_name = 'msab_fr_agg_ret_uv';
+  h_table = 'temp_agguv';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+
+  SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+}
+
+FIELD industry =
+{
+    MESSAGE 'Checking Industry . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT industry
+        FROM   industry
+        WHERE  industry = :industry;
+
+        h_return = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF h_return != 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF h_return = 9
+    THEN
+        MESSAGE 'System error in accessing industry'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF h_return = 1
+    THEN
+        MESSAGE 'This Industry does not exist'
+        WITH STYLE = POPUP;
+        RESUME FIELD industry;
+    ENDIF;
+
+    RESUME FIELD period;
+}
+
+FIELD period =
+{
+    MESSAGE 'Checking Period . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT inquiry AS h_inquiry
+        FROM   inquiry_period
+        WHERE  period = :period;
+
+        h_return = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF h_return != 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF h_return = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF h_return = 1
+    THEN
+        MESSAGE 'This is not a valid Period'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    period1 = :period;
+
+    h_return = CALLPROC msa_fp_prev_periods (
+              inquiry      = :h_inquiry,
+              period       = :period1,
+              prev_period1 = BYREF(:period2),
+              prev_period2 = BYREF(:period3),
+              prev_period3 = BYREF(:period4),
+              prev_period4 = BYREF(:period5));
+
+    /*------------------------------------------------------------------
+    Create temporary table
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Data . . .';
+
+    h_return = CALLPROC msa_fp_drop_table ( h_table = :h_table);
+    IF h_return != 0
+    THEN
+        RETURN h_return;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table
+        AS SELECT    DISTINCT(question),
+                     FLOAT8(0) AS uv5,
+                     FLOAT8(0) AS uv4,
+                     FLOAT8(0) AS uv3,
+                     FLOAT8(0) AS uv2,
+                     FLOAT8(0) AS uv1
+        FROM         unit_values
+        WHERE        question_industry = :industry
+        AND          period IN (:period1,:period2,:period3,:period4,:period5);
+
+        h_return = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF h_return != 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF h_return = 9
+    THEN
+        MESSAGE 'System error in creating ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF h_return = 1
+    THEN
+        MESSAGE 'No Unit Values were found for Question Industry ' +
+                VARCHAR(:industry) + ' for the Periods ' +
+                VARCHAR(:period5) + ' to ' + VARCHAR(:period1)
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Update for period 5
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Data for ' + VARCHAR(:period5) + ' . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   unit_values b
+        SET    uv5 = b.returned_uv
+        WHERE  a.question = b.question
+        AND    b.period = :period5;
+
+        h_return = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF h_return != 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF h_return = 9
+    THEN
+        MESSAGE 'System error in updating ' + :h_table +
+                ' for Period ' + VARCHAR(:period5)
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Update for period 4
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Data for ' + VARCHAR(:period4) + ' . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   unit_values b
+        SET    uv4 = b.returned_uv
+        WHERE  a.question = b.question
+        AND    b.period = :period4;
+
+        h_return = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF h_return != 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF h_return = 9
+    THEN
+        MESSAGE 'System error in updating ' + :h_table +
+                ' for Period ' + VARCHAR(:period4)
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Update for period 3
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Data for ' + VARCHAR(:period3) + ' . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   unit_values b
+        SET    uv3 = b.returned_uv
+        WHERE  a.question = b.question
+        AND    b.period = :period3;
+
+        h_return = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF h_return != 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF h_return = 9
+    THEN
+        MESSAGE 'System error in updating ' + :h_table +
+                ' for Period ' + VARCHAR(:period3)
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Update for period 2
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Data for ' + VARCHAR(:period2) + ' . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   unit_values b
+        SET    uv2 = b.returned_uv
+        WHERE  a.question = b.question
+        AND    b.period = :period2;
+
+        h_return = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF h_return != 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF h_return = 9
+    THEN
+        MESSAGE 'System error in updating ' + :h_table +
+                ' for Period ' + VARCHAR(:period2)
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Update for period 1
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Data for ' + VARCHAR(:period1) + ' . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   unit_values b
+        SET    uv1 = b.returned_uv
+        WHERE  a.question = b.question
+        AND    b.period = :period1;
+
+        h_return = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF h_return != 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF h_return = 9
+    THEN
+        MESSAGE 'System error in updating ' + :h_table +
+                ' for Period ' + VARCHAR(:period1)
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Load screen table
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT   question,
+                 uv5,
+                 uv4,
+                 uv3,
+                 uv2,
+                 uv1
+        FROM     :h_table
+        ORDER BY question;
+
+        h_return = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF h_return != 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF h_return = 9
+    THEN
+        MESSAGE 'System error in accessing unit_values'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    RESUME FIELD tf;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Clear', KEY FRSKEY4 =
+{
+    CLEAR FIELD ALL;
+    msa_date = 'now';
+    RESUME FIELD industry;
+}
+
+'End', KEY FRSKEY14 =
+{
+    MESSAGE 'Exiting UV Screen . . .';
+    h_return = CALLPROC msa_fp_drop_table ( h_table = :h_table);
+    RETURN 0;
+}

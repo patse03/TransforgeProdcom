@@ -1,0 +1,1955 @@
+PROCEDURE msab_fp_credibility (
+
+        h_idbr               = CHAR(11) NOT NULL,
+        h_dummy              = CHAR(11) NOT NULL,
+        inquiry              = INTEGER1 NOT NULL,
+        period               = INTEGER4 NOT NULL,
+        prev_period          = INTEGER4 NOT NULL,
+        question             = INTEGER4 NOT NULL,
+        quest_order          = INTEGER1 NOT NULL,
+        avalue               = INTEGER4 NOT NULL,
+        register_emp         = INTEGER4 NOT NULL,
+        value_of_01          = INTEGER4 NOT NULL,
+        total_of_01          = INTEGER4 NOT NULL,
+        total_sales          = INTEGER4 NOT NULL,
+
+        h_new_total_sales    = INTEGER4 NOT NULL,
+        h_atypical           = CHAR(1) NOT NULL,
+        acell                = CHAR(2) NOT NULL,
+        error_msg            = VARCHAR(100) NOT NULL,
+        acell_type           = CHAR(2) NOT NULL) =
+
+DECLARE h_retries_allowed    = INTEGER1 NOT NULL,
+        h_retries            = INTEGER1 NOT NULL,
+        h_retry_or_not       = CHAR(5) NOT NULL,
+        h_frpr_name          = VARCHAR(24) NOT NULL,
+        ret_val              = INTEGER1 NOT NULL,
+
+        question_inquiry     = INTEGER1 NOT NULL,
+        h_waste_ind          = INTEGER4 NOT NULL,
+        waste_flag           = CHAR(1) NOT NULL,
+        key_responder        = CHAR(1) NOT NULL,
+        h_prev_found         = CHAR(1) NOT NULL,
+        h_prev_value         = INTEGER4 NOT NULL,
+        h_prev_value_of_01   = INTEGER4 NOT NULL,
+        h_prev_tot_sales     = INTEGER4 NOT NULL,
+        h_prev_reg_emp     = INTEGER4 NOT NULL,
+        h_search_question    = INTEGER4 NOT NULL,
+        h_span_start         = INTEGER4 NOT NULL,
+        h_old_value          = INTEGER4 NOT NULL,
+        h_old_volume         = INTEGER4 NOT NULL,
+        h_old_period         = INTEGER4 NOT NULL,
+        unit_changed_period  = INTEGER4 NOT NULL,
+        prev_period1         = INTEGER4 NOT NULL,
+        difference           = FLOAT8 NOT NULL,
+        h_perc               = INTEGER4 NOT NULL,
+        prev_uv              = FLOAT8 NOT NULL,
+        curr_uv              = FLOAT8 NOT NULL,
+        prev_sph             = FLOAT8 NOT NULL,
+        curr_sph             = FLOAT8 NOT NULL,
+	h_output_category    = CHAR(1) NOT NULL,
+	h_contributor_reference  = CHAR(11) NOT NULL,
+
+        emp_difference       = INTEGER4 NOT NULL,
+        emp_perc             = INTEGER4 NOT NULL,
+        emp_msg              = VARCHAR(100) NOT NULL,
+
+        diff_01              = INTEGER4 NOT NULL,
+	perc_diff            = FLOAT8 NOT NULL,
+        mpi_diff             = INTEGER4 NOT NULL,
+        mpi_perc             = INTEGER4 NOT NULL,
+
+        h_minimum_change     = INTEGER4 NOT NULL,
+        h_maximum_value      = INTEGER4 NOT NULL,
+        h_increase           = INTEGER4 NOT NULL,
+        h_decrease           = INTEGER4 NOT NULL,
+        h_uv_increase        = INTEGER4 NOT NULL,
+        h_uv_decrease        = INTEGER4 NOT NULL,
+        h_sph_increase       = INTEGER4 NOT NULL,
+        h_sph_decrease       = INTEGER4 NOT NULL,
+        h_new_uv_range_from  = FLOAT8 NOT NULL,
+        h_new_uv_range_to    = FLOAT8 NOT NULL,
+        h_new_sph_range_from = INTEGER4 NOT NULL,
+        h_new_sph_range_to   = INTEGER4 NOT NULL,
+        h_mpi_total_turnover = INTEGER4 NOT NULL
+
+{
+    h_frpr_name = 'msab_fp_credibility';
+    h_retries_allowed = 3;
+
+    MESSAGE 'Checking Credibility of ' + VARCHAR(:question) + ' . . .';
+    /*------------------------------------------------------------------
+    9100 & 9200: If the cell code begins with a '1', lose it.
+    ------------------------------------------------------------------*/
+
+    IF acell LIKE '1%'
+    THEN
+        acell = RIGHT(acell,1);
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Set up the default BYREF variables for an OK value.
+    If the value is NOT OK, the variables will be changed later on
+    ------------------------------------------------------------------*/
+
+    IF acell = 'K'
+    THEN
+        acell = 'P';
+    ELSEIF acell <> 'P'
+    THEN
+        IF avalue = 0
+        THEN
+            acell = 'Z';
+        ELSE
+            acell = 'V';
+        ENDIF;
+    ENDIF;
+
+    error_msg = '';
+    acell_type = '';
+    h_atypical = '';
+    h_new_total_sales = 0;
+
+    /*------------------------------------------------------------------
+    If it's a volume that's changed its units for a particular period,
+    quit without doing any checking
+    ------------------------------------------------------------------*/
+
+    IF MOD(question,10) = 2 OR MOD(question,10) = 4
+    OR MOD(question,10) = 5 OR MOD(question,10) = 6
+    OR MOD(question,10) = 8
+    THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            SELECT period AS unit_changed_period
+            FROM   takeon_unit_changes
+            WHERE  question = :question
+            AND    inquiry = :inquiry;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'SystIem error in accessing takeon_unit_changes'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            unit_changed_period = 0;
+
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        Quit if the current period is the unit-changed-for period
+        --------------------------------------------------------------*/
+
+        IF unit_changed_period = period
+        THEN
+            RETURN 0;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        If the unit-changed-for period is in the future of the period
+        being taken on, ignore it.
+        --------------------------------------------------------------*/
+
+        IF unit_changed_period > period
+        THEN
+            unit_changed_period = 0;
+        ENDIF;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Find out if contributor had this question last period
+new bit
+    Amended code 13/2/2003 - credibility was showing wierd results for
+    questions which had been replaced and were on question_history but
+    for the previous period ie. a row was returned from the 1st select 
+    from cqpv as the question existed this period and previous period 
+    and a row was also being returned from the 2nd select(s) from
+    question_history as it was looking for the previous period on
+    question_history
+    eg. current period = 200200
+	previous_period = 200100
+
+    if a question was replaced in 200100 the code returned a row from
+    cqpv and a 2nd row from question_history - this was incorrect. the
+    variable then held the last value and if this was zero then the
+    values passed through to credibility were incorrect and showing
+    strange results. 
+    eg. current_value = 10
+	previous_value = 15
+	minimum_change = 1 ( from credibility table)
+	old_questions = 366212331,366212391
+	new_question  = 366212371 - for period 200100
+
+	the above showed a credibility message of UP 10 rather than
+	down 5 - this was due to the value being passed through of zero
+	to previous value.
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        IF quest_order = 1
+        THEN
+            SELECT avalue AS h_prev_value,
+		   register_emp AS h_prev_reg_emp
+            FROM   cqpv a,
+		   contributor_period b
+            WHERE  a.contributor_reference IN (:h_idbr,:h_dummy)
+            AND    a.period = :prev_period
+            AND    a.question = :question
+            AND    a.acell <> 'N'
+	    AND    a.contributor_reference = b.contributor_reference
+	    AND    a.period = b.period
+            UNION
+            SELECT avalue AS h_prev_value,
+		   register_emp AS h_prev_reg_emp
+            FROM   cqpv a,
+                   question_history b,
+		   contributor_period c
+            WHERE  a.contributor_reference IN (:h_idbr,:h_dummy)
+            AND    b.period = :period
+            AND    a.period = :prev_period
+            AND    a.question = b.old_question
+            AND    b.new_question = :question
+            AND    b.rep_type = 1
+            AND    a.acell <> 'N'
+	    AND    a.contributor_reference = c.contributor_reference
+	    AND    a.period = c.period
+            UNION
+            SELECT SUM(avalue) AS h_prev_value,
+		   register_emp AS h_prev_reg_emp
+            FROM   cqpv a,
+                   question_history b,
+	           contributor_period c
+            WHERE  a.contributor_reference IN (:h_idbr,:h_dummy)
+            AND    b.period = :period
+            AND    a.period = :prev_period
+            AND    a.question = b.old_question
+            AND    b.new_question = :question
+            AND    b.rep_type = 2
+            AND    a.acell <> 'N'
+	    AND    a.contributor_reference = c.contributor_reference
+	    AND    a.period = c.period
+            GROUP BY a.period,
+		     c.register_emp;
+        ELSE
+            /*----------------------------------------------------------
+            Standard headings: have to allow for reclassifications so
+            that 155209801 is compared with 159809801
+            ----------------------------------------------------------*/
+
+            SELECT avalue AS h_prev_value,
+		   register_emp AS h_prev_reg_emp
+            FROM   cqpv a,
+		   contributor_period b
+            WHERE  a.contributor_reference IN (:h_idbr,:h_dummy)
+            AND    a.quest_order = :quest_order
+            AND    MOD(a.question,10000) = MOD(:question,10000)
+            AND    a.period = :prev_period
+            AND    a.acell <> 'N'
+	    AND    a.contributor_reference = b.contributor_reference
+	    AND    a.period = b.period;
+
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing cqpv/previous value'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        h_prev_found = 'n';
+
+    ELSE
+        h_prev_found = 'y';
+    ENDIF;
+
+    IF MOD(question,10) = 5 OR MOD(question,10) = 6
+    OR MOD(question,10) = 8
+    THEN
+        IF h_prev_value = 0
+        THEN
+            h_prev_found = 'n';
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    If it's a volume, get the most recent Unit Value you can.
+    This means looking back on cqpv over the span looking for where
+    both the value and the volume are non-zero.
+    ------------------------------------------------------------------*/
+
+    IF (MOD(question,10) = 2 OR MOD(question,10) = 4) AND h_prev_found = 'y'
+    THEN
+        IF inquiry = 14
+        THEN
+            ret_val = CALLPROC msa_fp_prev_periods (
+                      inquiry      = :inquiry,
+                      period       = :prev_period,
+                      prev_period1 = BYREF(h_span_start));
+        ELSE
+            ret_val = CALLPROC msa_fp_prev_periods (
+                      inquiry      = :inquiry,
+                      period       = :prev_period,
+                      prev_period4 = BYREF(h_span_start));
+        ENDIF;
+
+        h_prev_value = -1;
+        h_prev_value_of_01 = -1;
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            SELECT   a.avalue as h_old_value,
+                     b.avalue as h_old_volume,
+                     a.period AS h_old_period
+            FROM     cqpv a,
+                     cqpv b
+            WHERE    a.contributor_reference IN (:h_idbr,:h_dummy)
+            AND      a.contributor_reference = b.contributor_Reference
+            AND      a.question = b.question / 10 * 10 + 1
+            AND      b.question = :question
+            AND      a.period = b.period
+            AND      a.contributor_inquiry = b.contributor_inquiry
+            AND      a.period BETWEEN :h_span_start AND :prev_period
+            AND      a.period >= :unit_changed_period
+            UNION
+            SELECT   a.avalue as h_old_value,
+                     b.avalue as h_old_volume,
+                     a.period AS h_old_period
+            FROM     cqpv a,
+                     cqpv b,
+                     question_history c
+            WHERE    a.contributor_reference IN (:h_idbr,:h_dummy)
+            AND      a.contributor_reference = b.contributor_Reference
+            AND      a.question = b.question / 10 * 10 + 1
+            AND      b.question = c.old_question
+            AND      c.new_question = :question
+            AND      a.period = b.period
+            AND      a.contributor_inquiry = b.contributor_inquiry
+            AND      a.period BETWEEN :h_span_start AND :prev_period
+            AND      a.period >= :unit_changed_period
+            AND      c.rep_type = 1
+            UNION
+            SELECT   SUM(a.avalue) as h_old_value,
+                     SUM(b.avalue) as h_old_volume,
+                     a.period AS h_old_period
+            FROM     cqpv a,
+                     cqpv b,
+                     question_history c
+            WHERE    a.contributor_reference IN (:h_idbr,:h_dummy)
+            AND      a.contributor_reference = b.contributor_Reference
+            AND      a.question = b.question / 10 * 10 + 1
+            AND      b.question = c.old_question
+            AND      c.new_question = :question
+            AND      a.period = b.period
+            AND      a.contributor_inquiry = b.contributor_inquiry
+            AND      a.period BETWEEN :h_span_start AND :prev_period
+            AND      a.period >= :unit_changed_period
+            AND      c.rep_type = 2
+            GROUP BY a.period
+            ORDER BY h_old_period DESC
+            {
+                IF (h_old_value <> 0 AND h_old_volume <> 0)
+                OR (h_old_value = 0 AND h_old_volume = 0)
+                THEN
+                    h_prev_value = h_old_volume;
+                    h_prev_value_of_01 = h_old_value;
+                    ENDLOOP;
+                ENDIF;
+            };
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing cqpv/previous 01 value'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            h_prev_found = 'n';
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        If no matching >0 value and volume are found, then there's no
+        UV checking to be done
+        --------------------------------------------------------------*/
+
+        IF h_prev_value = -1 OR h_prev_value_of_01 = -1
+        THEN
+            h_prev_found = 'n';
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    If it's the employment question, get the previous period's
+    TOTAL SALES value for the SPH checks
+    ------------------------------------------------------------------*/
+
+    IF quest_order = 10
+    THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            SELECT avalue AS h_prev_tot_sales,
+		   register_emp AS h_prev_reg_emp
+            FROM   cqpv a,
+		   contributor_period b
+            WHERE  a.contributor_reference IN (:h_idbr,:h_dummy)
+            AND    a.quest_order = 10
+            AND    a.avalue <> 0
+            AND    a.period = :prev_period
+	    AND    a.contributor_reference = b.contributor_reference
+	    AND    a.period = b.period;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing cqpv/prev total sales'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            h_prev_found = 'n';
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    MPI congruence check
+ 
+    A file will be supplied by common software of all MPI contributors 
+    with an employment > 99 and will be loaded onto the Prodcom System:
+
+    Annual - end January 
+    Quarter1 - end April
+    Quarter2 - end July
+    Quarter3 - end October
+    Quarter4 - end of January
+
+    Once the new data has been loaded this check will be performed 
+    in online take-on to see if the MPI turnover figures are 
+    congruent with the Prodcom 9200 figures 
+
+    The check will fail if the figures are:
+    +10% OR -10% OR if the difference between the figues is >250 million 
+    A message will be put against the 9200 question on the Enter/Edit 
+    screen  
+
+#####################################################################
+### The MPI congruence check has been taken out at the request of ###
+### the DVB    06/02/06                                           ###
+#####################################################################
+
+    IF quest_order = 10
+    THEN
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            SELECT suggested_total_tno AS h_mpi_total_turnover
+            FROM   mpi_congruence 
+            WHERE  contributor_reference IN (:h_idbr,:h_dummy)
+            AND    period = :period;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing mpi_turnover'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ELSEIF ret_val = 0
+        THEN
+            mpi_diff = ABS(h_mpi_total_turnover - avalue);
+
+            IF mpi_diff <> 0 and avalue <> 0
+            THEN
+                mpi_perc = mpi_diff * 1.0 /avalue * 100;
+            ENDIF;
+
+            IF mpi_perc >= 10 OR mpi_diff > 250000
+            THEN
+                error_msg = error_msg + 'MPI DIFF ' + 
+                            VARCHAR(INT4(mpi_diff)) + 
+                            ' (' + VARCHAR(mpi_perc) + '%)';
+
+                IF acell = 'P'
+                THEN
+                    acell = 'K';
+                ELSE
+                    acell = 'U';
+                ENDIF;
+            ENDIF;
+        ENDIF;
+
+    ENDIF; end of if quest_order = 10
+    ----------------------------------------------------------------*/
+
+    /*------------------------------------------------------------------
+    3 qtrs constant check
+    A contributor complained to ONS that he had sent in the same figures
+    repeatedly and nobody had spotted this deliberate ploy. DVB asked 
+    if a check could be built into quarterly Prodcom so that if a 
+    contributor has the same total sales for 3 concurrent periods then 
+    the form should be highlighted for the DVB to check.  
+    a message will be displayed next to the 9200 question in 
+    ------------------------------------------------------------------*/
+    IF :inquiry = 15 and quest_order = 10
+    THEN
+        ret_val = CALLPROC msa_fp_prev_periods (
+                  inquiry      = :inquiry,
+                  period       = :period,
+                  prev_period1  = BYREF(prev_period),
+                  prev_period2 = BYREF(prev_period1));
+
+        IF ret_val <> 0
+        THEN
+           RETURN ret_val;
+        ENDIF;
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < :h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            SELECT a.question 
+            FROM   cqpv a,
+                   cqpv b,
+                   cqpv c
+            WHERE  a.period = :period
+            AND    b.period = :prev_period
+            AND    c.period = :prev_period1
+            AND    a.contributor_reference IN (:h_idbr,:h_dummy)
+            AND    a.contributor_reference = b.contributor_reference
+            AND    b.contributor_reference = c.contributor_reference
+            AND    MOD(a.question,10000) = 9200
+            AND    MOD(b.question,10000) = 9200
+            AND    MOD(c.question,10000) = 9200
+	    AND    b.avalue = :avalue
+            AND    b.avalue = c.avalue;
+
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_rollback   = 'N',
+                      h_commit     = 'Y',
+                      h_retries    = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name  = :h_frpr_name);
+        
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+        
+        ENDWHILE;
+        
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+        ENDIF;
+        
+        IF ret_val = 9   
+        THEN
+            MESSAGE 'System Error in 3 qtrs constant check for Total Sales '
+            WITH STYLE = POPUP;
+        ELSEIF ret_val = 0
+        THEN
+            error_msg = error_msg + ' 3 qtrs constant ' ;
+            acell_type = '0';
+            acell = 'U';
+            /*RETURN 0;*/
+        ENDIF;
+   ENDIF;
+
+
+    /*------------------------------------------------------------------
+    Find if contributor is key to this PRODUCT
+    ------------------------------------------------------------------*/
+
+    key_responder = 'n';
+
+    IF MOD(question,10) > 1
+    THEN
+        h_search_question = :question / 10 * 10 + 1;
+    ELSE
+        h_search_question = :question;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT question AS h_search_question
+        FROM   key_responder_data
+        WHERE  contributor_reference IN (:h_dummy,:h_idbr)
+          AND  question = :h_search_question
+          AND  for_period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing key_responder_data'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 0
+    THEN
+        key_responder = 'y';
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    New code for 28510 work done. If it is a New contributor, make the 
+    form fail and prompt the user. Value must be confirmed before form
+    can be cleared.
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT output_category AS h_output_category
+        FROM   contributor_period
+        WHERE  contributor_reference IN (:h_dummy,:h_idbr)
+        AND    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing output_category '
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    IF (question = 285109401 AND h_output_category = 'C' AND avalue > 0)
+     OR (question = 285109401 AND h_output_category = 'G' AND avalue > 0)
+      OR (question = 285109401 AND h_output_category = 'W' AND avalue > 0)
+    THEN
+        error_msg = 'Work Done completed for New Contributor';
+        RETURN 0;
+    ENDIF;
+       
+
+    /*------------------------------------------------------------------
+        A SPECIAL WASTE PRODUCT question is available to contributors 
+        in the industries below: 
+        15310, 15320, 15330, 15610, 15970, 20100, 20200, 20300, 
+        20400, 20510, 25130, 26110, 26120, 26130, 26140 and 26150
+        Here the standard waste products question is forced to 
+        fail when a value exists for those industries.
+    ------------------------------------------------------------------*/
+
+    IF MOD(question,10000) = 9501
+    THEN
+        IF avalue > 0
+	THEN
+            h_retry_or_not      = 'RETRY';
+            h_retries           = 0;
+
+            WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+            DO
+
+                h_retries = :h_retries + 1;
+
+                SELECT industry as h_waste_ind
+                FROM special_waste_inds
+	        WHERE industry = :question/10000;
+
+                ret_val = CALLPROC check_inq_ing (
+                          h_num_row_ck      = 1,
+                          h_commit          = 'Y',
+                          h_rollback        = 'N',
+                          h_retries         = :h_retries,
+                          h_retries_allowed = :h_retries_allowed,
+                          h_frpr_name       = :h_frpr_name);
+
+                IF ret_val <> 7
+                THEN
+                    h_retry_or_not = '';
+                ENDIF;
+            ENDWHILE;
+
+            IF ret_val = 7
+            THEN
+                RETURN 7;
+            ELSEIF ret_val = 9
+            THEN
+                MESSAGE 'System error in accessing special_waste_inds '
+                WITH STYLE = POPUP;
+                RETURN 9;
+            ELSEIF ret_val = 0
+            THEN
+                error_msg = error_msg + 'Check Specialised Waste. ';
+            ENDIF;
+	ENDIF;
+    ENDIF;
+
+
+    /*------------------------------------------------------------------
+    Get Credibility Values
+    ------------------------------------------------------------------*/
+
+    question_inquiry     = 0;
+    h_minimum_change     = 0;
+    h_maximum_value      = 0;
+    h_increase           = 0;
+    h_decrease           = 0;
+    h_uv_increase        = 0;
+    h_uv_decrease        = 0;
+    h_sph_increase       = 0;
+    h_sph_decrease       = 0;
+    h_new_uv_range_from  = 0;
+    h_new_uv_range_to    = 0;
+    h_new_sph_range_from = 0;
+    h_new_sph_range_to   = 0;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        IF key_responder = 'y'
+        THEN
+            SELECT inquiry                AS question_inquiry,
+                   key_minimum_change     AS h_minimum_change,
+                   key_maximum_value      AS h_maximum_value,
+                   key_increase           AS h_increase,
+                   key_decrease           AS h_decrease,
+                   key_uv_increase        AS h_uv_increase,
+                   key_uv_decrease        AS h_uv_decrease,
+                   sph_increase           AS h_sph_increase,
+                   sph_decrease           AS h_sph_decrease,
+                   new_uv_range_from      AS h_new_uv_range_from,
+                   new_uv_range_to        AS h_new_uv_range_to,
+                   new_sph_range_from     AS h_new_sph_range_from,
+                   new_sph_range_to       AS h_new_sph_range_to
+            FROM   credibility
+            WHERE  question = :question;
+        ELSE
+            SELECT inquiry            AS question_inquiry,
+                   minimum_change     AS h_minimum_change,
+                   maximum_value      AS h_maximum_value,
+                   increase           AS h_increase,
+                   decrease           AS h_decrease,
+                   uv_increase        AS h_uv_increase,
+                   uv_decrease        AS h_uv_decrease,
+                   sph_increase       AS h_sph_increase,
+                   sph_decrease       AS h_sph_decrease,
+                   new_uv_range_from  AS h_new_uv_range_from,
+                   new_uv_range_to    AS h_new_uv_range_to,
+                   new_sph_range_from AS h_new_sph_range_from,
+                   new_sph_range_to   AS h_new_sph_range_to
+            FROM   credibility
+            WHERE  question = :question;
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing credibility'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        /*--------------------------------------------------------------
+        If the question does not exist, put out an error message
+        --------------------------------------------------------------*/
+
+        error_msg = error_msg + ' No Credibility Gates';
+
+        IF acell = 'P'
+        THEN
+            acell = 'K';
+        ELSE
+            acell = 'U';
+        ENDIF;
+
+        RETURN 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    If quarterly contributor is being asked an annual question, divide
+    the minimum change by 4 (but leaving the "minimumest" as 1)
+    ------------------------------------------------------------------*/
+
+    IF inquiry = 15 AND question_inquiry = 14
+    AND quest_order = 1 AND MOD(question,10) = 1
+    THEN
+        h_minimum_change = h_minimum_change / 4;
+
+        IF h_minimum_change = 0
+        THEN
+            h_minimum_change = 1;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Zero Total Sales (is not allowed)
+    ------------------------------------------------------------------*/
+
+    IF quest_order = 10 AND avalue = 0
+    THEN
+        acell_type = '0';
+        acell = 'U';
+        error_msg = error_msg + ' Total Sales must not be zero';
+        RETURN 0;
+    ENDIF;
+
+
+
+    /*------------------------------------------------------------------
+    Previous Value Exists - 9100 Employment
+    1. SPH Increase > Gate ---> 7
+    2. SPH Decrease > Gate ---> 8
+       & register_emp <> returned_emp ---> '1' before cell code
+       & register_emp = returned_emp = 0 ---> '0'
+    Amended June 2003
+    h_perc is a float field but due to extra error_messages being 
+    strung together in the string error_msg it was agreed with the 
+    DVB and RAP that we could just display the Integer4 version to 
+    the Enter/Edit Take-On system screen
+    ------------------------------------------------------------------*/
+
+    IF h_prev_found = 'y' AND quest_order = 10
+    THEN
+/*
+        IF register_emp = 0 AND avalue = 0
+        THEN
+            acell = 'U';
+            acell_type = '0';
+            error_msg = 'Register Emp & Returned Emp are both 0';
+            RETURN 0;
+        ENDIF;
+*/
+        IF register_emp = 0 OR total_sales = 0
+        THEN
+            curr_sph = 0;
+        ELSE
+            curr_sph = total_sales * 1.0 / register_emp;
+        ENDIF;
+
+        IF h_prev_reg_emp = 0 OR h_prev_tot_sales = 0
+        THEN
+            prev_sph = 0;
+        ELSE
+            prev_sph = h_prev_tot_sales * 1.0 / h_prev_reg_emp;
+        ENDIF;
+
+        difference = ABS(curr_sph - prev_sph);
+        IF difference <> 0 and prev_sph <> 0
+        THEN
+        h_perc = ((difference * 1.0 / prev_sph * 100) + 0.5 );
+	ENDIF;
+
+        IF curr_sph > prev_sph
+        THEN
+            IF h_perc >= h_sph_increase
+            THEN
+/*****
+added the OR acell = 'K' as if the 9200 had failed due to MPI 
+congruency then if it was a constructed figure it was losing the 
+'P' and changing to a 'U'. Amended throughout the rest of the program
+*******/
+                IF acell = 'P' OR acell = 'K'
+                THEN
+                    acell = 'K';
+                ELSE
+                    acell = 'U';
+                ENDIF;
+
+                acell_type = '7';
+                error_msg = error_msg + 
+                            ' SPH up ' + VARCHAR(INT4(difference)) +
+                            ' (' + VARCHAR(INT4(h_perc)) + '%)';
+                IF emp_msg <> ''
+                THEN
+                    acell = '1' + acell;
+                    error_msg = error_msg + ' ' + emp_msg;
+                ENDIF;
+    /*            RETURN 0;
+     */       ENDIF;
+        ELSE
+            IF h_perc >= h_sph_decrease
+            THEN
+                IF acell = 'P' OR acell = 'K'
+                THEN
+                    acell = 'K';
+                ELSE
+                    acell = 'U';
+                ENDIF;
+
+                acell_type = '8';
+                error_msg = error_msg +
+                            ' SPH down ' + VARCHAR(INT4(difference)) +
+                            ' (' + VARCHAR(INT4(h_perc)) + '%)';
+                IF emp_msg <> ''
+                THEN
+                    acell = '1' + acell;
+                    error_msg = error_msg + ' ' + emp_msg;
+                ENDIF;
+/*                RETURN 0;
+ */           ENDIF;
+        ENDIF;
+/****
+emp_msg is blank until now and now becomes equal to error_msg
+
+*****/
+        IF emp_msg <> ''
+        THEN
+            acell = '1' + acell;
+            error_msg = emp_msg;
+        ENDIF;
+   /*     RETURN 0;
+*/
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    No Previous Value Exists - 9100 Employment
+    1. SPH under acceptable range ---> 9
+    2. SPH over acceptable range ---> 10
+       & register_emp <> returned_emp ---> '1' before cell code
+       & register_emp = returned_emp = 0 ---> '0'
+    ------------------------------------------------------------------*/
+
+    IF h_prev_found = 'n' AND quest_order = 10
+    THEN
+/*
+        IF register_emp = 0 AND avalue = 0
+        THEN
+            acell = 'U';
+            acell_type = '0';
+            error_msg = 'Register Emp & Returned Emp are both 0';
+            RETURN 0;
+        ENDIF;
+*/
+        IF register_emp = 0 OR total_sales = 0
+        THEN
+            curr_sph = 0;
+        ELSE
+            curr_sph = total_sales / register_emp;
+        ENDIF;
+
+        IF curr_sph < h_new_sph_range_from
+        THEN
+            IF acell = 'P' OR acell = 'K'
+            THEN
+                acell = 'K';
+            ELSE
+                acell = 'U';
+            ENDIF;
+
+            acell_type = '9';
+            error_msg = 'SPH < ' +
+                        SQUEEZE(VARCHAR(h_new_sph_range_from)) + ' to ' +
+                        SQUEEZE(VARCHAR(h_new_sph_range_to)) ;
+            IF emp_msg <> ''
+            THEN
+                acell = '1' + acell;
+                error_msg = error_msg + ' ' + emp_msg;
+            ENDIF;
+   /*         RETURN 0;
+   */     ENDIF;
+
+
+        IF curr_sph > h_new_sph_range_to
+        THEN
+            IF acell = 'P' OR acell = 'K'
+            THEN
+                acell = 'K';
+            ELSE
+                acell = 'U';
+            ENDIF;
+
+            acell_type = '10';
+            error_msg = 'SPH > ' +
+                        SQUEEZE(VARCHAR(h_new_sph_range_from)) + ' to ' +
+                        SQUEEZE(VARCHAR(h_new_sph_range_to)) ;
+            IF emp_msg <> ''
+            THEN
+                acell = '1' + acell;
+                error_msg = error_msg + ' ' + emp_msg;
+            ENDIF;
+    /*        RETURN 0;
+     */   ENDIF;
+
+        IF emp_msg <> ''
+        THEN
+            acell = '1' + acell;
+            error_msg = emp_msg;
+        ENDIF;
+     ENDIF;
+    /*------------------------------------------------------------------
+    Previous Value does not exist: Total Sales <> Sum01s
+
+    If question you are on is 9200 then check to see the 
+    difference between total sales value - 'avalue' and the total of 
+    the 01 questions. If the difference is 1 then make the total_sales 
+    equal the sum of the sales of 01 questions. Atypical column
+    on cqpv is set to 'Y'
+    ------------------------------------------------------------------*/
+
+    IF h_prev_found = 'n' AND quest_order = 10 AND avalue <> total_of_01
+    THEN
+        diff_01 = ABS(total_of_01 - avalue);
+
+        IF diff_01 <> 0 and total_of_01 <> 0
+        THEN 
+        perc_diff = float8(diff_01 *1.0 / total_of_01 * 100);
+	endif;
+
+        IF (diff_01 = 1) /*OR (diff_01 <= 20 AND perc_diff <= 1)*/
+        THEN 
+            h_new_total_sales = :total_of_01;
+	    h_atypical = 'y';
+/****
+message '1st 1 hnewtotalsales = ' + ascii(:h_new_total_sales)
+with style = popup;
+****/
+        ELSE
+            IF acell = 'P'
+            THEN
+                acell = '1P';
+            ELSE
+                acell = '1V';
+            ENDIF;
+            acell_type = '21';
+            error_msg = error_msg + '<> Sum01s';
+        ENDIF;
+        RETURN 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    No Previous Value Exists - 01 questions (not 9801s) and total sales
+    Just accept it
+    ------------------------------------------------------------------*/
+
+    IF h_prev_found = 'n' AND (MOD(question,10) = 1 OR quest_order = 10)
+    AND quest_order <> 8
+    THEN
+        RETURN 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Previous Value Exists - 01 questions (not 9801s) and total sales
+    1. Retd 0 Previously & Difference > Min Change ---> 1
+    2. Difference > Min Change & Increase > Gate ---> 1
+    3. Difference > Min Change & Decrease > Gate ---> 2
+    4. Difference > Min Change & Decrease > Gate & Value = 0 ---> 0
+
+    plus: if it's total sales
+
+    4. Value <> Sum of 01s ---> 21
+    5. Retd 0 Previously & Diff > Min Change & Value <> Sum of 01s -> 22
+    6. Diff > Min Change & Increase > Gate & Value <> Sum of 01s ---> 22
+    7. Diff > Min Change & Decrease > Gate & Value <> Sum of 01s ---> 23
+        
+	message 'absdiff =   ' + ascii(:difference)
+	+ ' avalue =   ' + ascii (:avalue)
+	+ ' h_prev_value =   ' + ascii(:h_prev_value)
+	+ ' h_prev_found =   ' + :h_prev_found
+	with style = popup;
+    ------------------------------------------------------------------*/
+
+    IF h_prev_found = 'y' AND (MOD(question,10) = 1 OR quest_order = 10)
+    AND quest_order <> 8
+    THEN
+        difference = ABS(avalue - h_prev_value);
+
+        IF h_prev_value = 0 AND difference >= h_minimum_change
+        THEN
+            acell_type = '1';
+            error_msg = error_msg + 'Up ' + VARCHAR(INT4(difference));
+
+            IF acell = 'P' OR acell = 'K'
+            THEN
+                acell = 'K';
+            ELSE
+                acell = 'U';
+            ENDIF;
+
+            IF quest_order = 10 AND avalue <> total_of_01
+            THEN
+                diff_01 = ABS(total_of_01 - avalue);
+
+                IF diff_01 <> 0 and total_of_01 <> 0
+                THEN 
+                    perc_diff = float8(diff_01 *1.0 / total_of_01 * 100);
+                ENDIF;
+
+                IF (diff_01 = 1) 
+		    /*OR (diff_01 <= 20 AND perc_diff <= 1)*/
+                THEN 
+                    h_new_total_sales = :total_of_01;
+	            h_atypical = 'y';
+		ELSE
+                    acell = '1' + acell;
+                    acell_type = '22';
+                    error_msg = error_msg + ' <> Sum01s';
+		ENDIF;
+            ENDIF;
+
+        RETURN 0;
+        ENDIF;
+
+        IF difference >= h_minimum_change
+        THEN
+            IF difference <> 0 and h_prev_value <> 0
+            THEN 
+                h_perc = ((difference * 1.0 / h_prev_value * 100) + 0.5);
+            ENDIF;
+
+            IF avalue > h_prev_value
+            THEN
+                IF h_perc >= h_increase
+                THEN
+                    acell_type = '1';
+                    error_msg = error_msg +  
+                                'Up ' + VARCHAR(INT4(difference)) +
+                                ' (' + VARCHAR(INT4(h_perc)) +  '%)';
+
+                    IF acell = 'P' OR acell = 'K'
+                    THEN
+                        acell = 'K';
+                    ELSE
+                        acell = 'U';
+                    ENDIF;
+
+                    IF quest_order = 10 AND avalue <> total_of_01
+                    THEN
+                        diff_01 = ABS(total_of_01 - avalue);
+
+                        IF diff_01 <> 0 and total_of_01 <> 0
+                        THEN 
+                           perc_diff = float8(diff_01 *1.0 / total_of_01 * 100);
+                        ENDIF;
+
+                        IF (diff_01 = 1) 
+                           /*OR (diff_01 <= 20 AND perc_diff <= 1)*/
+                        THEN 
+                            h_new_total_sales = :total_of_01;
+	                    h_atypical = 'y';
+		        ELSE
+                            acell = '1' + acell;
+                            acell_type = '22';
+                            error_msg = error_msg + ' <> Sum01s';
+		        ENDIF;
+                    ENDIF;
+
+               RETURN 0;
+               ENDIF;
+           ELSE
+                IF h_perc >= h_decrease
+                THEN
+                    error_msg = error_msg + 'Down ' + 
+                                VARCHAR(INT4(difference)) +
+                                ' (' + VARCHAR(INT4(h_perc)) + '%)';
+
+                    IF acell = 'P' OR acell = 'K'
+                    THEN
+                        acell = 'K';
+                    ELSE
+                        acell = 'U';
+                    ENDIF;
+
+                    IF avalue = 0
+                    THEN
+                        acell_type = '0';
+                    ELSE
+                        acell_type = '2';
+                    ENDIF;
+
+                    IF quest_order = 10 AND avalue <> total_of_01
+                    THEN
+                        diff_01 = ABS(total_of_01 - avalue);
+
+                        IF diff_01 <> 0 and total_of_01 <> 0
+                        THEN 
+                           perc_diff = float8(diff_01 *1.0 / total_of_01 * 100);
+                        ENDIF;
+
+                        IF (diff_01 = 1) 
+                           /*OR (diff_01 <= 20 AND perc_diff <= 1)*/
+                        THEN 
+                            h_new_total_sales = :total_of_01;
+	                    h_atypical = 'y';
+		        ELSE
+                            acell = '1' + acell;
+                            acell_type = '23';
+                            error_msg = error_msg + ' <> Sum01s';
+		        ENDIF;
+                    ENDIF;
+
+                RETURN 0;
+                ENDIF;
+            ENDIF;
+
+        RETURN 0;
+        ENDIF;
+
+        IF quest_order = 10 AND avalue <> total_of_01
+        THEN
+            diff_01 = ABS(total_of_01 - avalue);
+
+            IF diff_01 <> 0 and total_of_01 <> 0
+            THEN 
+                perc_diff = float8(diff_01 *1.0 / total_of_01 * 100);
+	    ENDIF;
+
+            IF (diff_01 = 1) /*OR (diff_01 <= 20 AND perc_diff <= 1)*/
+            THEN 
+                    h_new_total_sales = :total_of_01;
+	            h_atypical = 'y';
+	    ELSE
+                acell = '1' + acell;
+                acell_type = '21';
+                error_msg = error_msg + '<> Sum01s';
+	    ENDIF;
+        ENDIF;
+
+    RETURN 0;
+    ENDIF;
+
+
+    /*------------------------------------------------------------------
+    No Previous Value Exists - 05, 06 & 08 Volumes
+    Just accept it
+    ------------------------------------------------------------------*/
+
+    IF h_prev_found = 'n' AND
+    (MOD(question,10) = 5 OR MOD(question,10) = 6 OR MOD(question,10) = 8)
+    THEN
+        RETURN 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Previous Value Exists - 05, 06 & 08 Volumes
+    1. Increase > Gate ---> 1
+    2. Decrease > Gate ---> 2
+    3. Decrease > Gate & Value = 0 ---> 0
+    ------------------------------------------------------------------*/
+    IF h_prev_found = 'y' AND
+    (MOD(question,10) = 5 OR MOD(question,10) = 6 OR MOD(question,10) = 8)
+    THEN
+        difference = ABS(avalue - h_prev_value);
+
+        IF difference <> 0 and h_prev_value <> 0
+        THEN 
+            h_perc = difference * 1.0 / h_prev_value * 100;
+	ENDIF;
+
+        IF avalue > h_prev_value
+        THEN
+            IF h_perc >= h_increase
+            THEN
+                IF acell = 'P' OR acell = 'K'
+                THEN
+                    acell = 'K';
+                ELSE
+                    acell = 'U';
+                ENDIF;
+                acell_type = '1';
+                error_msg = 'Up ' + VARCHAR(INT4(difference)) +
+                            ' (' + VARCHAR(h_perc) + '%)';
+                RETURN 0;
+            ENDIF;
+        ELSE
+            IF h_perc >= h_decrease
+            THEN
+                IF acell = 'P' OR acell = 'K'
+                THEN
+                    acell = 'K';
+                ELSE
+                    acell = 'U';
+                ENDIF;
+                IF avalue = 0
+                THEN
+                    acell_type = '0';
+                ELSE
+                    acell_type = '2';
+                ENDIF;
+                error_msg = 'Down ' + VARCHAR(INT4(difference)) +
+                            ' (' + VARCHAR(h_perc) + '%)';
+                RETURN 0;
+            ENDIF;
+        ENDIF;
+
+        RETURN 0;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Previous Value Exists - 02 & 04 Volumes
+    1. UV Increase > Gate ---> 4
+    2. UV Decrease > Gate ---> 3
+    ------------------------------------------------------------------*/
+
+    IF h_prev_found = 'y' AND
+    (MOD(question,10) = 2 OR MOD(question,10) = 4)
+    THEN
+        IF avalue = 0 OR value_of_01 = 0
+        THEN
+            curr_uv = 0;
+        ELSE
+            curr_uv = value_of_01 * 1.0 / avalue * 1000;
+        ENDIF;
+
+        IF curr_uv = 0
+        THEN
+            RETURN 0;
+        ENDIF;
+
+        IF h_prev_value = 0 OR h_prev_value_of_01 = 0
+        THEN
+            prev_uv = 0;
+        ELSE
+            prev_uv = h_prev_value_of_01 * 1.0 / h_prev_value * 1000;
+        ENDIF;
+
+        difference = ABS(curr_uv - prev_uv);
+
+        IF prev_uv <> 0 and difference <> 0
+        THEN
+            h_perc = difference * 1.0 / prev_uv * 100;
+        ENDIF;
+
+        IF curr_uv > prev_uv
+        THEN
+            IF h_perc >= h_uv_increase
+            THEN
+                IF acell = 'P' OR acell = 'K'
+                THEN
+                    acell = 'K';
+                ELSE
+                    acell = 'U';
+                ENDIF;
+                acell_type = '4';
+                error_msg = 'UV up ' + VARCHAR(difference) +
+                            ' (' + VARCHAR(h_perc) + '%)';
+                RETURN 0;
+            ENDIF;
+        ELSE
+            IF h_perc >= h_uv_decrease
+            THEN
+                IF acell = 'P' OR acell = 'K'
+                THEN
+                    acell = 'K';
+                ELSE
+                    acell = 'U';
+                ENDIF;
+                acell_type = '3';
+                error_msg = 'UV down ' + VARCHAR(difference) +
+                            ' (' + VARCHAR(h_perc) + '%)';
+                RETURN 0;
+            ENDIF;
+        ENDIF;
+
+        RETURN 0;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    No Previous Value Exists - 02 & 04 Volumes
+    1. UV below acceptable range ---> 5
+    2. UV above acceptable range ---> 6
+    ------------------------------------------------------------------*/
+
+    IF h_prev_found = 'n' AND
+    (MOD(question,10) = 2 OR MOD(question,10) = 4)
+    THEN
+        IF avalue = 0 OR value_of_01 = 0
+        THEN
+            curr_uv = 0;
+        ELSE
+            curr_uv = value_of_01 * 1.0 / avalue * 1000;
+        ENDIF;
+
+        IF curr_uv < h_new_uv_range_from AND curr_uv <> 0
+        THEN
+            IF acell = 'P' OR acell = 'K'
+            THEN
+                acell = 'K';
+            ELSE
+                acell = 'U';
+            ENDIF;
+
+            acell_type = '5';
+            error_msg = 'UV < ' +
+                        SQUEEZE(VARCHAR(h_new_uv_range_from)) + ' to ' +
+                        SQUEEZE(VARCHAR(h_new_uv_range_to)) ;
+            RETURN 0;
+
+        ELSEIF curr_uv > h_new_uv_range_to
+        THEN
+            IF acell = 'P' OR acell = 'K'
+            THEN
+                acell = 'K';
+            ELSE
+                acell = 'U';
+            ENDIF;
+
+            acell_type = '6';
+            error_msg = 'UV > ' +
+                        SQUEEZE(VARCHAR(h_new_uv_range_from)) + ' to ' +
+                        SQUEEZE(VARCHAR(h_new_uv_range_to)) ;
+            RETURN 0;
+        ENDIF;
+
+        RETURN 0;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    9100 Employment - Regardless of whether previous value exists,
+    compare the returned employment with the register employment. If it
+    fails the check, the variable emp_msg is NON-blank
+    ------------------------------------------------------------------*/
+/*
+    IF quest_order = 11
+    THEN
+        emp_difference = ABS(register_emp - avalue);
+        IF register_emp <> 0 and emp_difference <> 0
+        THEN
+            emp_perc = emp_difference * 1.0 / register_emp * 100;
+        ELSE
+            emp_perc = 0;
+        ENDIF;
+
+        emp_msg = '';
+
+        IF avalue > register_emp
+        THEN
+            IF emp_difference >= h_minimum_change AND emp_perc >= h_increase
+            THEN
+                emp_msg = '> RegEmp by ' + VARCHAR(emp_difference) + ' (' +
+                          VARCHAR(INT4(emp_perc)) + '%)';
+            ENDIF;
+        ELSEIF avalue < register_emp
+        THEN
+            IF emp_difference >= h_minimum_change AND emp_perc >= h_decrease
+            THEN
+                emp_msg = '< RegEmp by ' + VARCHAR(emp_difference) + ' (' +
+                          VARCHAR(INT4(emp_perc)) + '%)';
+            ENDIF;
+        ENDIF;
+
+    ENDIF;
+*/
+    /*------------------------------------------------------------------
+    Previous Value Exists - 9100 Employment
+    1. SPH Increase > Gate ---> 7
+    2. SPH Decrease > Gate ---> 8
+       & register_emp <> returned_emp ---> '1' before cell code
+       & register_emp = returned_emp = 0 ---> '0'
+    ------------------------------------------------------------------*/
+/*
+THIS CODE WAS REMOVD WHEN 9100 WAS REMOVED
+
+    message 'here1' with style = popup;
+	message 'h_prev_found ' + varchar(:h_prev_found) with style = popup;
+	message 'quest_ord ' + varchar(quest_order) with style = popup;
+    IF h_prev_found = 'y' AND quest_order = 10
+    THEN
+    message 'here' with style = popup;
+
+        IF register_emp = 0 AND avalue = 0
+        THEN
+            acell = 'U';
+            acell_type = '0';
+            error_msg = 'Register Emp & Returned Emp are both 0';
+            RETURN 0;
+        ENDIF;
+
+        IF register_emp = 0 OR total_sales = 0
+        THEN
+            curr_sph = 0;
+        ELSE
+            curr_sph = total_sales * 1.0 / register_emp;
+        ENDIF;
+
+        IF h_prev_reg_emp = 0 OR h_prev_tot_sales = 0
+        THEN
+            prev_sph = 0;
+        ELSE
+            prev_sph = h_prev_tot_sales * 1.0 / h_prev_reg_emp;
+        ENDIF;
+
+        difference = ABS(curr_sph - prev_sph);
+	message 'diff ' + varchar(:difference) with style = popup;
+        IF difference <> 0 and prev_sph <> 0
+        THEN
+        h_perc = difference * 1.0 / prev_sph * 100;
+	endif;
+
+	message 'h_perc ' + varchar(:h_perc) with style = popup;
+	message 'curr_sph ' + varchar(:curr_sph) with style = popup;
+	message 'prev_sph ' + varchar(:prev_sph) with style = popup;
+	message 'sph_inc ' + varchar(:h_sph_increase) with style = popup;
+	message 'sph_dec ' + varchar(:h_sph_decrease) with style = popup;
+        IF curr_sph > prev_sph
+        THEN
+            IF h_perc >= h_sph_increase
+            THEN
+                IF acell = 'P' OR acell = 'K'
+                THEN
+                    acell = 'K';
+                ELSE
+                    acell = 'U';
+                ENDIF;
+                acell_type = '7';
+                error_msg = 'SPH up ' + VARCHAR(INT4(difference)) +
+                            ' (' + VARCHAR(h_perc) + '%)';
+                IF emp_msg <> ''
+                THEN
+                    acell = '1' + acell;
+                    error_msg = error_msg + ' ' + emp_msg;
+                ENDIF;
+                RETURN 0;
+            ENDIF;
+        ELSE
+            IF h_perc >= h_sph_decrease
+            THEN
+                IF acell = 'P' OR acell = 'K'
+                THEN
+                    acell = 'K';
+                ELSE
+                    acell = 'U';
+                ENDIF;
+                acell_type = '8';
+                error_msg = 'SPH down ' + VARCHAR(INT4(difference)) +
+                            ' (' + VARCHAR(h_perc) + '%)';
+                IF emp_msg <> ''
+                THEN
+                    acell = '1' + acell;
+                    error_msg = error_msg + ' ' + emp_msg;
+                ENDIF;
+                RETURN 0;
+            ENDIF;
+        ENDIF;
+
+        IF emp_msg <> ''
+        THEN
+            acell = '1' + acell;
+            error_msg = emp_msg;
+        ENDIF;
+        RETURN 0;
+
+    ENDIF;
+*/
+    /*------------------------------------------------------------------
+    No Previous Value Exists - 9100 Employment
+    1. SPH under acceptable range ---> 9
+    2. SPH over acceptable range ---> 10
+       & register_emp <> returned_emp ---> '1' before cell code
+       & register_emp = returned_emp = 0 ---> '0'
+    ------------------------------------------------------------------*/
+/*
+    IF h_prev_found = 'n' AND quest_order = 10
+    THEN
+
+        IF register_emp = 0 AND avalue = 0
+        THEN
+            acell = 'U';
+            acell_type = '0';
+            error_msg = 'Register Emp & Returned Emp are both 0';
+            RETURN 0;
+        ENDIF;
+
+        IF register_emp = 0 OR total_sales = 0
+        THEN
+            curr_sph = 0;
+        ELSE
+            curr_sph = total_sales / register_emp;
+        ENDIF;
+
+        IF curr_sph < h_new_sph_range_from
+        THEN
+            IF acell = 'P' OR acell = 'K'
+            THEN
+                acell = 'K';
+            ELSE
+                acell = 'U';
+            ENDIF;
+
+            acell_type = '9';
+            error_msg = 'SPH < ' +
+                        SQUEEZE(VARCHAR(h_new_sph_range_from)) + ' to ' +
+                        SQUEEZE(VARCHAR(h_new_sph_range_to)) ;
+            IF emp_msg <> ''
+            THEN
+                acell = '1' + acell;
+                error_msg = error_msg + ' ' + emp_msg;
+            ENDIF;
+            RETURN 0;
+        ENDIF;
+
+        IF curr_sph > h_new_sph_range_to
+        THEN
+            IF acell = 'P' OR acell = 'K'
+            THEN
+                acell = 'K';
+            ELSE
+                acell = 'U';
+            ENDIF;
+
+            acell_type = '10';
+            error_msg = 'SPH > ' +
+                        SQUEEZE(VARCHAR(h_new_sph_range_from)) + ' to ' +
+                        SQUEEZE(VARCHAR(h_new_sph_range_to)) ;
+            IF emp_msg <> ''
+            THEN
+                acell = '1' + acell;
+                error_msg = error_msg + ' ' + emp_msg;
+            ENDIF;
+            RETURN 0;
+        ENDIF;
+
+        IF emp_msg <> ''
+        THEN
+            acell = '1' + acell;
+            error_msg = emp_msg;
+        ENDIF;
+        RETURN 0;
+    ENDIF;
+*/
+    /*------------------------------------------------------------------
+     No Previous Value Exists - 9801
+    ------------------------------------------------------------------*/
+
+    IF h_prev_found = 'n' AND quest_order = 8
+    THEN
+        IF avalue >= h_maximum_value
+        THEN
+            IF acell = 'P' OR acell = 'K'
+            THEN
+                acell = 'K';
+            ELSE
+                acell = 'U';
+            ENDIF;
+            acell_type = '11';
+            error_msg = '> Max Value (' +
+                        VARCHAR(h_maximum_value) + ')';
+            RETURN 0;
+        ENDIF;
+        RETURN 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Previous Value Exists - 9801
+    ------------------------------------------------------------------*/
+    IF h_prev_found = 'y' AND quest_order = 8
+    THEN
+        difference = ABS(avalue - h_prev_value);
+
+        IF h_prev_value = 0
+        THEN
+            IF difference >= h_minimum_change
+            THEN
+                IF acell = 'P' OR acell = 'K'
+                THEN
+                    acell = 'K';
+                ELSE
+                    acell = 'U';
+                ENDIF;
+                acell_type = '1';
+                error_msg = 'Up ' + VARCHAR(INT4(difference));
+                IF avalue >= h_maximum_value
+                THEN
+                    acell_type = '12';
+                    error_msg = error_msg + ' & > Max Value (' +
+                                VARCHAR(h_maximum_value) + ')';
+                ENDIF;
+            ENDIF;
+            RETURN 0;
+        ENDIF;
+
+        IF difference <> 0 and h_prev_value <> 0
+        THEN
+        h_perc = difference * 1.0 / h_prev_value * 100;
+	endif;
+
+        IF avalue > h_prev_value
+        THEN
+            IF h_perc >= h_increase AND difference >= h_minimum_change
+            THEN
+                IF acell = 'P' OR acell = 'K'
+                THEN
+                    acell = 'K';
+                ELSE
+                    acell = 'U';
+                ENDIF;
+                acell_type = '1';
+                error_msg = 'Up ' + VARCHAR(INT4(difference)) +
+                            ' (' + VARCHAR(h_perc) + '%)';
+
+                IF avalue >= h_maximum_value
+                THEN
+                    acell_type = '12';
+                    error_msg = error_msg + ' & > Max Value (' +
+                                VARCHAR(h_maximum_value) + ')';
+                ENDIF;
+                RETURN 0;
+            ENDIF;
+
+        ELSE
+            IF h_perc >= h_decrease AND difference >= h_minimum_change
+            THEN
+                IF acell = 'P' OR acell = 'K'
+                THEN
+                    acell = 'K';
+                ELSE
+                    acell = 'U';
+                ENDIF;
+                error_msg = 'Down ' + VARCHAR(INT4(difference)) +
+                            ' (' + VARCHAR(h_perc) + '%)';
+
+                IF avalue = 0
+                THEN
+                    acell_type = '0';
+                ELSE
+                    acell_type = '2';
+                    IF avalue >= h_maximum_value
+                    THEN
+                        acell_type = '13';
+                        error_msg = error_msg + ' & > Max Value (' +
+                                    VARCHAR(h_maximum_value) + ')';
+                    ENDIF;
+                ENDIF;
+                RETURN 0;
+            ENDIF;
+        ENDIF;
+
+        IF avalue >= h_maximum_value
+        THEN
+            IF acell = 'P' OR acell = 'K'
+            THEN
+                acell = 'K';
+            ELSE
+                acell = 'U';
+            ENDIF;
+            acell_type = '11';
+            error_msg = '> Max Value (' +
+                        VARCHAR(h_maximum_value) + ')';
+            RETURN 0;
+        ENDIF;
+
+        RETURN 0;
+    ENDIF;
+
+
+
+    /*------------------------------------------------------------------
+    If it's got to here, it hasn't done any credibility
+    ------------------------------------------------------------------*/
+/*
+    IF mod(question,10000) != '9100'
+    THEN
+*/
+
+       error_msg = 'No Credibility Undertaken!';
+
+       IF acell = 'P' OR acell = 'K'
+       THEN
+           acell = 'K';
+       ELSE
+           acell = 'U';
+       ENDIF;
+/*
+    ENDIF;
+*/
+    RETURN 0;
+}

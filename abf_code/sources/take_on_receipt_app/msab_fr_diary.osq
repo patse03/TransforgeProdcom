@@ -1,0 +1,501 @@
+/*-----------------------------------------------------------------------------
+Change
+MC - MAY 2015 - minute 0239 
+                Removed message and period from table field as this was 
+                causing confuion and displaying the last period and message.  
+-----------------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_table           = VARCHAR(24) NOT NULL,
+        h_field_name      = VARCHAR(24) NOT NULL,
+        h_yesno           = CHAR(1) NOT NULL,
+        h_rows            = INTEGER4 NOT NULL,
+        h_return           = INTEGER1 NOT NULL,
+        h_order           = INTEGER1 NOT NULL,
+        h_order_by        = VARCHAR(60) NOT NULL,
+        lp_create_table   = PROCEDURE RETURNING INTEGER,
+        lp_load_screen    = PROCEDURE RETURNING INTEGER
+{
+  h_frpr_name = 'msab_fr_diary';
+  h_retries_allowed = 3;
+  msa_date = 'now';
+  h_table = 'temp_diary_dates';
+  h_order = 0;
+  form_order = 'Order by Industry, Reference';
+  h_order_by = 'contributor_industry, contributor_reference';
+
+  SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  SET_FORMS FRS (MAPFILE='/home/prodcom/admin/prodcom.map');
+  
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_frames (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+  
+    h_return = CALLPROC msa_fp_drop_table (
+              h_table = :h_table);
+    IF h_return != 0
+    THEN
+        RETURN h_return;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Create initial table of diary entries.
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+      h_retries = :h_retries + 1;
+
+      CREATE TABLE :h_table (contributor_industry    INTEGER4 NOT NULL,
+                             contributor_reference   CHAR(11) NOT NULL,
+                             diary_date              DATE     NOT NULL);
+
+      h_return = CALLPROC check_inq_ing (
+                 h_num_row_ck      = 1,
+                 h_commit          = 'Y',
+                 h_rollback        = 'N',
+                 h_retries         = :h_retries,
+                 h_retries_allowed = :h_retries_allowed,
+                 h_frpr_name       = :h_frpr_name);
+
+      IF h_return != 7
+      THEN
+        h_retry_or_not = '';
+      ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF h_return = 9
+    THEN
+        MESSAGE 'System error creating ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    h_return = CALLPROC lp_create_table ();
+    IF h_return != 0
+    THEN
+        RETURN h_return;
+    ENDIF;
+
+    h_return = CALLPROC lp_load_screen ();
+    IF h_return != 0
+    THEN
+        RETURN h_return;
+    ENDIF;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'ReOrder', KEY FRSKEY4 =
+{
+    IF h_order = 0
+    THEN
+        h_order = 1;
+        form_order = 'Order by Diary Date, Industry, Reference';
+        h_order_by = 'diary_date, contributor_industry, contributor_reference';
+    ELSE
+        h_order = 0;
+        form_order = 'Order by Industry, Reference';
+        h_order_by = 'contributor_industry, contributor_reference';
+    ENDIF;
+
+    h_return = CALLPROC lp_load_screen ();
+    IF h_return != 0
+    THEN
+        RETURN h_return;
+    ENDIF;
+}
+
+'Delete', KEY FRSKEY5 =
+{
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name != 'tf'
+    THEN
+        MESSAGE 'Please highlight the required Diary Date'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'Please highlight the required Diary Date'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_yesno = '';
+    WHILE h_yesno != 'y' AND h_yesno != 'n'
+    DO
+        h_yesno = PROMPT 'Do you really wish to delete this Diary' +
+                         ' Date? Type Y/N and press <return>'
+                  WITH STYLE = POPUP;
+        h_yesno = LOWERCASE(:h_yesno);
+    ENDWHILE;
+
+    IF h_yesno = 'n'
+    THEN
+        RESUME;
+    ENDIF;
+
+    h_rows = :tf._record;
+
+    /*------------------------------------------------------------------
+    Delete from contributor_diary, and from :h_table (so you don't have
+    to re-create :h_table from scratch again.
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Deleting Diary Date . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        DELETE FROM contributor_diary
+        WHERE       contributor_reference = :tf.contributor_reference;
+
+        h_return = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF h_return != 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF h_return = 9
+    THEN
+        MESSAGE 'System error in deleting from contributor_diary'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF h_return = 1
+    THEN
+        MESSAGE 'No rows deleted from contributor_diary'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        DELETE FROM :h_table
+        WHERE       contributor_reference = :tf.contributor_reference;
+
+        h_return = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF h_return != 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF h_return = 9
+    THEN
+        MESSAGE 'System error in deleting from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF h_return = 1
+    THEN
+        MESSAGE 'No rows deleted from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    h_return = CALLPROC lp_load_screen ();
+    IF h_return != 0
+    THEN
+        RETURN h_return;
+    ENDIF;
+
+    IF h_rows > no_entries
+    THEN
+        h_rows = no_entries;
+    ENDIF;
+
+    UNLOADTABLE tf
+    {
+        IF tf._record = h_rows
+        THEN
+            SCROLL tf TO h_rows;
+            RESUME;
+        ENDIF;
+    };
+}
+
+'ContactDetails', KEY FRSKEY6 =
+{
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name != 'tf'
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_rows = :tf._record;
+
+    CALL APPLICATION(exec = '$IMAGES/communicate',
+         param = VARCHAR(:tf.contributor_reference));
+
+    h_return = CALLPROC lp_create_table ();
+    IF h_return != 0
+    THEN
+        RETURN h_return;
+    ENDIF;
+
+    h_return = CALLPROC lp_load_screen ();
+    IF h_return != 0
+    THEN
+        RETURN h_return;
+    ENDIF;
+
+    UNLOADTABLE tf
+    {
+        IF tf._record = h_rows
+        THEN
+            SCROLL tf TO h_rows;
+            RESUME;
+        ENDIF;
+    };
+}
+
+'End', KEY FRSKEY14 =
+{
+    MESSAGE 'Exiting Screen . . .';
+    h_return = CALLPROC msa_fp_drop_table ( h_table = :h_table);
+    RETURN 0;
+}
+
+/************************** LOCAL PROCEDURES **********************/
+
+/*----------------------------------------------------------------------
+                  L O C A L   P R O C E D U R E   1
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_create_table =
+{
+    MESSAGE 'Selecting Diary Entries . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        MODIFY :h_table TO TRUNCATED;
+
+        h_return = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF h_return != 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF h_return = 9
+    THEN
+        MESSAGE 'System error in modifying ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+        
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Create initial table of diary entries.
+    Create table containing ALL entries on contact details.
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        INSERT INTO  :h_table
+        SELECT       a.contributor_industry,
+                     a.contributor_reference,
+                     a.diary_date
+        FROM         contributor_diary a,
+                     industry_analysts b
+        WHERE        a.contributor_industry = b.industry
+          AND        a.contributor_reference >= b.low_ref
+          AND        a.contributor_reference <= b.high_ref
+          AND        b.user_id = :g_user_id;
+
+        h_return = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF h_return != 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF h_return = 9
+    THEN
+        MESSAGE 'System error in accessing contributor_diary'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                  L O C A L   P R O C E D U R E   2
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_screen =
+{
+    MESSAGE 'Loading Screen . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT   contributor_industry,
+                 contributor_reference,
+                 diary_date
+        FROM     :h_table
+        ORDER BY :h_order_by;
+
+        h_return = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(no_entries),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF h_return != 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF h_return = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF h_return = 9
+    THEN
+        MESSAGE 'System error in loading from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    RETURN 0;
+}

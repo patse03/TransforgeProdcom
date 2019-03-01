@@ -1,0 +1,423 @@
+/*-S--------------------------------------------------------------------
+                     msab_fr_aos
+                                            			
+  Caters for written in entries that have not yet had
+  a question code assigned. The values are taken into written in
+  codes starting nnnnn9701 and increasing by 10 for each entry.
+--------------------------------------------------------------------e-*/
+
+INITIALIZE (
+
+        contributor_inquiry      = INTEGER1 NOT NULL,
+        store_ques               = INTEGER4 NOT NULL,
+        period                   = INTEGER4 NOT NULL,
+        contributor_industry     = INTEGER4 NOT NULL,
+        currency                 = CHAR(1)  NOT NULL,
+        h_questions_changed      = CHAR(1) NOT NULL,
+        temp_cqpv                = VARCHAR(20) NOT NULL,
+        temp_del_aos             = VARCHAR(20) NOT NULL) =
+
+DECLARE h_retries_allowed        = INTEGER1 NOT NULL,
+        h_retries                = INTEGER1 NOT NULL,
+        h_retry_or_not           = CHAR(5) NOT NULL,
+        h_frpr_name              = VARCHAR(24) NOT NULL,
+        store_ques2              = INTEGER4 NOT NULL,
+        h_question               = INTEGER4 NOT NULL,
+        h_avalue                 = INTEGER4 NOT NULL,
+        h_evalue                 = INTEGER4 NOT NULL,
+        h_yesno                  = CHAR(1) NOT NULL,
+        h_ques_count             = INTEGER4 NOT NULL,
+        ret_val                  = INTEGER1 NOT NULL
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msab_fr_aos_codes';
+
+    store_ques = (:contributor_industry * 10000) + 9701;
+    store_ques2 = (:contributor_industry * 10000) + 9791;
+
+    /*------------------------------------------------------------------
+    Count entries on temp_del_aos: if there are any, don't let any
+    uncoded entries be added until they've been got rid of
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT COUNT(*) AS h_ques_count
+        FROM   :temp_del_aos;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing ' + :temp_del_aos
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    IF h_ques_count > 0
+    THEN
+        MESSAGE 'You cannot add any more uncoded entries without' +
+                ' checking the form - please check form and add' +
+                ' any required uncoded entries afterwards.'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Maximum of 9 Uncoded Entries to be added
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT COUNT(*) AS h_ques_count
+        FROM   :temp_cqpv
+        WHERE  question BETWEEN :store_ques AND :store_ques2;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing ' + :temp_cqpv
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    IF h_ques_count > 0
+    THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            SELECT MAX(question) AS h_question
+            FROM   :temp_cqpv
+            WHERE  question BETWEEN :store_ques AND :store_ques2
+            AND    RIGHT(CHAR(question),5) = 1;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing ' + :temp_cqpv
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ENDIF;
+
+        question = :h_question + 10;
+
+        IF question > :store_ques2
+        THEN
+            MESSAGE 'Please code out some of these uncoded entries' +
+                    ' before attempting to add any more'
+            WITH STYLE = POPUP;
+            RETURN 0;
+        ENDIF;
+    ELSE
+        question = :store_ques;
+    ENDIF;
+
+    SET_FORMS FIELD '' (INVISIBLE(prev_val_mess)=1);
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Update', KEY FRSKEY11 =
+{
+    IF avalue <= 0
+    THEN
+        MESSAGE 'Please enter a value before pressing UPDATE'
+        WITH STYLE = POPUP;
+        RESUME FIELD avalue;
+    ENDIF;
+
+    h_questions_changed = 'y';
+
+    /*-s----------------------------------------------------------------
+    Euro Forms and Value Questions  : set evalue (avalue = 0)
+    Sterling Forms                  : set avalue (evalue = 0)
+    ----------------------------------------------------------------e-*/
+
+    IF currency = 'E'
+    THEN
+        h_avalue = 0;
+        h_evalue = :avalue;
+    ELSE
+        h_avalue = :avalue;
+        h_evalue = 0;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        INSERT INTO :temp_cqpv (
+                    quest_order,
+                    question,
+                    acell,
+                    avalue,
+                    evalue,
+                    acell_type,
+		    rounded,
+                    se_mark,
+                    aconstruction_type,
+                    confirmation_code,
+                    question_industry,
+                    question_inquiry,
+                    update_type,
+                    error_msg)
+        VALUES (    9,
+                    :question,
+                    'W',
+                    :h_avalue,
+                    :h_evalue,
+                    '0',
+		    ' ',
+		    ' ',
+                    0,
+                    '',
+                    :contributor_industry,
+                    :contributor_inquiry,
+                    'i',
+                    'Uncoded Entry');
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in inserting value into temp_cqpv'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No Value inserted into temp_cqpv'
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Euro Forms and Volume Questions : set evalue and avalue
+    Sterling Forms                  : set avalue (evalue = 0)
+    ----------------------------------------------------------------e-*/
+
+    IF avolume > 0
+    THEN
+        IF currency = 'E'
+        THEN
+            h_avalue = :avolume;
+            h_evalue = :avolume;
+        ELSE
+            h_avalue = :avolume;
+            h_evalue = 0;
+        ENDIF;
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            INSERT INTO :temp_cqpv (
+                        quest_order,
+                        question,
+                        acell,
+                        avalue,
+                        evalue,
+                        acell_type,
+			rounded,
+                        se_mark,
+                        aconstruction_type,
+                        confirmation_code,
+                        question_industry,
+                        question_inquiry,
+                        update_type,
+                        error_msg)
+            VALUES (    9,
+                        :question + 1,
+                        'W',
+                        :h_avalue,
+                        :h_evalue,
+                        '0',
+			' ',
+			' ',
+                        0,
+                        '',
+                        :contributor_industry,
+                        :contributor_inquiry,
+                        'i',
+                        'Uncoded Entry');
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in inserting volume into temp_cqpv'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No volume inserted into temp_cqpv'
+            WITH STYLE = POPUP;
+            RETURN 1;
+        ENDIF;
+
+    ENDIF;
+
+    MESSAGE 'Extra Question/s Inserted OK' WITH STYLE = POPUP;
+
+    prev_val_mess = 'Last value entered was ' + VARCHAR(:avalue);
+
+    SET_FORMS FIELD '' (INVISIBLE(prev_val_mess)=0);
+    question   = question + 10;
+
+    CLEAR FIELD avalue, avolume;
+    IF question > store_ques2
+    THEN
+        MESSAGE 'Please code out some of these uncoded entries' +
+                ' before attempting to add any more'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+    RESUME FIELD avalue;
+
+}
+
+'End', KEY FRSKEY12 =
+{
+    IF avalue <> 0
+    THEN
+        h_yesno = ' ';
+        WHILE h_yesno <> 'Y' AND h_yesno <> 'N'
+        DO
+            h_yesno = PROMPT 'You have not taken on the last value -' +
+                           ' do you still wish to exit?' +
+                           ' Type Y/N and press <return>'
+            WITH STYLE = POPUP;
+            h_yesno = UPPERCASE(h_yesno);
+        ENDWHILE;
+        IF h_yesno = 'N'
+        THEN
+            RESUME FIELD avalue;
+        ENDIF;
+    ENDIF;
+
+    RETURN 0;
+
+}

@@ -1,0 +1,269 @@
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_field_name      = VARCHAR(24) NOT NULL,
+        h_rows            = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msai_fr_in_ind_reminders';
+    msa_date = 'now';
+
+    SET_FORMS FIELD '' (MODE(tf) = 'READ',
+                        DISPLAYONLY(industry) = 0,
+                        DISPLAYONLY(period) = 0,
+                        REVERSE(industry) = 0,
+                        REVERSE(period) = 0,
+                        UNDERLINE(period) = 1,
+                        UNDERLINE(industry) = 1);
+
+}
+
+FIELD industry =
+{
+    MESSAGE 'Checking Industry . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT industry
+        FROM   industry
+        WHERE  industry = :industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing industry'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This industry does not exist'
+        WITH STYLE = POPUP;
+        RESUME FIELD industry;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(industry) = 1,
+                        REVERSE(industry) = 1,
+                        UNDERLINE(industry) = 0);
+
+    RESUME FIELD period;
+
+}
+
+FIELD period =
+{
+
+    IF period <> 999999
+    THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+    
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+    
+            h_retries = :h_retries + 1;
+    
+            SELECT period
+            FROM   inquiry_period
+            WHERE  period = :period;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+    
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+    
+        ENDWHILE;
+    
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+    
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing inquiry_period'
+            WITH STYLE = POPUP;
+            RETURN 9;
+    
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'Period does not exist'
+            WITH STYLE = POPUP;
+            RESUME FIELD period;
+        ENDIF;
+    ENDIF;
+
+    MESSAGE 'Selecting Reminders Data . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        IF period <> 999999
+        THEN
+            tf =
+
+            SELECT DISTINCT contributor_reference
+            FROM            stop_reminder
+            WHERE           industry = :industry
+            AND             period = :period;
+        ELSE
+            tf =
+
+            SELECT DISTINCT contributor_reference
+            FROM            stop_reminder
+            WHERE           industry = :industry;
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:no_contributors),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing stop reminders'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        IF :period = 999999
+        THEN
+            MESSAGE 'No Stop Reminders details are held for this' +
+                    ' Industry.'
+            WITH STYLE = POPUP;
+        ELSE
+            MESSAGE 'No Stop Reminders details are held for this' +
+                    ' Industry and this Period.'
+            WITH STYLE = POPUP;
+        ENDIF;
+
+        RESUME FIELD period;
+
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(period) = 1,
+                        REVERSE(period) = 1,
+                        UNDERLINE(period) = 0);
+
+    RESUME FIELD tf;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Clear' =
+{
+    CLEAR FIELD ALL;
+    msa_date = 'now';
+
+    SET_FORMS FIELD '' (DISPLAYONLY(industry) = 0,
+                        DISPLAYONLY(period) = 0,
+                        REVERSE(industry) = 0,
+                        REVERSE(period) = 0,
+                        UNDERLINE(period) = 1,
+                        UNDERLINE(industry) = 1);
+
+    RESUME FIELD industry;
+
+}
+
+'ContributorData', KEY FRSKEY4 =
+{
+
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name <> 'tf'
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'There are no Contributors'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    ret_val = CALLFRAME msai_fr_view_crefs (
+              h_idbr   = :tf.contributor_reference,
+              h_dummy  = '99999999999',
+              period   = :period)
+              WITH STYLE = POPUP (
+              startcolumn = 29,
+              startrow    = 09,
+              border      = none);
+
+    RESUME FIELD tf;
+
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}

@@ -1,0 +1,123 @@
+/*-s--------------------------------------------------------------------
+Displays History of Standing Heading Questions - plus SPH
+Only for Total Sales and Employment questions (quest_order 10 & 11)
+--------------------------------------------------------------------e-*/
+
+INITIALIZE (
+
+        h_dummy           = CHAR(11) NOT NULL,
+        h_idbr            = CHAR(11) NOT NULL,
+        period            = INTEGER4 NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_record          = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msab_fr_std_hdg_hist_sph';
+
+    MESSAGE 'Selecting History Data . . .';
+
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        IF VARCHAR(:question) LIKE '%9200'
+        THEN
+            tf =
+
+            SELECT   b.question,
+                     b.period,
+                     b.avalue,
+                     b.acell,
+                     b.confirmation_code,
+                     b.avalue * 1.0 / a.register_emp AS sph
+            FROM     contributor_period a,
+                     cqpv b
+            WHERE    a.contributor_reference IN (:h_idbr,:h_dummy)
+            AND      a.contributor_reference = b.contributor_reference
+            AND      a.period = b.period
+            AND      b.quest_order = 10
+            ORDER BY period DESC;
+
+        ELSE
+            tf =
+
+            SELECT   a.question,
+                     a.period,
+                     a.avalue,
+                     a.acell,
+                     a.confirmation_code,
+                     a.avalue * 1.0 / b.register_emp AS sph
+            FROM     cqpv a,
+                     contributor_period b
+            WHERE    a.contributor_reference IN (:h_idbr,:h_dummy)
+            AND      a.contributor_reference = b.contributor_reference
+            AND      a.period = b.period
+            AND      a.quest_order = 10
+            ORDER BY period DESC;
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing cqpv'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No previous values are held'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+    UNLOADTABLE tf (h_record = _RECORD)
+    {
+         IF :tf.period = :period
+         THEN
+             SCROLL tf TO :h_record;
+             RESUME FIELD tf;
+         ENDIF;
+    };
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'End', KEY FRSKEY14 =
+{
+    RETURN 0;
+}

@@ -1,0 +1,315 @@
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_table           = VARCHAR(24) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+
+{
+    msa_date = 'now';
+    h_frpr_name = 'msab_fr_dup_views';
+    h_table = 'temp_dup_questions';
+    h_retries_allowed = 3;
+
+    SET_FORMS FIELD '' (MODE(tf)= 'READ');
+
+    /*------------------------------------------------------------------
+    Load questions
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Loading Questions . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table (
+	      h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table
+        AS SELECT    question,
+                     avalue,
+                     INT1(9) AS quest_order,
+                     phone_contact,
+                     phone_area_code,
+                     phone,
+                     phone_extension,
+                     fax_area_code,
+                     fax,
+                     email,
+                     (address_change + comments + extra_pages) AS tick_boxes
+        FROM         bto_duplicates
+        WHERE        contributor_reference = :contributor_reference
+        AND          contributor_industry  = :contributor_industry
+        AND          period                = :period
+        AND          time                  = :time;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing first bto_duplicates'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows loaded from first bto_duplicates'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Get quest_order from question_library
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Loading Question Library Details . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   question_library b
+        SET    quest_order = b.quest_order
+        WHERE  a.question = b.question
+        AND    b.period = :period / 100 * 100;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error updating from question_library'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No quest_order rows updated from question_library'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Load table to screen
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT   question,
+                 avalue,
+                 quest_order
+        FROM     :h_table
+        ORDER BY quest_order,
+                 question;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(no_questions),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows loaded from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Load contact information
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Loading Contact Information . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT DISTINCT(phone_contact) AS phone_contact,
+               phone_area_code,
+               phone,
+               phone_extension,
+               fax_area_code,
+               fax,
+               email,
+               tick_boxes
+        FROM   :h_table;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing second bto_duplicates'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows loaded from second bto_duplicates'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    RESUME FIELD tf;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Print', KEY FRSKEY4 =
+{
+
+    MESSAGE 'Preparing Report . . .';
+
+    ret_val = CALLPROC msa_cp_callsys (
+              'report ' +
+              :g_database +
+              ' ''(user_name = "' + :g_user_name + '"' +
+              ',period = ' + VARCHAR(:period) +
+              ',h_table = "' + :h_table + '"' +
+              ',contributor_reference = "' + :contributor_reference + '"' +
+              ',contributor_industry = ' + VARCHAR(:contributor_industry) +
+              ',time = "' + VARCHAR(time) + '"' +
+              ')'' -i$REPORTS/msab_rw_duplicates.rw' +
+              ' > report.output 2> report.output');
+
+    IF ret_val <> 0
+    THEN
+        MESSAGE 'Error producing report'
+        WITH STYLE = POPUP;
+    ELSE
+        /*--------------------------------------------------------------
+         Remove last line - so a blank end page is not printed
+        --------------------------------------------------------------*/
+
+        ret_val = CALLPROC msa_cp_callsys (
+              'lines=`wc -l < msab_rw_duplicates.rpt`;' +
+              'lines=`expr ${lines} - 1`;' +
+              'head -${lines} msab_rw_duplicates.rpt | ' +
+              'lp -o12p -d' + :g_printer +
+              ' >> report.output 2>> report.output');
+
+        IF ret_val <> 0
+        THEN
+            MESSAGE 'Error sending report to printer ' +
+                    :g_printer
+            WITH STYLE = POPUP;
+        ELSE
+            MESSAGE 'Report sent to printer ' +
+                    :g_printer + ' OK'
+            WITH STYLE = POPUP;
+        ENDIF;
+    ENDIF;
+}
+
+'End', KEY FRSKEY6 =
+{
+    MESSAGE 'Exiting Screen . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table (
+	      h_table = :h_table);
+    RETURN 0;
+}

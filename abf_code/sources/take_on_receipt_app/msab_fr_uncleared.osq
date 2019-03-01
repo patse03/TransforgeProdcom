@@ -1,0 +1,3558 @@
+Initialize () =
+
+DECLARE h_retries_allowed       = INTEGER1 NOT NULL,
+        h_retries               = INTEGER1 NOT NULL,
+        h_retry_or_not          = CHAR(5) NOT NULL,
+        h_frpr_name             = VARCHAR(24) NOT NULL,
+        h_yesno                 = CHAR(1) NOT NULL,
+        h_markers               = CHAR(1) NOT NULL,
+        h_tickbox               = CHAR(4) NOT NULL,
+        h_field_name            = VARCHAR(24) NOT NULL,
+        h_table                 = VARCHAR(24) NOT NULL,
+        h_table1                = VARCHAR(24) NOT NULL,
+        h_table2                = VARCHAR(24) NOT NULL,
+        h_table3                = VARCHAR(24) NOT NULL,
+        h_table4                = VARCHAR(24) NOT NULL,
+        h_table5                = VARCHAR(24) NOT NULL,
+        h_table6                = VARCHAR(24) NOT NULL,
+        h_text                  = VARCHAR(30) NOT NULL,
+        h_reference             = CHAR(11) NOT NULL,
+        h_tick_boxes            = CHAR(3) NOT NULL,
+        h_diary_date            = DATE NOT NULL,
+        h_counter               = INTEGER4 NOT NULL,
+        tf.inquiry              = INTEGER1 NOT NULL,
+        tf.looked_at            = CHAR(1) NOT NULL,
+        ret_val                 = INTEGER1 NOT NULL,
+        h_rows                  = INTEGER4 NOT NULL,
+        h_record                = INTEGER4 NOT NULL,
+        h_on_record             = INTEGER4 NOT NULL,
+        h_last_reference        = CHAR(11) NOT NULL,
+        h_last_period           = INTEGER4 NOT NULL,
+        h_last_industry         = INTEGER4 NOT NULL,
+        h_industry              = INTEGER4 NOT NULL,
+        h_message               = VARCHAR(200) NOT NULL,
+        h_order_by              = VARCHAR(100) NOT NULL,
+        h_prompt_ind            = VARCHAR(5) NOT NULL,
+        h_prompt_ref            = VARCHAR(11) NOT NULL,
+        h_hold_ind              = VARCHAR(5) NOT NULL,
+        h_hold_ref              = VARCHAR(11) NOT NULL,
+        h_order                 = INTEGER1 NOT NULL,
+        lp_load_table           = PROCEDURE RETURNING INTEGER,
+        lp_load_control         = PROCEDURE RETURNING INTEGER,
+        lp_load_screen          = PROCEDURE RETURNING INTEGER,
+        lp_diary                = PROCEDURE RETURNING INTEGER
+
+{
+
+    h_frpr_name = 'msab_fr_uncleared';
+    h_retries_allowed = 3;
+    msa_date = 'now';
+    h_6_week_date = (date('today') - '42 days'); 
+    h_table  = 'temp_uncleared_forms';
+    h_table1 = 'temp_distinct_errors';
+    h_table3 = 'temp_insert';
+    h_table4 = 'temp_distinct_contribs';
+    h_table5 = 'temp_annual_q_ques';
+    h_table6 = 'temp_distinct_q_ques';
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+    SET_FORMS FIELD '' (INVISIBLE(h_6_week_date) = 1);
+
+    form_order = '(1 of 5) Default';
+    h_order_by = 'output_category DESC,' +
+                 'period,' +
+                 'contributor_industry,' +
+                 'contributor_reference';
+    h_order = 1;
+
+    /*------------------------------------------------------------------
+    Find out the last form looked at
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Checking Last Form . . .';
+    last_form = '';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT contributor_reference AS h_last_reference,
+               contributor_industry AS h_last_industry,
+               period AS h_last_period
+        FROM   contributor_memory
+        WHERE  user_id = :g_user_id;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing contributor_memory'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 0
+    THEN
+        last_form = VARCHAR(h_last_period) + ' ' +
+                    VARCHAR(h_last_industry) + ' ' +
+                    VARCHAR(h_last_reference);
+    ENDIF;
+
+    IF g_access_level < 95 OR g_user_id LIKE 'prod%'
+    THEN
+        ret_val = CALLPROC lp_load_table ();
+    ELSE
+        ret_val = CALLPROC lp_load_control ();
+    ENDIF;
+
+    IF ret_val <> 0
+    THEN
+        RETURN 0;
+    ENDIF;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'ResetTickBoxes' =
+{
+    IF g_access_level >= 95
+    THEN
+        MESSAGE 'This is not an option for Control Staff'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name <> 'tf'
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+        h_on_record = :tf._record;
+
+    IF :tf.tick_boxes = ''
+    THEN
+        MESSAGE 'You can only reset the TickBoxes when they' +
+                ' actually hold a value'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_yesno = '';
+    WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+    DO
+        h_yesno = PROMPT 'Do you really wish to reset the TickBoxes?' +
+                         ' Type Y/N and press <return>'
+                  WITH STYLE = POPUP;
+        h_yesno = LOWERCASE(:h_yesno);
+    ENDWHILE;
+
+    IF h_yesno = 'n'
+    THEN
+        RESUME;
+    ENDIF;
+
+    h_yesno = '';
+    WHILE h_yesno <> 'a' AND h_yesno <> 'r'
+    DO
+        h_yesno = PROMPT 'Do you wish to reset or amend TickBoxes' +
+                         ' Type R/A and press <return>'
+                  WITH STYLE = POPUP;
+        h_yesno = LOWERCASE(:h_yesno);
+    ENDWHILE;
+
+    IF h_yesno = 'r'
+    THEN
+    MESSAGE 'Deleting TickBoxes . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        DELETE FROM bto_view_images
+        WHERE       contributor_reference = :tf.contributor_reference
+        AND         period = :tf.period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in deleting from bto_view_images'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+        Update table with new tick boxes information.
+    ------------------------------------------------------------------*/
+
+    tf.tick_boxes = '';
+
+    MESSAGE 'Updating with new tick boxes information . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        SET    tick_boxes = ''
+        WHERE  contributor_reference = :tf.contributor_reference
+        AND    period = :tf.period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating ' + :h_table + ' with tick boxes information'
+
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    ENDIF;
+
+
+    IF h_yesno = 'a'
+    THEN
+       h_markers='';
+
+       WHILE h_markers <> 'A' AND h_markers <> 'C'
+       AND h_markers <> 'U'
+       DO
+     h_markers = PROMPT 'Please give marker you wish show as *' +
+                       X'0D0D' +
+		       'A = A Marker ' +
+		       'C = C Marker ' +
+		       'U = U Marker '
+		       WITH STYLE = POPUP;
+        h_markers = UPPERCASE(h_markers);
+	ENDWHILE;
+
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+        
+	SELECT tick_boxes as h_tickbox 
+	FROM bto_view_images a
+        WHERE  contributor_reference = :tf.contributor_reference
+        AND    period = :tf.period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in selecting tick boxes information'
+
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+
+    IF h_markers = 'A'
+    THEN
+
+    MESSAGE 'Updating with new tick boxes information . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE bto_view_images a
+        SET    tick_boxes = '*'+right(:h_tickbox,3)
+        WHERE  contributor_reference = :tf.contributor_reference
+        AND    period = :tf.period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating ' + :h_table + ' with tick boxes information'
+
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+
+        UPDATE :h_table a
+        SET    tick_boxes = '*'+right(:h_tickbox,3)
+        WHERE  contributor_reference = :tf.contributor_reference
+        AND    period = :tf.period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating ' + :h_table + ' with tick boxes information'
+
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+    
+    ENDIF;
+
+    IF h_markers = 'C'
+    THEN
+
+    MESSAGE 'Updating with new tick boxes information . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+        UPDATE bto_view_images a
+        SET    tick_boxes = LEFT(:h_tickbox,2)+'*'+ RIGHT(:h_tickbox,1)
+        WHERE  contributor_reference = :tf.contributor_reference
+        AND    period = :tf.period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating ' + :h_table + ' with tick boxes information'
+
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+        UPDATE :h_table a
+        SET    tick_boxes = LEFT(:h_tickbox,2)+'*'+ RIGHT(:h_tickbox,1)
+        WHERE  contributor_reference = :tf.contributor_reference
+        AND    period = :tf.period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating ' + :h_table + ' with tick boxes information'
+
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+    ENDIF;
+
+    IF h_markers = 'U'
+    THEN
+
+    MESSAGE 'Updating with new tick boxes information . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE bto_view_images a
+        SET    tick_boxes = LEFT(:h_tickbox,3)+'*'
+        WHERE  contributor_reference = :tf.contributor_reference
+        AND    period = :tf.period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating ' + :h_table + ' with tick boxes information'
+
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        SET    tick_boxes = LEFT(:h_tickbox,3)+'*'
+        WHERE  contributor_reference = :tf.contributor_reference
+        AND    period = :tf.period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating ' + :h_table + ' with tick boxes information'
+
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+    ENDIF;
+    ENDIF;
+
+
+    /*------------------------------------------------------------------
+        Recount number of contributors on the screen (excluding
+	those cleared during current session).
+    ------------------------------------------------------------------*/
+
+    no_forms = 0;
+
+    UNLOADTABLE tf
+    {
+	IF :tf.status <> 'Cleared'
+	OR :tf.tick_boxes <> ''
+	OR :tf.data_continuity <> ''
+	THEN
+	    no_forms = :no_forms + 1;
+        ENDIF;
+    };
+
+    ret_val = CALLPROC lp_load_screen ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+
+    UNLOADTABLE tf (h_record = _record)
+    {
+        IF h_record > h_on_record
+        THEN
+                SCROLL tf TO h_record;
+                RESUME;
+        ENDIF;
+    };
+}
+
+'ReOrder' =
+{
+    IF h_order = 5
+    THEN
+        form_order = '(1 of 5) Default';
+        h_order_by = 'output_category DESC,' +
+                     'period,' +
+                     'contributor_industry,' +
+                     'contributor_reference';
+        SET_FORMS FIELD '' (INVISIBLE(h_6_week_date) = 1);
+        h_order = 1;
+
+    ELSEIF h_order = 1
+    THEN
+        form_order = '(2 of 5) Industry';
+        h_order_by = 'contributor_industry,' +
+                     'contributor_reference,' +
+                     'period';
+        h_order = 2;
+
+    ELSEIF h_order = 2
+    THEN
+        form_order = '(3 of 5) Tickboxes';
+        h_order_by = 'tick_boxes DESC,' +
+                     'receipt_date DESC,' +
+                     'contributor_reference,' +
+                     'period';
+        h_order = 3;
+
+    ELSEIF h_order = 3
+    THEN
+        form_order = '(4 of 5) Receipt Date';
+        h_order_by = 'receipt_date,' +
+                     'contributor_industry,' +
+                     'contributor_reference,' +
+                     'period';
+        h_order = 4;
+
+    ELSE
+        form_order = '(5 of 5) Receipt Date Before ';
+        h_order_by = 'contributor_industry,' +
+		     'receipt_date,' +
+                     'contributor_reference,' +
+                     'period';
+        SET_FORMS FIELD '' (INVISIBLE(h_6_week_date) = 0);
+        h_order = 5;
+
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_screen ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'ContactDetails' =
+{
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name <> 'tf'
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_reference = :tf.contributor_reference;
+
+    CALL APPLICATION(exec = '$IMAGES/communicate',
+                    param = VARCHAR(:h_reference));
+
+    msa_date = 'now';
+
+    ret_val = CALLPROC lp_diary (
+              h_lp_reference = :h_reference);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Reset diary dates on screen: go thru whole table in case the same
+    contributor has more than one uncleared form
+    ------------------------------------------------------------------*/
+
+    UNLOADTABLE tf
+    {
+        IF tf.contributor_reference = h_reference
+        THEN
+            tf.diary_date = h_diary_date;
+        ENDIF;
+    };
+}
+
+'GoToInd' =
+{
+    h_message = 'Type (start of) Industry and press <return>';
+
+    IF h_hold_ind <> ''
+    THEN
+        h_message = h_message + X'0D' +
+                    'or just press <return> to go to the next' +
+                    ' Form whose Industry starts with ' +
+                    VARCHAR(h_hold_ind);
+    ENDIF;
+
+    h_prompt_ind = PROMPT h_message WITH STYLE = POPUP;
+
+    IF h_prompt_ind = '' AND h_hold_ind <> ''
+    THEN
+        h_prompt_ind = h_hold_ind;
+        h_on_record = :tf._record;
+    ELSE
+        h_on_record = 0;
+    ENDIF;
+
+    h_hold_ind = h_prompt_ind;
+
+    UNLOADTABLE tf (h_record = _record)
+    {
+        IF h_record > h_on_record
+        THEN
+            IF LEFT(VARCHAR(tf.contributor_industry),LENGTH(h_prompt_ind)) = :h_prompt_ind
+            THEN
+                SCROLL tf TO h_record;
+                RESUME;
+            ENDIF;
+        ENDIF;
+    };
+}
+
+'GoToRef' =
+{
+    h_message = 'Type (start of) Reference and press <return>';
+
+    IF h_hold_ref <> ''
+    THEN
+        h_message = h_message + X'0D' +
+                    'or just press <return> to go to the next' +
+                    ' Form whose Reference starts with ' +
+                    VARCHAR(h_hold_ref);
+    ENDIF;
+
+    h_prompt_ref = PROMPT h_message WITH STYLE = POPUP;
+
+    IF h_prompt_ref = '' AND h_hold_ref <> ''
+    THEN
+        h_prompt_ref = h_hold_ref;
+        h_on_record = :tf._record;
+    ELSE
+        h_on_record = 0;
+    ENDIF;
+
+    h_hold_ref = h_prompt_ref;
+
+    UNLOADTABLE tf (h_record = _record)
+    {
+        IF h_record > h_on_record
+        THEN
+            IF LEFT(VARCHAR(tf.contributor_reference),LENGTH(h_prompt_ref)) = :h_prompt_ref
+            THEN
+                SCROLL tf TO h_record;
+                RESUME;
+            ENDIF;
+        ENDIF;
+    };
+}
+
+
+'Diarydate' =
+{
+
+
+   IF :g_user_id NOT LIKE 'prod%' AND :g_user_id NOT LIKE 'cbu%'
+      THEN
+	MESSAGE 'Sorry, but this option is for PRODCOM Staff only'
+        WITH STYLE = POPUP;
+        RESUME;
+   ENDIF;
+
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name <> 'tf'
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_reference = :tf.contributor_reference;
+    h_industry = :tf.contributor_industry;
+
+    MESSAGE 'Loading Diary Date .  .  .';
+
+    IF h_diary_date = ''
+    THEN
+
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = :h_table3);
+        h_diary_date = 'today';
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+        h_retries = :h_retries + 1;
+        CREATE TABLE :h_table3 as
+	SELECT * FROM contributor_diary
+	WHERE contributor_reference = :h_reference;
+
+
+         ret_val = CALLPROC check_inq_ing (
+                h_num_row_ck      = 1,
+                h_commit = 'Y',
+                h_rollback = 'N',
+                h_retries = :h_retries,
+                h_retries_allowed = :h_retries_allowed,
+                h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+            h_retry_or_not = '';
+            ENDIF;
+
+       ENDWHILE  ;
+
+
+    IF ret_val <> 0
+    THEN
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+        h_retries = :h_retries + 1;
+
+        INSERT INTO contributor_diary (
+                    contributor_reference,
+                    contributor_industry,
+                    diary_date)
+                    VALUES ( :h_reference,
+                            :h_industry,
+                            :h_diary_date);
+
+
+         ret_val = CALLPROC check_inq_ing (
+                h_num_row_ck      = 1,
+                h_commit = 'Y',
+                h_rollback = 'N',
+                h_retries = :h_retries,
+                h_retries_allowed = :h_retries_allowed,
+                h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+            h_retry_or_not = '';
+            ENDIF;
+
+       ENDWHILE  ;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error inserting into contributor_diary'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows inserted into contributor_diary'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+ ENDIF;
+
+    ret_val = CALLFRAME msa_fr_diary_date
+		       ( diary_date = BYREF(:h_diary_date));
+
+    IF ret_val = 1 OR ret_val = 0
+    THEN
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+	DO
+            h_retries = :h_retries + 1;
+            IF ret_val = 1
+            THEN
+                DELETE FROM contributor_diary
+                WHERE contributor_reference IN (:h_reference);
+            ELSE
+                UPDATE contributor_diary
+                SET diary_date = :h_diary_date
+                WHERE contributor_reference IN (:h_reference);
+            ENDIF;
+
+            ret_val = CALLPROC check_inq_ing (
+                        h_num_row_ck      = 1,
+                        h_commit          = 'Y',
+                        h_rollback        = 'N',
+                        h_retries         = :h_retries,
+                        h_retries_allowed = :h_retries_allowed,
+                        h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error updating/deleting from contributor_diary'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No rows updated/deleted on contributor_diary'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+        ENDIF;
+     endif;
+
+    ret_val = CALLPROC lp_diary (
+              h_lp_reference = :h_reference);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Reset diary dates on screen: go thru whole table in case the same
+    contributor has more than one uncleared form
+    ------------------------------------------------------------------*/
+
+    UNLOADTABLE tf
+    {
+        IF tf.contributor_reference = h_reference
+        THEN
+            tf.diary_date = h_diary_date;
+        ENDIF;
+    };
+
+    h_diary_date = '';
+
+}
+
+'Delete' =
+{
+    IF g_access_level < 95
+    THEN
+        MESSAGE 'This is only an option for Control Staff'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name <> 'tf'
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_yesno = '';
+    WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+    DO
+        h_yesno = PROMPT 'Do you really wish to delete this Form' +
+                         ' from this list?' +
+                         ' Type Y/N and press <return>'
+        WITH STYLE = POPUP;
+        h_yesno = LOWERCASE(:h_yesno);
+    ENDWHILE;
+
+    IF h_yesno = 'n'
+    THEN
+        RESUME;
+    ENDIF;
+
+    MESSAGE 'Deleting Errors . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        DELETE FROM bto_scanning_errors
+        WHERE       contributor_reference = :tf.contributor_reference
+        AND         period = :tf.period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in deleting from bto_scanning_errors'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_control ();
+
+    IF ret_val <> 0
+    THEN
+        RETURN 0;
+    ENDIF;
+}
+
+'Memory' =
+{
+    IF last_form = ''
+    THEN
+        MESSAGE 'There is no form within memory'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    UNLOADTABLE tf (h_record = _record)
+    {
+        IF :tf.contributor_reference = h_last_reference
+        AND :tf.period = h_last_period
+        THEN
+            SCROLL tf TO h_record;
+            RESUME;
+        ENDIF;
+    };
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        DELETE FROM contributor_memory
+        WHERE       user_id = :g_user_id;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in deleting from contributor_memory'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows deleted from contributor_memory'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    last_form = '';
+
+    MESSAGE 'This Form no longer appears in this list'
+    WITH STYLE = POPUP;
+
+}
+
+'Enter/Edit', KEY FRSKEY4 =
+{
+    IF g_access_level >= 95 
+    AND g_user_id != 'produser' 
+    AND g_user_id != 'prodlive' 
+    THEN
+        MESSAGE 'This is not an option for Control Staff'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name <> 'tf'
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    ret_val = CALLFRAME msab_fr_accept_values (
+              contributor_reference = :tf.contributor_reference,
+              inquiry               = :tf.inquiry,
+              period                = :tf.period,
+              contributor_industry  = :tf.contributor_industry);
+
+    IF ret_val <> 0
+    THEN
+        RESUME;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Reset memory to the form just viewed
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        IF last_form = ''
+        THEN
+            INSERT INTO contributor_memory (
+                        user_id,
+                        contributor_reference,
+                        contributor_industry,
+                        period)
+            VALUES (    :g_user_id,
+                        :tf.contributor_reference,
+                        :tf.contributor_industry,
+                        :tf.period);
+        ELSE
+            UPDATE contributor_memory
+            SET    contributor_reference = :tf.contributor_reference,
+                   contributor_industry = :tf.contributor_industry,
+                   period = :tf.period
+            WHERE  user_id = :g_user_id;
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error updating/inserting contributor_memory'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No row updated/inserted on contributor_memory'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    h_last_reference = :tf.contributor_reference;
+    h_last_period = :tf.period;
+    h_last_industry = :tf.contributor_industry;
+    last_form = VARCHAR(h_last_period) + ' ' +
+                VARCHAR(h_last_industry) + ' ' +
+                VARCHAR(h_last_reference);
+
+    /*------------------------------------------------------------------
+    IF the form still exists on bto_scanning_errors
+    then F9 has not been pressed within Take on screen
+    in program msab_fr_load_codes
+    The Form has therefore not been taken on so do not overwrite the
+    status text.
+    Set h_text to the status before looking at the form_status column
+    on contributor_period. If contributor still exists on
+    bto_scanning_errors then this text will not be
+    overwritten.
+    ------------------------------------------------------------------*/
+    h_text = :tf.status;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT contributor_reference as h_reference
+        FROM   bto_scanning_errors
+        WHERE  contributor_reference = :tf.contributor_reference
+        AND    period = :tf.period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing bto_scanning_errors'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ELSEIF ret_val = 1
+    THEN
+        /*--------------------------------------------------------------
+        This contributor is not on bto_scanning_errors
+        so change the status
+        --------------------------------------------------------------*/
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            SELECT a.text AS h_text
+            FROM   form_status a,
+    	           contributor_period b
+            WHERE  a.form_status = b.form_status
+            AND    b.contributor_reference = :tf.contributor_reference
+            AND    b.period = :tf.period;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing contributor_period'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+        tf.status = h_text;
+    ENDIF;
+
+    tf.looked_at = 'Y';
+
+    /*------------------------------------------------------------------
+    Update table with new form_status & looked-at marker
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Updating with new form status . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        SET    status = :h_text,
+               looked_at = 'Y'
+        WHERE  contributor_reference = :tf.contributor_reference
+        AND    period = :tf.period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating ' + :h_table + ' with new form status'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Highlight the one just looked at
+    ------------------------------------------------------------------*/
+
+    UNLOADTABLE tf
+    {
+        IF tf.looked_at = 'Y'
+        THEN
+            SET_FORMS ROW '' tf (UNDERLINE(period) = 1,
+                                 UNDERLINE(contributor_industry) = 1,
+                                 UNDERLINE(contributor_reference) = 1,
+                                 UNDERLINE(key_disp) = 1,
+                                 UNDERLINE(output_category) = 1,
+                                 UNDERLINE(congruency) = 1,
+                                 UNDERLINE(receipt_date) = 1,
+                                 UNDERLINE(status) = 1,
+                                 UNDERLINE(form_taken_on) = 1,
+                                 UNDERLINE(tick_boxes) = 1,
+                                 UNDERLINE(diary_date) = 1);
+        ELSE
+            SET_FORMS ROW '' tf (UNDERLINE(period) = 0,
+                                 UNDERLINE(contributor_industry) = 0,
+                                 UNDERLINE(contributor_reference) = 0,
+                                 UNDERLINE(key_disp) = 0,
+                                 UNDERLINE(output_category) = 0,
+                                 UNDERLINE(congruency) = 0,
+                                 UNDERLINE(receipt_date) = 0,
+                                 UNDERLINE(status) = 0,
+                                 UNDERLINE(form_taken_on) = 0,
+                                 UNDERLINE(tick_boxes) = 0,
+                                 UNDERLINE(diary_date) = 0);
+        ENDIF;
+    };
+
+    /*------------------------------------------------------------------
+    Recount number of contributors on the screen (excluding those
+    cleared during current session).
+    ------------------------------------------------------------------*/
+
+    no_forms = 0;
+
+    UNLOADTABLE tf
+    {
+	IF :tf.status <> 'Cleared'
+	OR :tf.tick_boxes <> ''
+	OR :tf.data_continuity <> ''
+	THEN
+	    no_forms = :no_forms + 1;
+        ENDIF;
+    };
+
+    h_reference = :tf.contributor_reference;
+
+    ret_val = CALLPROC lp_diary (
+              h_lp_reference = :h_reference);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Reset diary dates on screen: go thru whole table in case the same
+    contributor has more than one uncleared form
+    ------------------------------------------------------------------*/
+
+    UNLOADTABLE tf
+    {
+        IF tf.contributor_reference = h_reference
+        THEN
+            tf.diary_date = h_diary_date;
+        ENDIF;
+    };
+}
+
+'ScanningErrors' =
+{
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name <> 'tf'
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    IF tf.status <> UPPERCASE(tf.status)
+    THEN
+        MESSAGE 'Only those Forms whose Status is in UPPERCASE' +
+                ' are those with Scanning Errors'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    ret_val = CALLFRAME msab_fr_scanning_errors (
+              contributor_reference = :tf.contributor_reference,
+              contributor_industry  = :tf.contributor_industry,
+              inquiry               = :tf.inquiry,
+              period                = :tf.period);
+
+    msa_date = 'now';
+
+}
+
+'IQ' =
+{
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name <> 'tf'
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    IF :tf.output_category <> 'IQ'
+    THEN
+        MESSAGE 'This Option is only available for IQ Contributors'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    ret_val = CALLFRAME msab_fr_iq_contrib (
+              address_change        = LEFT(:tf.tick_boxes,1),
+              contributor_reference = :tf.contributor_reference,
+              period                = :tf.period);
+
+}
+
+'ResetDataContinuity' =
+{
+    IF g_access_level >= 95
+    THEN
+        MESSAGE 'This is not an option for Control Staff'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name <> 'tf'
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'Please highlight the required Contributor'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    IF :tf.data_continuity = ''
+    THEN
+        MESSAGE 'You can only reset the DataContinuity when it' +
+                ' actually holds a value'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_yesno = '';
+    WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+    DO
+        h_yesno = PROMPT 'Do you really wish to reset the DataContinuity?' +
+                         ' Type Y/N and press <return>'
+                  WITH STYLE = POPUP;
+        h_yesno = LOWERCASE(:h_yesno);
+    ENDWHILE;
+
+    IF h_yesno = 'n'
+    THEN
+        RESUME;
+    ENDIF;
+
+    MESSAGE 'Reseting DataContinuity . . .';
+
+    IF tf.data_continuity = 'C ' OR tf.data_continuity = 'CQ'
+    THEN
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            UPDATE reref_contributors
+            SET    actioned = 'Y'
+            WHERE  contributor_reference = :tf.contributor_reference;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in updating reref_contributors'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ENDIF;
+    ENDIF;
+    IF tf.data_continuity = ' Q' OR tf.data_continuity = 'CQ'
+    THEN
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            UPDATE bto_new_questions
+            SET    actioned = 'Y'
+            WHERE  contributor_reference = :tf.contributor_reference
+	    AND    period = :tf.period/100 * 100;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in updating bto_new_questions'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+        Update table with new DataContinuity information.
+    ------------------------------------------------------------------*/
+
+    tf.data_continuity = '';
+
+    MESSAGE 'Updating with new DataContinuity boxes information . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        SET    data_continuity = ''
+        WHERE  contributor_reference = :tf.contributor_reference
+	AND    period = :tf.period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating ' + :h_table + ' with data continuity information'
+
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+        Recount number of contributors on the screen (excluding
+	those cleared during current session).
+    ------------------------------------------------------------------*/
+
+    no_forms = 0;
+
+    UNLOADTABLE tf
+    {
+	IF :tf.status <> 'Cleared'
+	OR :tf.tick_boxes <> ''
+	OR :tf.data_continuity <> ''
+	THEN
+	    no_forms = :no_forms + 1;
+        ENDIF;
+    }
+}
+
+'End', KEY FRSKEY6 =
+{
+
+    h_yesno = '';
+    WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+    DO
+        h_yesno = PROMPT 'Do you really wish to exit this screen?' +
+                         ' Type Y/N and press <return>'
+                  WITH STYLE = POPUP;
+        h_yesno = LOWERCASE(:h_yesno);
+    ENDWHILE;
+
+    IF h_yesno = 'n'
+    THEN
+        RESUME;
+    ENDIF;
+
+
+    MESSAGE 'Exiting Uncleared Forms Screen . . .';
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = :h_table);
+
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = :h_table1);
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = :h_table3);
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = :h_table5);
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = :h_table6);
+    RETURN 0;
+}
+
+'QuickView', KEY FRSKEY7 =
+{
+    CALL APPLICATION (exec = '$IMAGES/quickview_app');
+}
+
+/*----------------------------------------------------------------------
+                L O C A L   P R O C E D U R E   1
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_table () =
+{
+
+    MESSAGE 'Creating List of Forms to be Viewed . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = :h_table1);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = :h_table2);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = :h_table5);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = :h_table6);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    There are 3 types of form to be displayed:
+
+    (1)  from contributor_period, the uncleared forms
+    (2)  from bto_scanning_errors, the reason for failure
+    (3)  from bto_view_images, the tick boxes
+    ------------------------------------------------------------------*/
+
+    /*------------------------------------------------------------------
+    (1) Get initial uncleared forms
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Creating List of Uncleared Forms . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table
+        AS SELECT    a.inquiry,
+                     a.region AS region,
+                     a.period,
+                     a.contributor_industry,
+                     a.contributor_reference,
+                     a.keyresp,
+                     ' ' AS key_disp,
+                     ' ' AS congruency,
+                     a.receipt_date,
+                     a.output_category + '  ' AS output_category,
+                     c.text AS status,
+                     a.form_taken_on,
+                     ' ' AS q_ques,
+                     '    ' AS tick_boxes,
+                     DATE('') AS diary_date,
+                     'N' as looked_at,
+		     '  ' AS data_continuity
+        FROM         contributor_period a,
+                     industry_staff b, 
+                     form_status c
+        WHERE        a.receipt_date <> ''
+        AND          a.correct_date = ''
+        AND          a.contributor_industry = b.industry 
+        AND          b.user_id = :g_user_id 
+        AND          a.form_status = c.form_status;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    MESSAGE 'Modifying . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        MODIFY    :h_table TO BTREE
+        UNIQUE ON contributor_reference,
+                  period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error modifying ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    (2a) bto_scanning_errors
+        Any form on bto_scanning_errors will not be cleared, and so
+        will have been loaded onto the table
+    ------------------------------------------------------------------*/
+
+    /*------------------------------------------------------------------
+      Version 6.4/06 did not like this update as there are
+      duplicates in bto_scanning_errors.  To get around this
+      create a table of distinct rows before updating.
+    -----------------------------------------------------------------*/
+
+    MESSAGE 'Creating Distinct Scanning Errors . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table1
+	AS SELECT
+	DISTINCT contributor_reference,
+                 period,
+                 reason
+        FROM     bto_scanning_errors;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating distinct bto_scanning_errors'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    MESSAGE 'Updating with Scanning Errors . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   :h_table1 b
+        SET    status = UPPERCASE(b.reason)
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.period = b.period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating from distinct bto_scanning_errors'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    (3)  bto_view_images
+        These forms can either be cleared or uncleared, so (i) insert
+        the ones that are cleared, then (ii) update with the tickboxes
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Inserting Images to be Viewed . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        INSERT INTO :h_table (
+                    inquiry,
+		    region,
+                    period,
+                    contributor_industry,
+                    contributor_reference,
+                    keyresp,
+                    key_disp,
+                    congruency,
+                    receipt_date,
+                    output_category,
+                    status,
+                    form_taken_on,
+                    q_ques,
+                    tick_boxes,
+                    diary_date,
+                    looked_at,
+		    data_continuity)
+        SELECT      DISTINCT a.inquiry,
+                    a.region,
+                    a.period,
+                    a.contributor_industry,
+                    a.contributor_reference,
+                    a.keyresp,
+                    '',
+                    '',
+                    a.receipt_date,
+                    a.output_category,
+                    'Cleared',
+                    a.form_taken_on,
+                    '',
+                    c.tick_boxes,
+                    '',
+                    'N',
+		    '  '
+        FROM        contributor_period a,
+                    industry_staff b,
+                    bto_view_images c
+        WHERE       a.receipt_date <> ''
+        AND         a.contributor_industry = b.industry
+        AND         b.user_id = :g_user_id
+        AND         a.form_status = 4
+        AND         a.contributor_reference = c.contributor_reference
+        AND         a.period = c.period
+        AND         c.contributor_reference NOT IN (
+                    SELECT contributor_reference
+                    FROM   :h_table d
+                    WHERE  c.period = d.period);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error inserting from bto_view_images into ' +
+                :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    MESSAGE 'Updating Images to be Viewed . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   bto_view_images b
+        SET    tick_boxes = b.tick_boxes
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.period = b.period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error updating from bto_view_images'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    MESSAGE 'Updating with data_continuity . . .';
+
+    /*---------------------------------------------------------------------
+    For Reref contributors
+    ----------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   reref_contributors b
+        SET    data_continuity = 'C'
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.period = b.period
+	AND    b.actioned = 'N';
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error updating from reref_contributors'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+
+    /*---------------------------------------------------------------------
+    For Replaced questions
+    ----------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msa_fp_drop_table (h_table = :h_table4);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    MESSAGE 'Creating temp distinct contribs table . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table4
+        AS SELECT    DISTINCT contributor_reference,
+                     period,
+                     actioned
+	FROM         bto_new_questions; 
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating ' + :h_table4
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+	FROM   :h_table4 b
+        SET    data_continuity = data_continuity + 'Q'
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.period/100 = b.period/100
+	AND    b.actioned = 'N';
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error updating from ' + :h_table4
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+
+    /*------------------------------------------------------------------
+    Blank out online & non- taken-on messages
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table
+        SET    form_taken_on = ''
+        WHERE  form_taken_on IN ('N','O');
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error updating form_taken_on flag'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Mark the form if there's a diary date outstanding
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   contributor_diary b
+        SET    diary_date = b.diary_date
+        WHERE  a.contributor_reference = b.contributor_reference;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error updating from contributor_diary'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Add keyresp marker
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Adding Keyresp Display Marker . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table
+        SET    key_disp = 'K'
+        WHERE  keyresp = 1;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating keyresp marker ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Blank out sterling currencies (so the E of Euros stands out more)
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Adding Congruency . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table
+        SET    congruency = 'C'
+        WHERE  status = 'MPI Cong Fail';
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating congruency on ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    MESSAGE 'Updating Output Categories . . . ';
+
+   /*------------------------------------------------------------------
+    1. Update with output_category NI
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table
+        SET    output_category = 'NI'
+        WHERE  region = 'YY';
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating NI categories on ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    2. Update with output_category Y
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table
+        SET    output_category = 'Enf'
+        WHERE  output_category = 'Y';
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating Y categories on ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    3. Update with output_category Z
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table
+        SET    output_category = 'BPT'
+        WHERE  output_category = 'Z';
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating Z categories on ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    3. Update with output_category Q
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table
+        SET    output_category = 'IQ'
+        WHERE  output_category = 'Q';
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating Q categories on ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    3.1 Update with euro contributors, set ouput_category = 'E' where 
+        currency = 'E'
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   contributor_period b
+        SET    output_category = 'E'
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.period = b.period
+        AND    b.currency  = 'E';
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating euro contributors ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    3.2 Update with euro NI contributors, set ouput_category = 'ENI' 
+        where currency = 'E' and region = 'YY'
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   contributor_period b
+        SET    output_category = 'ENI'
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.period = b.period
+        AND    b.currency  = 'E'
+        AND    b.region = 'YY';
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating euro NI contributors ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    3.3 Update with euro enforcement contributors, set ouput_category 
+        = 'EEN' where currency = 'E' and output_category = 'Y'
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   contributor_period b
+        SET    output_category = 'EEN'
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.period = b.period
+        AND    b.currency  = 'E'
+        AND    b.output_category = 'Y';
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating euro NI contributors ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    3.4 Update with euro BPT forms
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   contributor_period b
+        SET    output_category = 'EBP'
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.period = b.period
+        AND    b.currency  = 'E'
+        AND    b.output_category = 'Z';
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating euro Z categories on ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    4. Blank out all other output_categories
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table
+        SET    output_category = ''
+        WHERE  output_category NOT IN ('BPT','Enf','NI','IQ','E',
+                                        'ENI','EEN','EBP');
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in blanking out categories on ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+
+    MESSAGE 'Marking annual contributor with quarterly questions . . . ';
+
+    /*------------------------------------------------------------------
+    1. Mark annual contributors with quarterly questions
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+       CREATE table :h_table5
+       AS SELECT a.contributor_reference,b.question,a.period
+       FROM :h_table a,cqpv b
+       WHERE a.contributor_reference = b.contributor_reference
+       AND a.period = b.period
+       AND mod(a.period,100)=00;
+							     
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in setting quarterly questions on 1 ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        DELETE FROM :h_table5 a
+        WHERE  a.question NOT IN (SELECT question FROM question_library b 
+                WHERE a.period/100 = b.period/100
+                AND b.inquiry = 15)
+        AND MOD(a.period,100) = 00      ;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in setting quarterly questions on 2 ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table6
+        AS SELECT DISTINCT contributor_reference,period
+        FROM :h_table5  ;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in setting quarterly questions on 3 ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a FROM :h_table6 b
+        SET    q_ques = '*'
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND a.period = b.period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in setting quarterly questions on 5 ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_screen ();
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    msa_date = 'now';
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                L O C A L   P R O C E D U R E   2
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_control () =
+{
+
+    MESSAGE 'Creating List of Forms to be Viewed . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table (
+       h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    MESSAGE 'Creating List of Invalid Forms . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table
+        AS SELECT    DISTINCT inquiry,
+                     period,
+                     contributor_industry,
+                     contributor_reference,
+                     '' AS key_disp,
+                     '' AS congruency,
+                     '' AS receipt_date,
+                     '' AS output_category,
+                     UPPERCASE(reason) AS status,
+                     'S' AS form_taken_on,
+                     '' AS q_ques,
+                     '    ' AS tick_boxes,
+                     date('') AS diary_date,
+                     'N' AS looked_at,
+		     '  ' AS data_continuity
+        FROM         bto_scanning_errors
+        WHERE        reason LIKE 'Invalid%';
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Mark the form if there's a diary date outstanding
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   contributor_diary b
+        SET    diary_date = b.diary_date
+        WHERE  a.contributor_reference = b.contributor_reference;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error updating from contributor_diary'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Add keyresp marker
+    /*------------------------------------------------------------------
+    Load form
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC lp_load_screen ();
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    msa_date = 'now';
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                L O C A L   P R O C E D U R E   3
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_screen () =
+{
+    MESSAGE 'Loading Screen . . .';
+
+  IF :h_order = 5
+  THEN
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT   inquiry,
+                 period,
+                 contributor_industry,
+                 contributor_reference,
+                 key_disp,
+                 congruency,
+                 receipt_date,
+                 output_category,
+                 status,
+                 form_taken_on,
+		 data_continuity,
+		 q_ques,
+                 tick_boxes,
+                 diary_date,
+                 looked_at
+        FROM     :h_table
+	WHERE    receipt_date < :h_6_week_date
+	AND      diary_date = ''
+        ORDER BY :h_order_by;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:no_forms),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'There are no Uncleared Forms receipted over 6 weeks ago'
+        WITH STYLE = POPUP;
+    ENDIF;
+
+  ELSE
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT   inquiry,
+                 period,
+                 contributor_industry,
+                 contributor_reference,
+                 key_disp,
+                 congruency,
+                 receipt_date,
+                 output_category,
+                 status,
+                 form_taken_on,
+		 data_continuity,
+		 q_ques,
+                 tick_boxes,
+                 diary_date,
+                 looked_at
+        FROM     :h_table
+        ORDER BY :h_order_by;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:no_forms),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'There are no Uncleared Forms'
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+  ENDIF;
+
+    h_counter = 1;
+    UNLOADTABLE tf
+    {
+        /*--------------------------------------------------------------
+        Remove Local Units from tick-box display: ALCU --> ACU
+        --------------------------------------------------------------*/
+	h_tick_boxes = CHAREXTRACT(tf.tick_boxes,1) +
+	               CHAREXTRACT(tf.tick_boxes,3) +
+	               CHAREXTRACT(tf.tick_boxes,4);
+        tf.tick_boxes = h_tick_boxes;
+
+        tf.counter = :h_counter;
+        h_counter = :h_counter + 1;
+
+        IF tf.looked_at = 'Y'
+        THEN
+            SET_FORMS ROW '' tf (UNDERLINE(period) = 1,
+                                 UNDERLINE(contributor_industry) = 1,
+                                 UNDERLINE(contributor_reference) = 1,
+                                 UNDERLINE(congruency) = 1,
+                                 UNDERLINE(key_disp) = 1,
+                                 UNDERLINE(output_category) = 1,
+                                 UNDERLINE(receipt_date) = 1,
+                                 UNDERLINE(status) = 1,
+                                 UNDERLINE(form_taken_on) = 1,
+                                 UNDERLINE(tick_boxes) = 1,
+                                 UNDERLINE(diary_date) = 1);
+        ELSE
+            SET_FORMS ROW '' tf (UNDERLINE(period) = 0,
+                                 UNDERLINE(contributor_industry) = 0,
+                                 UNDERLINE(contributor_reference) = 0,
+                                 UNDERLINE(key_disp) = 0,
+                                 UNDERLINE(output_category) = 0,
+                                 UNDERLINE(congruency) = 0,
+                                 UNDERLINE(receipt_date) = 0,
+                                 UNDERLINE(status) = 0,
+                                 UNDERLINE(form_taken_on) = 0,
+                                 UNDERLINE(tick_boxes) = 0,
+                                 UNDERLINE(diary_date) = 0);
+        ENDIF;
+    };
+
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                L O C A L   P R O C E D U R E   4
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_diary (
+
+          h_lp_reference = CHAR(11) NOT NULL) =
+{
+    /*------------------------------------------------------------------
+    Check if the diary date has been changed
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT diary_date AS h_diary_date
+        FROM   contributor_diary
+        WHERE  contributor_reference = :h_lp_reference;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing contributor_diary'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        h_diary_date = '';
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Update table with new diary date
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Updating with diary date . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table
+        SET    diary_date = :h_diary_date
+        WHERE  contributor_reference = :h_lp_reference;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating ' + :h_table + ' with diary date'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    RETURN 0;
+}

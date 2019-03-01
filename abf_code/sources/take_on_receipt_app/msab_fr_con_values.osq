@@ -1,0 +1,1575 @@
+
+INITIALIZE (
+
+        contributor_reference = CHAR(11) NOT NULL,
+        inquiry               = INTEGER2 NOT NULL,
+        register_emp          = INTEGER4 NOT NULL,
+        period                = INTEGER4 NOT NULL) =
+
+DECLARE h_retries_allowed     = INTEGER1 NOT NULL,
+        h_retries             = INTEGER1 NOT NULL,
+        h_retry_or_not        = CHAR(5) NOT NULL,
+        tf.quest_order        = INTEGER1 NOT NULL,
+	tf.h_col              = INTEGER4 NOT NULL,
+        h_value               = INTEGER4 NOT NULL,
+        h_record              = INTEGER4 NOT NULL,
+        h_rowstate            = INTEGER4 NOT NULL,
+        h_frpr_name           = VARCHAR(24) NOT NULL,
+        h_default_map         = VARCHAR(80) NOT NULL,
+        h_yesno               = CHAR(1) NOT NULL,
+        h_vol                 = INTEGER4 NOT NULL,
+        h_inquiry             = INTEGER2 NOT NULL,
+        h_max_period          = INTEGER4 NOT NULL,
+        h_counter             = INTEGER2 NOT NULL,
+        h_counter1            = INTEGER2 NOT NULL,
+        h_quarter             = INTEGER4 NOT NULL,
+	h_look_for_question   = INTEGER4 NOT NULL,
+        ret_val               = INTEGER1 NOT NULL,
+        lp_load_table         = PROCEDURE RETURNING INTEGER
+
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msab_fr_con_values';
+    SET_FORMS FIELD '' (MODE(tf) = 'UPDATE');
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Get initial values
+    ------------------------------------------------------------------*/
+
+    total_sales = 0;
+    total_of_01 = 0;
+    difference  = 0;
+    sph         = 0;
+
+    UNLOADTABLE tf
+    {
+        IF MOD(:tf.question,10) = 1
+        THEN
+            total_of_01 = :total_of_01 + :tf.avalue;
+        ELSEIF tf.quest_order = 10
+        THEN
+            total_sales = :tf.avalue;
+        ELSEIF tf.quest_order = 11 AND tf.avalue <> 0
+        THEN
+            sph = total_sales * 1.0 / tf.avalue;
+        ENDIF;
+    };
+
+    difference = total_sales - total_of_01;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+}
+
+'Contact', KEY FRSKEY4 =
+{
+    CALL APPLICATION(exec = '$IMAGES/communicate',
+         param = VARCHAR(:contributor_reference));
+
+}
+
+'AgVol', KEY FRSKEY5= 
+{
+  IF   MOD(tf.question,10) <> 2 
+   AND MOD(tf.question,10) <> 4
+   AND MOD(tf.question,10) <> 5 
+   AND MOD(tf.question,10) <> 6
+   AND MOD(tf.question,10) <> 8
+  THEN
+    MESSAGE 'Batch Construction is only be carried out on Volumes'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  IF tf.avalue <> 0
+  THEN
+    MESSAGE 'Batch Construction can only be carried out when '
+          + 'the Volume is Zero'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  h_counter1 = tf.h_col;
+
+  IF MOD(tf.question,10) = 2 OR MOD(tf.question,10) = 4
+  THEN
+    h_look_for_question = tf.question / 10 * 10 + 1;
+
+   ELSEIF MOD(tf.question,10) = 5 OR MOD(tf.question,10) = 8
+   THEN
+    h_look_for_question = tf.question / 10 * 10 + 2;
+
+   ELSE
+    h_look_for_question = tf.question / 10 * 10 + 4;
+
+  ENDIF;
+
+  UNLOADTABLE tf
+  {
+    IF tf.question = h_look_for_question
+    THEN
+      IF MOD(tf.question,10) = 1 AND tf.avalue = 0
+      THEN
+        MESSAGE 'You cannot carry out Batch Construction '
+              + ' on a Volume while its Value Question (' 
+              +   VARCHAR(tf.question) + ') is zero.'
+        WITH STYLE = POPUP;
+        SCROLL tf TO :h_counter1;
+        RESUME;
+
+       ELSEIF MOD(tf.question,10) = 2 AND (tf.avalue <> 0 OR tf.acell <> 'B')
+       THEN
+        MESSAGE 'You cannot carry out Batch Construction ' 
+              + 'on an 05 or 08 Volume until the 02 ' 
+              + 'question (' + VARCHAR(tf.question) 
+              + ') is zero and has a B cell code.'
+        WITH STYLE = POPUP;
+        SCROLL tf TO :h_counter1;
+        RESUME;
+  
+       ELSEIF MOD(tf.question,10) = 4 AND (tf.avalue <> 0 OR tf.acell <> 'B')
+       THEN
+        MESSAGE 'You cannot carry out Batch Construction ' 
+              + 'on an 06 Volume until the 04 ' 
+              + 'Question (' + VARCHAR(tf.question) 
+              + ') is zero and has a B cell code.'
+        WITH STYLE = POPUP;
+        SCROLL tf TO :h_counter1;
+        RESUME;
+      ENDIF;
+    ENDIF;
+  };
+
+  SCROLL tf TO :h_counter1;
+
+  tf.acell = 'B';
+  tf.avalue = 0;
+
+  REDISPLAY;
+
+}
+
+'CalcVol', KEY FRSKEY6 =
+{
+    /*------------------------------------------------------------------
+    Calculate volume figure based on agg U/V
+    ------------------------------------------------------------------*/
+
+    IF MOD(:tf.question,2) <> 1
+    THEN
+        ret_val = CALLFRAME msab_fr_find_volume (
+	                    question = :tf.question,
+	                    period   = :period,
+	                    avalue   = :tf.avalue,
+			    calc_vol = BYREF(:h_vol));
+
+	IF ret_val <> 0
+	   THEN
+           RETURN ret_val;
+        ENDIF;
+
+    ELSE
+        MESSAGE 'A volume question must be highlighted ' + 
+	        'in order to use this option'
+        WITH STYLE = POPUP;
+        RESUME FIELD tf;
+    ENDIF;
+
+    tf.avalue = :h_vol;
+
+}
+
+
+'UpdateQst', KEY FRSKEY7 =
+{
+    /*------------------------------------------------------------------
+    Make sure no negative values are on the form
+    ------------------------------------------------------------------*/
+
+    UNLOADTABLE tf (h_record = _record)
+    {
+        IF :tf.avalue < 0
+        THEN
+            MESSAGE 'Negative Values are not allowed'
+            WITH STYLE = POPUP;
+            SCROLL tf TO h_record;
+            RESUME FIELD tf;
+        ENDIF;
+    };
+
+    /*------------------------------------------------------------------
+    Check for Value/Volume mismatch
+    ------------------------------------------------------------------*/
+
+    UNLOADTABLE tf (h_record = _record)
+    {
+        IF MOD(tf.question,10) = 1
+        THEN
+            h_value = :tf.avalue;
+        ENDIF;
+
+        IF MOD(tf.question,10) = 2 OR MOD(tf.question,10) = 4
+        THEN
+            IF (h_value = 0 AND tf.avalue <> 0)
+            OR (h_value <> 0 AND (tf.avalue = 0 AND tf.acell != 'B'))
+            THEN
+                MESSAGE 'There is a Value/Volume mismatch for' +
+                        ' Question ' + VARCHAR(:tf.question)
+                WITH STYLE = POPUP;
+                SCROLL tf TO h_record;
+                RESUME FIELD tf;
+            ENDIF;
+        ENDIF;
+    };
+
+    /*------------------------------------------------------------------
+    Check total sales equals the sum of 01 questions
+    ------------------------------------------------------------------*/
+
+    total_sales = 0;
+    total_of_01 = 0;
+    difference = 0;
+
+    UNLOADTABLE tf
+    {
+        IF MOD(:tf.question,10) = 1
+        THEN
+            total_of_01 = :total_of_01 + :tf.avalue;
+        ELSEIF tf.quest_order = 10
+        THEN
+            total_sales = :tf.avalue;
+        ENDIF;
+    };
+
+    difference = total_sales - total_of_01;
+    REDISPLAY;
+
+    IF difference <> 0
+    THEN
+
+        h_yesno = '';
+        WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+        DO
+            h_yesno = PROMPT 'Do you wish to make the Total Sales'  +
+                             ' value the sum of the 01 Questions?' +
+                             ' Type Y/N and press <return>'
+                      WITH STYLE = POPUP;
+            h_yesno = LOWERCASE(:h_yesno);
+        ENDWHILE;
+
+        IF h_yesno = 'n'
+        THEN
+            RESUME;
+        ENDIF;
+
+        UNLOADTABLE tf
+        {
+            IF tf.quest_order = 10
+            THEN
+                tf.avalue = total_of_01;
+            ENDIF;
+        };
+        total_sales = total_of_01;
+        difference = total_sales - total_of_01;
+        REDISPLAY;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Employment must not be zero - and calculate SPH
+    ------------------------------------------------------------------*/
+
+    sph = 0;
+
+    UNLOADTABLE tf (h_record = _record)
+    {
+        IF tf.quest_order = 10
+        THEN
+            sph = total_sales * 1.0 / :register_emp;
+        ENDIF;
+
+    };
+
+    /*------------------------------------------------------------------
+    Change cell codes and prompt before updating
+    ------------------------------------------------------------------*/
+
+    UNLOADTABLE tf (h_rowstate=_state)
+    {
+      IF h_rowstate <> 2 AND tf.acell != 'B'
+      THEN
+        tf.acell = 'P';
+      ENDIF;
+    };
+
+    REDISPLAY;
+
+    h_yesno = '';
+    WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+    DO
+        h_yesno = PROMPT 'Only questions that have been updated ' +
+	'will be marked as ' +
+	'Constructed(P) - Y/N'
+                  WITH STYLE = POPUP;
+        h_yesno = LOWERCASE(:h_yesno);
+    ENDWHILE;
+
+    IF h_yesno = 'n'
+    THEN
+        RESUME;
+    ENDIF;
+
+    MESSAGE 'Updating Values . . .';
+
+    UNLOADTABLE tf
+    {
+        /*--------------------------------------------------------------
+        Update cqpv
+        --------------------------------------------------------------*/
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            UPDATE cqpv
+            SET    avalue = :tf.avalue,
+                   acell  = :tf.acell,
+                   aconstruction_type = 6
+            WHERE  contributor_reference = :contributor_reference
+            AND    question = :tf.question
+            AND    period = :period
+            AND    contributor_inquiry = :inquiry;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error updating cqpv'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No rows updated on cqpv'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+
+       /*--------------------------------------------------------------
+        Insert/Update atq links for any quarterly questions on annual 
+        forms
+        --------------------------------------------------------------*/
+        IF :tf.quest_order = 1 AND :inquiry = 14
+        THEN
+            h_retry_or_not      = 'RETRY';
+            h_retries           = 0;
+
+            WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+            DO
+
+                h_retries = :h_retries + 1;
+
+                SELECT inquiry AS h_inquiry
+                FROM   question_library
+                WHERE  question = :tf.question
+                AND    period = :period;
+           
+                ret_val = CALLPROC check_inq_ing (
+                          h_num_row_ck      = 1,
+                          h_commit          = 'Y',
+                          h_rollback        = 'N',
+                          h_retries         = :h_retries,
+                          h_retries_allowed = :h_retries_allowed,
+                          h_frpr_name       = :h_frpr_name);
+
+                IF ret_val <> 7
+                THEN
+                    h_retry_or_not = '';
+                ENDIF;
+
+            ENDWHILE;
+
+            IF ret_val = 7
+            THEN
+                RETURN 7;
+
+            ELSEIF ret_val = 9
+            THEN
+                MESSAGE 'System error in selecting owning inquiry of question ' 
+                WITH STYLE = POPUP;
+                RETURN 9;
+
+            ENDIF;
+           /*----------------------------------------------------------
+            asi_to_qsi_link: For all quarterly questions on an annual 
+            form:
+
+            1. Delete the current year's questions and re-insert the 
+            avalue/4.
+            2. Insert also for next year (if the links are not already 
+            there)
+           ----------------------------------------------------------*/
+
+           /*----------------------------------------------------------
+           Find the current max annual period
+           -----------------------------------------------------------*/
+            IF :h_inquiry = 15
+            THEN
+        
+            h_retry_or_not      = 'RETRY';
+            h_retries           = 0;
+        
+            WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+            DO
+        
+                h_retries = :h_retries + 1;
+        
+                SELECT IFNULL(MAX(period),0) AS h_max_period
+                FROM   inquiry_period
+                WHERE  inquiry = 14;
+        
+                ret_val = CALLPROC check_inq_ing (
+                          h_num_row_ck      = 1,
+                          h_commit          = 'Y',
+                          h_rollback        = 'N',
+                          h_retries         = :h_retries,
+                          h_retries_allowed = :h_retries_allowed,
+                          h_frpr_name       = :h_frpr_name);
+        
+                IF ret_val <> 7
+                THEN
+                    h_retry_or_not = '';
+                ENDIF;
+        
+            ENDWHILE;
+        
+            IF ret_val = 7
+            THEN
+                RETURN 7;
+        
+            ELSEIF ret_val = 9
+            THEN
+                MESSAGE 'System error selecting from inquiry_period'
+                WITH STYLE = POPUP;
+                RETURN 9;
+        
+            ELSEIF ret_val = 1
+            THEN
+                MESSAGE 'No rows selected from inquiry_period'
+                WITH STYLE = POPUP;
+                RETURN 9;
+            ENDIF;
+        
+            /*---------------------------------------------------------
+            Delete the existing links
+            ----------------------------------------------------------*/
+        
+            h_retry_or_not      = 'RETRY';
+            h_retries           = 0;
+        
+            WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+            DO
+        
+                h_retries = :h_retries + 1;
+        
+                DELETE FROM asi_to_qsi_link
+                WHERE       asi_period = :period
+                AND         contributor_reference =:contributor_reference;
+        
+                ret_val = CALLPROC check_inq_ing (
+                          h_num_row_ck      = 1,
+                          h_commit          = 'Y',
+                          h_rollback        = 'N',
+                          h_retries         = :h_retries,
+                          h_retries_allowed = :h_retries_allowed,
+                          h_frpr_name       = :h_frpr_name);
+        
+                IF ret_val <> 7
+                THEN
+                    h_retry_or_not = '';
+                ENDIF;
+        
+            ENDWHILE;
+        
+            IF ret_val = 7
+            THEN
+                RETURN 7;
+        
+            ELSEIF ret_val = 9
+            THEN
+                MESSAGE 'System error in deleting from asi_to_qsi_link'
+                WITH STYLE = POPUP;
+                RETURN 9;
+        
+            ENDIF;
+        
+            /*---------------------------------------------------------
+            Insert for four quarters the current value divided by 4, 
+            but:
+            Add 3 to the annual figure before dividing so that:
+              annual value 1 ( + 3 = 4 / 4) = quarterly value 1
+              annual value 2 ( + 3 = 5 / 4) = quarterly value 1
+              annual value 3 ( + 3 = 6 / 4) = quarterly value 1
+              annual value 4 ( + 3 = 7 / 4) = quarterly value 1
+              annual value 5 ( + 3 = 8 / 4) = quarterly value 2
+            ---------------------------------------------------------*/
+        
+            h_counter = 1;
+        
+            WHILE h_counter <= 4
+            DO
+                h_quarter = :period + (:h_counter * 3);
+        
+                h_retry_or_not      = 'RETRY';
+                h_retries           = 0;
+        
+                WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+                DO
+        
+                    h_retries = :h_retries + 1;
+        
+                    INSERT INTO asi_to_qsi_link (
+                                question_industry,
+                                quest_order,
+                                question,
+                                qsi_period,
+                                asi_period,
+                                contributor_industry,
+                                contributor_reference,
+                                enterprise,
+                                acell,
+                                avalue,
+                                acell_type,
+                                fcell,
+                                fvalue,
+                                fcell_type)
+                    SELECT      a.question_industry,
+                                a.quest_order,
+                                a.question,
+                                :h_quarter,
+                                :period,
+                                b.contributor_industry,
+                                :contributor_reference,
+                                b.enterprise,
+                                a.acell,
+                                (a.avalue + 3) / 4,
+                                a.acell_type,
+                                'N',
+                                0,
+                                ''
+                    FROM        cqpv a,
+                                contributor_period b,
+				question_library c
+                    WHERE       a.contributor_reference = :contributor_reference
+                    AND         a.contributor_reference = b.contributor_reference
+                    AND         a.period = :period
+                    AND         a.period = b.period
+		    AND         a.period = c.period
+		    AND         a.question = c.question
+		    AND         c.inquiry = 15;
+                   
+                    ret_val = CALLPROC check_inq_ing (
+                              h_num_row_ck      = 1,
+                              h_commit          = 'Y',
+                              h_rollback        = 'N',
+                              h_retries         = :h_retries,
+                              h_retries_allowed = :h_retries_allowed,
+                              h_frpr_name       = :h_frpr_name);
+        
+                    IF ret_val <> 7
+                    THEN
+                        h_retry_or_not = '';
+                    ENDIF;
+        
+                ENDWHILE;
+        
+                IF ret_val = 7
+                THEN
+                    RETURN 7;
+        
+                ELSEIF ret_val = 9
+                THEN
+                    MESSAGE 'System error in inserting into atq_link'
+                    WITH STYLE = POPUP;
+                    RETURN 9;
+        
+                ELSEIF ret_val = 1
+                THEN
+                    MESSAGE 'No rows inserted into asi_to_qsi_link for ' +
+                            VARCHAR(:h_quarter)
+                    WITH STYLE = POPUP;
+                    RETURN 1;
+        
+                ENDIF;
+        
+                h_counter = :h_counter + 1;
+        
+            ENDWHILE;
+        
+            /*----------------------------------------------------------
+            Insert for four quarters next year - but not if already 
+            there, and only insert if next year is ahead of the 
+            maximum period already on inquiry_period:
+        
+            if max period is 199600,
+                 - and you're in the 199400 form, DON'T insert for 199500.
+                 - and you're in the 199600 form, DO insert for 199700.
+        
+            IF :period < :h_max_period
+            THEN
+                RETURN 0;
+            ENDIF;
+            ----------------------------------------------------------*/
+        
+            h_counter = 1;
+        
+            WHILE h_counter <= 4
+            DO
+                h_quarter = :period + 100 + (:h_counter * 3);
+        
+                h_retry_or_not      = 'RETRY';
+                h_retries           = 0;
+        
+                WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+                DO
+        
+                    h_retries = :h_retries + 1;
+        
+                    INSERT INTO asi_to_qsi_link (
+                                question_industry,
+                                quest_order,
+                                question,
+                                qsi_period,
+                                asi_period,
+                                contributor_industry,
+                                contributor_reference,
+                                enterprise,
+                                acell,
+                                avalue,
+                                acell_type,
+                                fcell,
+                                fvalue,
+                                fcell_type)
+                    SELECT      a.question_industry,
+                                a.quest_order,
+                                a.question,
+                                :h_quarter,
+                                :period + 100,
+                                b.contributor_industry,
+                                :contributor_reference,
+                                b.enterprise,
+                                'N',
+                                0,
+                                '',
+                                'N',
+                                0,
+                                ''
+                    FROM        cqpv a,
+                                contributor_period b,
+				question_library c
+                    WHERE       a.contributor_reference = :contributor_reference
+                    AND         a.contributor_reference = b.contributor_reference
+                    AND         a.period = :period
+                    AND         a.period = b.period
+		    AND         a.period = c.period
+		    AND         a.question = c.question
+		    AND         c.inquiry = 15
+                   
+                    AND         a.question NOT IN (
+        
+                                SELECT question
+                                FROM   asi_to_qsi_link
+                                WHERE  qsi_period = :h_quarter
+                                AND    contributor_reference = :contributor_reference);
+        
+                    ret_val = CALLPROC check_inq_ing (
+                              h_num_row_ck      = 1,
+                              h_commit          = 'Y',
+                              h_rollback        = 'N',
+                              h_retries         = :h_retries,
+                              h_retries_allowed = :h_retries_allowed,
+                              h_frpr_name       = :h_frpr_name);
+        
+                    IF ret_val <> 7
+                    THEN
+                        h_retry_or_not = '';
+                    ENDIF;
+        
+                ENDWHILE;
+        
+                IF ret_val = 7
+                THEN
+                    RETURN 7;
+        
+                ELSEIF ret_val = 9
+                THEN
+                    MESSAGE 'System error in inserting into atq_link next year'
+                    WITH STYLE = POPUP;
+                    RETURN 9;
+        
+                ENDIF;
+        
+                h_counter = :h_counter + 1;
+        
+            ENDWHILE;
+
+        ENDIF;/* if h_inquiry = 15*/
+    ENDIF; /* if quest_order = 1*/
+    };
+
+    MESSAGE 'Values constructed OK'
+    WITH STYLE = POPUP;
+
+        /*--------------------------------------------------------------
+        Update atq_link
+
+        IF :tf.quest_order = 1 AND inquiry = 14
+        THEN
+            h_retry_or_not      = 'RETRY';
+            h_retries           = 0;
+
+            WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+            DO
+
+                h_retries = :h_retries + 1;
+
+                UPDATE asi_to_qsi_link
+                SET    avalue = (:tf.avalue + 3) / 4,
+                       acell = :tf.acell
+                WHERE  contributor_reference = :contributor_reference
+                AND    question = :tf.question
+                AND    asi_period = :period;
+
+                ret_val = CALLPROC check_inq_ing (
+                          h_num_row_ck      = 1,
+                          h_commit          = 'Y',
+                          h_rollback        = 'N',
+                          h_retries         = :h_retries,
+                          h_retries_allowed = :h_retries_allowed,
+                          h_frpr_name       = :h_frpr_name);
+
+                IF ret_val <> 7
+                THEN
+                    h_retry_or_not = '';
+                ENDIF;
+
+            ENDWHILE;
+
+            IF ret_val = 7
+            THEN
+                RETURN 7;
+
+            ELSEIF ret_val = 9
+            THEN
+                MESSAGE 'System error in updating atq_link'
+                WITH STYLE = POPUP;
+                RETURN 9;
+
+            ENDIF;
+        ENDIF;
+        --------------------------------------------------------------*/
+
+
+    /*------------------------------------------------------------------
+    Reload screen table to reset _state
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+}
+
+'UpdateFrm', KEY FRSKEY8 =
+{
+    /*------------------------------------------------------------------
+    Make sure no negative values are on the form
+    ------------------------------------------------------------------*/
+
+    UNLOADTABLE tf (h_record = _record)
+    {
+        IF :tf.avalue < 0
+        THEN
+            MESSAGE 'Negative Values are not allowed'
+            WITH STYLE = POPUP;
+            SCROLL tf TO h_record;
+            RESUME FIELD tf;
+        ENDIF;
+    };
+
+    /*------------------------------------------------------------------
+    Check for Value/Volume mismatch
+    ------------------------------------------------------------------*/
+
+    UNLOADTABLE tf (h_record = _record)
+    {
+        IF MOD(tf.question,10) = 1
+        THEN
+            h_value = :tf.avalue;
+        ENDIF;
+
+        IF MOD(tf.question,10) = 2 OR MOD(tf.question,10) = 4
+        THEN
+            IF (h_value = 0 AND tf.avalue <> 0)
+            OR (h_value <> 0 AND (tf.avalue = 0 AND tf.acell != 'B'))
+            THEN
+                MESSAGE 'There is a Value/Volume mismatch for' +
+                        ' Question ' + VARCHAR(:tf.question)
+                WITH STYLE = POPUP;
+                SCROLL tf TO h_record;
+                RESUME FIELD tf;
+            ENDIF;
+        ENDIF;
+    };
+
+    /*------------------------------------------------------------------
+    Check total sales equals the sum of 01 questions
+    ------------------------------------------------------------------*/
+
+    total_sales = 0;
+    total_of_01 = 0;
+    difference = 0;
+
+    UNLOADTABLE tf
+    {
+        IF MOD(:tf.question,10) = 1
+        THEN
+            total_of_01 = :total_of_01 + :tf.avalue;
+        ELSEIF tf.quest_order = 10
+        THEN
+            total_sales = :tf.avalue;
+        ENDIF;
+    };
+
+    difference = total_sales - total_of_01;
+    REDISPLAY;
+
+    IF difference <> 0
+    THEN
+
+        h_yesno = '';
+        WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+        DO
+            h_yesno = PROMPT 'Do you wish to make the Total Sales'  +
+                             ' value the sum of the 01 Questions?' +
+                             ' Type Y/N and press <return>'
+                      WITH STYLE = POPUP;
+            h_yesno = LOWERCASE(:h_yesno);
+        ENDWHILE;
+
+        IF h_yesno = 'n'
+        THEN
+
+            ret_val = CALLPROC lp_load_table ();
+            IF ret_val <> 0
+            THEN
+                RETURN ret_val;
+            ENDIF;
+
+            RESUME;
+        ENDIF;
+
+        UNLOADTABLE tf
+        {
+            IF tf.quest_order = 10
+            THEN
+                tf.avalue = total_of_01;
+            ENDIF;
+        };
+        total_sales = total_of_01;
+        difference = total_sales - total_of_01;
+        REDISPLAY;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Employment must not be zero - and calculate SPH
+    ------------------------------------------------------------------*/
+
+    sph = 0;
+
+    UNLOADTABLE tf (h_record = _record)
+    {
+        IF tf.quest_order = 10
+        THEN
+            sph = total_sales * 1.0 / :register_emp;
+        ENDIF;
+
+    };
+
+    /*------------------------------------------------------------------
+    Change cell codes and prompt before updating
+    ------------------------------------------------------------------*/
+    h_yesno = '';
+    WHILE h_yesno <> 'a' AND h_yesno <> 'b' AND h_yesno <> 'c'
+    DO
+      h_yesno = PROMPT 'OPTIONS:' +X'0D'
+                     + 'A: ALL questions will be marked constructed ' 
+		     + '(P) unless they are' +X'0D' 
+		     + '   marked for Batch Construction (B).' +X'0D'
+		     + 'B: CHANGED questions will be marked constructed '
+		     + '(P) unless they are' +X'0D' 
+		     + '   marked for Batch Construction (B).' +X'0D'
+		     + 'C: CANCEL update.' +X'0D'
+		     + X'0D'
+		     + 'Choice: '   
+                WITH STYLE = POPUP;
+      h_yesno = LOWERCASE(:h_yesno);
+    ENDWHILE;
+
+    IF h_yesno = 'c'
+    THEN
+        RESUME;
+    ENDIF;
+
+    IF h_yesno = 'a'
+    THEN
+      UNLOADTABLE tf (h_rowstate=_state)
+      {
+        IF tf.acell != 'B'
+        THEN
+          tf.acell = 'P';
+        ENDIF;
+      };
+     ELSEIF h_yesno = 'b'
+     THEN
+      UNLOADTABLE tf (h_rowstate=_state)
+      {
+        IF h_rowstate <> 2 AND tf.acell != 'B'
+        THEN
+          tf.acell = 'P';
+        ENDIF;
+      };
+    ENDIF;
+
+    REDISPLAY;
+    MESSAGE 'Updating Values . . .';
+
+    UNLOADTABLE tf
+    {
+        /*--------------------------------------------------------------
+        Update cqpv
+        --------------------------------------------------------------*/
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            UPDATE cqpv
+            SET    avalue = :tf.avalue,
+                   acell  = :tf.acell,
+                   aconstruction_type = 6
+            WHERE  contributor_reference = :contributor_reference
+            AND    question = :tf.question
+            AND    period = :period
+            AND    contributor_inquiry = :inquiry;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error updating cqpv'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No rows updated on cqpv'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+       /*--------------------------------------------------------------
+        Insert/Update atq links for any quarterly questions on annual 
+        forms
+        --------------------------------------------------------------*/
+        IF :tf.quest_order = 1 AND :inquiry = 14
+        THEN
+
+            h_retry_or_not      = 'RETRY';
+            h_retries           = 0;
+
+            WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+            DO
+
+                h_retries = :h_retries + 1;
+
+                SELECT inquiry AS h_inquiry
+                FROM   question_library
+                WHERE  question = :tf.question
+                AND    period = :period;
+           
+                ret_val = CALLPROC check_inq_ing (
+                          h_num_row_ck      = 1,
+                          h_commit          = 'Y',
+                          h_rollback        = 'N',
+                          h_retries         = :h_retries,
+                          h_retries_allowed = :h_retries_allowed,
+                          h_frpr_name       = :h_frpr_name);
+
+                IF ret_val <> 7
+                THEN
+                    h_retry_or_not = '';
+                ENDIF;
+
+            ENDWHILE;
+
+            IF ret_val = 7
+            THEN
+                RETURN 7;
+
+            ELSEIF ret_val = 9
+            THEN
+                MESSAGE 'System error in selecting owning inquiry of question ' 
+                WITH STYLE = POPUP;
+                RETURN 9;
+
+            ENDIF;
+
+           /*----------------------------------------------------------
+            asi_to_qsi_link: For all quarterly questions on an annual 
+            form:
+
+            1. Delete the current year's questions and re-insert the 
+            avalue/4.
+            2. Insert also for next year (if the links are not already 
+            there)
+           ----------------------------------------------------------*/
+
+           /*----------------------------------------------------------
+           Find the current max annual period
+           -----------------------------------------------------------*/
+            IF :h_inquiry = 15
+            THEN
+        
+            h_retry_or_not      = 'RETRY';
+            h_retries           = 0;
+        
+            WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+            DO
+        
+                h_retries = :h_retries + 1;
+        
+                SELECT IFNULL(MAX(period),0) AS h_max_period
+                FROM   inquiry_period
+                WHERE  inquiry = 14;
+        
+                ret_val = CALLPROC check_inq_ing (
+                          h_num_row_ck      = 1,
+                          h_commit          = 'Y',
+                          h_rollback        = 'N',
+                          h_retries         = :h_retries,
+                          h_retries_allowed = :h_retries_allowed,
+                          h_frpr_name       = :h_frpr_name);
+        
+                IF ret_val <> 7
+                THEN
+                    h_retry_or_not = '';
+                ENDIF;
+        
+            ENDWHILE;
+        
+            IF ret_val = 7
+            THEN
+                RETURN 7;
+        
+            ELSEIF ret_val = 9
+            THEN
+                MESSAGE 'System error selecting from inquiry_period'
+                WITH STYLE = POPUP;
+                RETURN 9;
+        
+            ELSEIF ret_val = 1
+            THEN
+                MESSAGE 'No rows selected from inquiry_period'
+                WITH STYLE = POPUP;
+                RETURN 9;
+            ENDIF;
+        
+            /*---------------------------------------------------------
+            Delete the existing links
+            ----------------------------------------------------------*/
+            h_retry_or_not      = 'RETRY';
+            h_retries           = 0;
+        
+            WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+            DO
+        
+                h_retries = :h_retries + 1;
+        
+                DELETE FROM asi_to_qsi_link
+                WHERE       asi_period = :period
+                AND         contributor_reference =:contributor_reference;
+        
+                ret_val = CALLPROC check_inq_ing (
+                          h_num_row_ck      = 1,
+                          h_commit          = 'Y',
+                          h_rollback        = 'N',
+                          h_retries         = :h_retries,
+                          h_retries_allowed = :h_retries_allowed,
+                          h_frpr_name       = :h_frpr_name);
+        
+                IF ret_val <> 7
+                THEN
+                    h_retry_or_not = '';
+                ENDIF;
+        
+            ENDWHILE;
+        
+            IF ret_val = 7
+            THEN
+                RETURN 7;
+        
+            ELSEIF ret_val = 9
+            THEN
+                MESSAGE 'System error in deleting from asi_to_qsi_link'
+                WITH STYLE = POPUP;
+                RETURN 9;
+        
+            ENDIF;
+        
+            /*---------------------------------------------------------
+            Insert for four quarters the current value divided by 4, 
+            but:
+            Add 3 to the annual figure before dividing so that:
+              annual value 1 ( + 3 = 4 / 4) = quarterly value 1
+              annual value 2 ( + 3 = 5 / 4) = quarterly value 1
+              annual value 3 ( + 3 = 6 / 4) = quarterly value 1
+              annual value 4 ( + 3 = 7 / 4) = quarterly value 1
+              annual value 5 ( + 3 = 8 / 4) = quarterly value 2
+            ---------------------------------------------------------*/
+        
+            h_counter = 1;
+        
+            WHILE h_counter <= 4
+            DO
+                h_quarter = :period + (:h_counter * 3);
+        
+                h_retry_or_not      = 'RETRY';
+                h_retries           = 0;
+        
+                WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+                DO
+        
+                    h_retries = :h_retries + 1;
+        
+                    INSERT INTO asi_to_qsi_link (
+                                question_industry,
+                                quest_order,
+                                question,
+                                qsi_period,
+                                asi_period,
+                                contributor_industry,
+                                contributor_reference,
+                                enterprise,
+                                acell,
+                                avalue,
+                                acell_type,
+                                fcell,
+                                fvalue,
+                                fcell_type)
+                    SELECT      a.question_industry,
+                                a.quest_order,
+                                a.question,
+                                :h_quarter,
+                                :period,
+                                b.contributor_industry,
+                                :contributor_reference,
+                                b.enterprise,
+                                a.acell,
+                                (a.avalue + 3) / 4,
+                                a.acell_type,
+                                'N',
+                                0,
+                                ''
+                    FROM        cqpv a,
+                                contributor_period b,
+				question_library c
+                    WHERE       a.contributor_reference = :contributor_reference
+                    AND         a.contributor_reference = b.contributor_reference
+                    AND         a.period = :period
+                    AND         a.period = b.period
+		    AND         a.period = c.period
+		    AND         a.question = c.question
+		    ANd         c.inquiry = 15;
+        
+                    ret_val = CALLPROC check_inq_ing (
+                              h_num_row_ck      = 1,
+                              h_commit          = 'Y',
+                              h_rollback        = 'N',
+                              h_retries         = :h_retries,
+                              h_retries_allowed = :h_retries_allowed,
+                              h_frpr_name       = :h_frpr_name);
+        
+                    IF ret_val <> 7
+                    THEN
+                        h_retry_or_not = '';
+                    ENDIF;
+        
+                ENDWHILE;
+        
+                IF ret_val = 7
+                THEN
+                    RETURN 7;
+        
+                ELSEIF ret_val = 9
+                THEN
+                    MESSAGE 'System error in inserting into atq_link'
+                    WITH STYLE = POPUP;
+                    RETURN 9;
+        
+                ELSEIF ret_val = 1
+                THEN
+                    MESSAGE 'No rows inserted into asi_to_qsi_link for ' +
+                            VARCHAR(:h_quarter)
+                    WITH STYLE = POPUP;
+                    RETURN 1;
+        
+                ENDIF;
+        
+                h_counter = :h_counter + 1;
+        
+            ENDWHILE;
+        
+            /*----------------------------------------------------------
+            Insert for four quarters next year - but not if already 
+            there, and only insert if next year is ahead of the 
+            maximum period already on inquiry_period:
+        
+            if max period is 199600,
+                 - and you're in the 199400 form, DON'T insert for 199500.
+                 - and you're in the 199600 form, DO insert for 199700.
+
+            March 2003 - this atq link code was added to fix a problem where
+	    whole forms being constructed were not having atq links set
+	    up if they didn't already exist. The code was originally copied
+	    from a procedure. the RETURN 0 is not required here so I
+	    have commented it out. the links are now created for each
+	    of the future period's but only inserted if they do not
+	    already exist in the table
+
+            IF :period < :h_max_period
+            THEN
+                RETURN 0;
+            ENDIF;
+            ----------------------------------------------------------*/
+
+            h_counter = 1;
+        
+            WHILE h_counter <= 4
+            DO
+                h_quarter = :period + 100 + (:h_counter * 3);
+        
+                h_retry_or_not      = 'RETRY';
+                h_retries           = 0;
+        
+                WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+                DO
+        
+                    h_retries = :h_retries + 1;
+        
+                    INSERT INTO asi_to_qsi_link (
+                                question_industry,
+                                quest_order,
+                                question,
+                                qsi_period,
+                                asi_period,
+                                contributor_industry,
+                                contributor_reference,
+                                enterprise,
+                                acell,
+                                avalue,
+                                acell_type,
+                                fcell,
+                                fvalue,
+                                fcell_type)
+                    SELECT      a.question_industry,
+                                a.quest_order,
+                                a.question,
+                                :h_quarter,
+                                :period + 100,
+                                b.contributor_industry,
+                                :contributor_reference,
+                                b.enterprise,
+                                'N',
+                                0,
+                                '',
+                                'N',
+                                0,
+                                ''
+                    FROM        cqpv a,
+                                contributor_period b,
+				question_library c
+                    WHERE       a.contributor_reference = :contributor_reference
+                    AND         a.contributor_reference = b.contributor_reference
+                    AND         a.period = :period
+                    AND         a.period = b.period
+		    AND         a.period = c.period
+		    AND         a.question = c.question
+		    AND         c.inquiry = 15
+                   
+                    AND         a.question NOT IN (
+        
+                                SELECT question
+                                FROM   asi_to_qsi_link
+                                WHERE  qsi_period = :h_quarter
+                                AND    contributor_reference = :contributor_reference);
+        
+                    ret_val = CALLPROC check_inq_ing (
+                              h_num_row_ck      = 1,
+                              h_commit          = 'Y',
+                              h_rollback        = 'N',
+                              h_retries         = :h_retries,
+                              h_retries_allowed = :h_retries_allowed,
+                              h_frpr_name       = :h_frpr_name);
+        
+                    IF ret_val <> 7
+                    THEN
+                        h_retry_or_not = '';
+                    ENDIF;
+        
+                ENDWHILE;
+        
+                IF ret_val = 7
+                THEN
+                    RETURN 7;
+        
+                ELSEIF ret_val = 9
+                THEN
+                    MESSAGE 'System error in inserting into atq_link next year'
+                    WITH STYLE = POPUP;
+                    RETURN 9;
+        
+                ENDIF;
+        
+                h_counter = :h_counter + 1;
+        
+            ENDWHILE;
+
+        ENDIF;/* if h_inquiry = 15*/
+    ENDIF; /* if quest_order = 1*/
+    };
+
+    MESSAGE 'Values constructed OK'
+    WITH STYLE = POPUP;
+
+        /*--------------------------------------------------------------
+may not need
+        Update atq_link
+
+        IF :tf.quest_order = 1 AND inquiry = 14
+        THEN
+            h_retry_or_not      = 'RETRY';
+            h_retries           = 0;
+
+            WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+            DO
+
+                h_retries = :h_retries + 1;
+
+                UPDATE asi_to_qsi_link
+                SET    avalue = (:tf.avalue + 3) / 4,
+                       acell = :tf.acell
+                WHERE  contributor_reference = :contributor_reference
+                AND    question = :tf.question
+                AND    asi_period = :period;
+
+                ret_val = CALLPROC check_inq_ing (
+                          h_num_row_ck      = 1,
+                          h_commit          = 'Y',
+                          h_rollback        = 'N',
+                          h_retries         = :h_retries,
+                          h_retries_allowed = :h_retries_allowed,
+                          h_frpr_name       = :h_frpr_name);
+
+                IF ret_val <> 7
+                THEN
+                    h_retry_or_not = '';
+                ENDIF;
+
+            ENDWHILE;
+
+            IF ret_val = 7
+            THEN
+                RETURN 7;
+
+            ELSEIF ret_val = 9
+            THEN
+                MESSAGE 'System error in updating atq_link'
+                WITH STYLE = POPUP;
+                RETURN 9;
+
+            ENDIF;
+        ENDIF;
+        --------------------------------------------------------------*/
+
+
+    /*------------------------------------------------------------------
+    Reload screen table to reset _state
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'End', KEY FRSKEY14 =
+{
+    UNLOADTABLE tf
+    {
+        IF tf._state = 3
+        THEN
+            h_yesno = '';
+            WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+            DO
+                h_yesno = PROMPT 'Do you wish to end without saving' +
+                                 ' the changes?' +
+                                 ' Type Y/N and press <return>'
+                          WITH STYLE = POPUP;
+                h_yesno = LOWERCASE(:h_yesno);
+            ENDWHILE;
+
+            IF h_yesno = 'n'
+            THEN
+                RESUME;
+            ELSE
+                RETURN 0;
+            ENDIF;
+        ENDIF;
+    };
+
+    RETURN 0;
+}
+
+'QuickView', KEY FRSKEY20 =
+{
+    CALL APPLICATION (exec = '$IMAGES/quickview_app');
+}
+
+/**************************************************************************
+                         LOCAL PROCEDURES             
+**************************************************************************/
+
+PROCEDURE lp_load_table () =
+{
+
+    MESSAGE 'Loading Questions . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT   question,
+                 quest_order,
+                 avalue,
+                 acell
+        FROM     cqpv
+        WHERE    contributor_reference = :contributor_reference
+        AND      period = :period
+        AND      contributor_inquiry = :inquiry
+        ORDER BY quest_order,
+                 question;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing cqpv'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This Contributor does not have any Questions for ' +
+                VARCHAR(:period)
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+    h_counter = 0;
+    UNLOADTABLE tf
+    {
+      h_counter = h_counter + 1;
+      tf.h_col = h_counter;
+    };
+
+    RETURN 0;
+}

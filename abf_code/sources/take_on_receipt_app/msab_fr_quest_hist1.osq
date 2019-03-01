@@ -1,0 +1,182 @@
+/*-s--------------------------------------------------------------------
+History of Questions: 01 with 02, 02 only, 04 only - plus UNIT VALUES
+
+01 question: shows 01 values, and UVs of 01/02
+02 question: shows 02 values, and UVs of 01/02
+04 question: shows 04 values, and UVs of 01/04
+--------------------------------------------------------------------e-*/
+
+INITIALIZE (
+
+        h_dummy           = CHAR(11) NOT NULL,
+        h_idbr            = CHAR(11) NOT NULL,
+        period            = INTEGER4 NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_record          = INTEGER4 NOT NULL,
+        h_base_question   = INTEGER4 NOT NULL,
+        alt_question1     = INTEGER4 NOT NULL,
+        alt_question2     = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msab_fr_quest_hist1';
+
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+    MESSAGE 'Selecting History Data . . .';
+
+    /*-s----------------------------------------------------------------
+     Find alternatives for the 01 question
+    ----------------------------------------------------------------e-*/
+
+    h_base_question = :question / 10 * 10 + 1;
+
+    ret_val = CALLPROC msab_fp_old_questions (
+              question      = :h_base_question,
+              alt_question1 = BYREF(:alt_question1),
+              alt_question2 = BYREF(:alt_question2));
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     If 01 or 02, select 01 and 02 questions for UV.
+     If 04, select 01 and 04 questions for UV
+    ----------------------------------------------------------------e-*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        IF MOD(question,10) = 1
+        THEN
+            tf =
+
+            SELECT   a.question,
+                     a.period AS period,
+                     a.acell AS acell,
+                     a.confirmation_code AS confirmation_code,
+                     a.avalue AS avalue,
+                     1000.0 * a.avalue / b.avalue AS uv
+            FROM     cqpv a,
+                     cqpv b
+            WHERE    a.question IN (:h_base_question, :alt_question1,
+                                    :alt_question2)
+            AND      a.question + 1 = b.question
+            AND      a.period   = b.period
+            AND      a.contributor_reference = b.contributor_reference
+            AND      a.contributor_reference IN (:h_idbr, :h_dummy)
+            ORDER BY period DESC;
+
+        ELSEIF MOD(question,10) = 2
+        THEN
+            tf =
+
+            SELECT   b.question,
+                     b.period AS period,
+                     b.acell AS acell,
+                     b.confirmation_code AS confirmation_code,
+                     b.avalue AS avalue,
+                     1000.0 * a.avalue / b.avalue AS uv
+            FROM     cqpv a,
+                     cqpv b
+            WHERE    a.question IN (:h_base_question, :alt_question1,
+                                    :alt_question2)
+            AND      a.question + 1 = b.question
+            AND      a.period   = b.period
+            AND      a.contributor_reference = b.contributor_reference
+            AND      a.contributor_reference IN (:h_idbr, :h_dummy)
+            ORDER BY period DESC;
+
+        ELSEIF MOD(question,10) = 4
+        THEN
+            tf =
+
+            SELECT   b.question,
+                     b.period AS period,
+                     b.acell AS acell,
+                     b.confirmation_code AS confirmation_code,
+                     b.avalue AS avalue,
+                     1000.0 * a.avalue / b.avalue AS uv
+            FROM     cqpv a,
+                     cqpv b
+            WHERE    a.question IN (:h_base_question, :alt_question1,
+                                    :alt_question2)
+            AND      a.question + 3 = b.question
+            AND      a.period   = b.period
+            AND      a.contributor_reference = b.contributor_reference
+            AND      a.contributor_reference IN (:h_idbr, :h_dummy)
+            ORDER BY period DESC;
+
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing cqpv'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No previous values are held'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+    UNLOADTABLE tf (h_record = _RECORD)
+    {
+         IF :tf.period = :period
+         THEN
+             SCROLL tf TO :h_record;
+             RESUME FIELD tf;
+         ENDIF;
+    };
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'AggUV', KEY FRSKEY11 =
+{
+    ret_val = CALLFRAME msab_fr_agg_unit_values (
+              question = :question,
+              period   = :period);
+}
+
+'End', KEY FRSKEY14  =
+{
+    RETURN 0;
+}

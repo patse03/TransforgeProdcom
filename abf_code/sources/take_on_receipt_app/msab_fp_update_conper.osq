@@ -1,0 +1,447 @@
+PROCEDURE msab_fp_update_conper (
+
+        contributor_reference = CHAR(11) NOT NULL,
+        h_dummy_present       = CHAR(1) NOT NULL,
+        form_taken_on         = CHAR(1) NOT NULL,
+        inquiry               = INTEGER1 NOT NULL,
+        period                = INTEGER4 NOT NULL) =
+
+DECLARE h_retries_allowed     = INTEGER1 NOT NULL,
+        h_retries             = INTEGER1 NOT NULL,
+        h_retry_or_not        = CHAR(5) NOT NULL,
+        h_frpr_name           = VARCHAR(24) NOT NULL,
+        h_counter             = INTEGER1 NOT NULL,
+        h_date_msg            = VARCHAR(24) NOT NULL,
+        h_correct_date        = DATE NOT NULL,
+        h_diary_date          = DATE NOT NULL,
+        h_year                = INTEGER4 NOT NULL,
+        h_yesno               = CHAR(1) NOT NULL,
+        h_correct_week        = INTEGER1 NOT NULL,
+        h_form_status         = INTEGER1 NOT NULL,
+        ret_val               = INTEGER1 NOT NULL
+
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msab_fp_update_conper';
+
+    MESSAGE 'Saving Periodic Details . . .';
+
+    /*-s----------------------------------------------------------------
+    Gets week number for correct_date
+    ----------------------------------------------------------------e-*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT IFNULL(MAX(week_no),0) AS h_correct_week
+        FROM   inquiry_period
+        WHERE  inquiry = :inquiry
+        AND    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No week_number found on inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    IF h_dummy_present = 'y'
+    THEN
+        h_correct_date = '';
+        h_correct_week = 0;
+    ELSE
+        h_correct_date = 'today';
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Prevent cleared dates getting on forms with N, U, K, etc cellcodes
+    ----------------------------------------------------------------e-*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT COUNT(*) AS h_counter
+        FROM   cqpv
+        WHERE  contributor_reference = :contributor_reference
+        AND    period = :period
+        AND    acell IN ('N','U','K','1V','1P','W','I','1U','M','L');
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing cqpv'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    IF h_counter > 0
+    THEN
+        h_correct_date = '';
+        h_correct_week = 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Find out status of form - check if reclassified
+    ------------------------------------------------------------------*/
+    IF :h_correct_date <> ''
+    THEN
+        h_form_status = 4;
+    ELSE
+        IF :form_taken_on = 'N'
+        THEN
+            h_form_status = 1;
+        ELSE
+            h_form_status = 2;
+        ENDIF;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT contributor_reference
+        FROM   reclass_contrib
+        WHERE  contributor_reference = :contributor_reference
+        AND    period = :period
+        AND    action in('PROPOSED','NON PROD');
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing reclass_contrib'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 0
+    THEN
+        h_form_status = 3;
+        h_correct_date = '';
+        h_correct_week = 0;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE contributor_period
+        SET    correct_date          = :h_correct_date,
+               corr_week_no          = :h_correct_week,
+               form_status           = :h_form_status
+        WHERE  contributor_reference = :contributor_reference
+        AND    period                = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing contributor_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Unable to update contributor_period''s details'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Mark whoever clears the form for the first time
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE contributor_period
+        SET    user_id = :g_user_id
+        WHERE  contributor_reference = :contributor_reference
+        AND    period = :period
+        AND    user_id = ''
+        AND    correct_date <> '';
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating contributor_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    IF h_correct_date = ''
+    THEN
+        RETURN 0;
+    ENDIF;
+
+
+    /*------------------------------------------------------------------
+    If the form has been corrected and it has a diary date
+    associated with it, prompt to delete the diary date.
+    ------------------------------------------------------------------*/
+
+    SELECT(date_part('year',:h_correct_date)) AS h_year;
+    h_date_msg = LEFT(VARCHAR(h_correct_date),6) + VARCHAR(h_year);
+
+    MESSAGE 'This form has been marked with a correct date of ' +
+            VARCHAR(:h_date_msg)
+    WITH STYLE = POPUP;
+
+    MESSAGE 'Checking Diary Date . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT diary_date AS h_diary_date
+        FROM   contributor_diary
+        WHERE  contributor_reference = :contributor_reference;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing contributor_diary'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        RETURN 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Display year in full: display 30/12/1998 instead of 30/12/98.
+    ------------------------------------------------------------------*/
+
+    SELECT(date_part('year',:h_diary_date)) AS h_year;
+    h_date_msg = LEFT(VARCHAR(h_diary_date),6) + VARCHAR(h_year);
+
+    h_yesno = '';
+    WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+    DO
+        h_yesno = PROMPT 'This Contributor has a Diary Date of ' +
+                         VARCHAR(h_date_msg) + '. As this form has' +
+                         ' been cleared, do you wish to delete this' +
+                         ' Diary Date? (Deletion will affect all' +
+                         ' periods for this Contributor).' +
+                         ' Type Y/N and press <return>'
+                  WITH STYLE = POPUP;
+        h_yesno = LOWERCASE(:h_yesno);
+    ENDWHILE;
+
+    IF h_yesno = 'n'
+    THEN
+        RETURN 0;
+    ENDIF;
+
+    MESSAGE 'Deleting Diary Date . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        DELETE FROM contributor_diary
+        WHERE       contributor_reference = :contributor_reference;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing contributor_diary'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+   ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Error deleting from contributor_diary'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+
+    /*******------------------------------------------------------------
+    Before going any further tell users to make an entry on the
+    contact pad.
+    ------------------------------------------------------------------
+
+    h_yesno = '';
+    WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+    DO
+        h_yesno = PROMPT 'If you have amended current or back data ' + 
+	                 'please make an entry on the Contact Pad. ' +
+	                 'Do you wish to enter Contact Pad now? ' +
+                         'Type Y/N and press <return>'
+                  WITH STYLE = POPUP;
+        h_yesno = LOWERCASE(:h_yesno);
+    ENDWHILE;
+
+    IF h_yesno = 'y'
+    THEN
+        CALL APPLICATION(exec = '$IMAGES/communicate',
+  	                 param = VARCHAR(:contributor_reference));
+    ENDIF;
+************/
+
+    RETURN 0;
+}

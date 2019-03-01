@@ -1,0 +1,387 @@
+/*----------------------------------------------------------------------
+asi_to_qsi_link: For all quarterly questions on an annual form:
+
+1. Delete the current year's questions and re-insert the avalue/4.
+2. Insert also for next year (if the links are not already there)
+----------------------------------------------------------------------*/
+
+PROCEDURE msab_fp_insert_atq (
+
+        temp_cqpv             = VARCHAR(24) NOT NULL,
+        period                = INTEGER4 NOT NULL,
+        h_dummy               = CHAR(11) NOT NULL,
+        h_idbr                = CHAR(11) NOT NULL) =
+
+DECLARE h_retries_allowed     = INTEGER1 NOT NULL,
+        h_retries             = INTEGER1 NOT NULL,
+        h_retry_or_not        = CHAR(5) NOT NULL,
+        h_frpr_name           = VARCHAR(24) NOT NULL,
+        ret_val               = INTEGER1 NOT NULL,
+        contributor_reference = CHAR(11) NOT NULL,
+        h_max_period          = INTEGER4 NOT NULL,
+        h_quarter             = INTEGER4 NOT NULL,
+        h_counter             = INTEGER4 NOT NULL
+
+{
+    h_frpr_name = 'msab_fp_insert_atq';
+    h_retries_allowed = 3;
+
+    MESSAGE 'Checking ATQ Links . . .';
+
+    /*------------------------------------------------------------------
+    Check if there's anything to do - if not, then end
+    ------------------------------------------------------------------*/
+
+    h_counter = 0;
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT COUNT(question) AS h_counter
+        FROM   :temp_cqpv
+        WHERE  question_inquiry = 15;
+        /*AND    MOD(question, 10000) / 100 <> 97;*/
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error selecting from asi_to_qsi_link'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    IF h_counter = 0
+    THEN
+        RETURN 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Find the current max annual period
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT IFNULL(MAX(period),0) AS h_max_period
+        FROM   inquiry_period
+        WHERE  inquiry = 14;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error selecting from inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows selected from inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Delete the existing links
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        DELETE FROM asi_to_qsi_link
+        WHERE       asi_period = :period
+        AND         contributor_reference IN (:h_idbr,:h_dummy);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in deleting from asi_to_qsi_link'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Insert for four quarters the current value divided by 4, but:
+    Add 3 to the annual figure before dividing so that:
+      annual value 1 ( + 3 = 4 / 4) = quarterly value 1
+      annual value 2 ( + 3 = 5 / 4) = quarterly value 1
+      annual value 3 ( + 3 = 6 / 4) = quarterly value 1
+      annual value 4 ( + 3 = 7 / 4) = quarterly value 1
+      annual value 5 ( + 3 = 8 / 4) = quarterly value 2
+    ------------------------------------------------------------------*/
+
+    h_counter = 1;
+
+    WHILE h_counter <= 4
+    DO
+        h_quarter = :period + (:h_counter * 3);
+
+        IF h_quarter = 199403
+        THEN
+            contributor_reference = :h_dummy;
+        ELSE
+            contributor_reference = :h_idbr;
+        ENDIF;
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            INSERT INTO asi_to_qsi_link (
+                        question_industry,
+                        quest_order,
+                        question,
+                        qsi_period,
+                        asi_period,
+                        contributor_industry,
+                        contributor_reference,
+                        enterprise,
+                        acell,
+                        avalue,
+                        acell_type,
+                        fcell,
+                        fvalue,
+                        fcell_type)
+            SELECT      a.question_industry,
+                        a.quest_order,
+                        a.question,
+                        :h_quarter,
+                        :period,
+                        b.contributor_industry,
+                        :contributor_reference,
+                        b.enterprise,
+                        a.acell,
+                        (a.avalue + 3) / 4,
+                        a.acell_type,
+                        'N',
+                        0,
+                        ''
+            FROM        :temp_cqpv a,
+                        contributor_period b
+            WHERE       b.contributor_reference = :h_idbr
+            AND         b.period = :period
+            AND         a.question_inquiry = 15;
+            /*AND         MOD(a.question, 10000) / 100 <> 97;*/
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in inserting into atq_link'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No rows inserted into asi_to_qsi_link for ' +
+                    VARCHAR(:h_quarter)
+            WITH STYLE = POPUP;
+            RETURN 1;
+
+        ENDIF;
+
+        h_counter = :h_counter + 1;
+
+    ENDWHILE;
+
+    /*------------------------------------------------------------------
+    Insert for four quarters next year - but not if already there,
+    and only insert if next year is ahead of the maximum period already
+    on inquiry_period:
+
+    if max period is 199600,
+         - and you're in the 199400 form, DON'T insert for 199500.
+         - and you're in the 199600 form, DO insert for 199700.
+    ------------------------------------------------------------------*/
+
+    IF :period < :h_max_period
+    THEN
+        RETURN 0;
+    ENDIF;
+
+    h_counter = 1;
+
+    WHILE h_counter <= 4
+    DO
+        h_quarter = :period + 100 + (:h_counter * 3);
+
+        IF h_quarter = 199403
+        THEN
+            contributor_reference = :h_dummy;
+        ELSE
+            contributor_reference = :h_idbr;
+        ENDIF;
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            INSERT INTO asi_to_qsi_link (
+                        question_industry,
+                        quest_order,
+                        question,
+                        qsi_period,
+                        asi_period,
+                        contributor_industry,
+                        contributor_reference,
+                        enterprise,
+                        acell,
+                        avalue,
+                        acell_type,
+                        fcell,
+                        fvalue,
+                        fcell_type)
+            SELECT      a.question_industry,
+                        a.quest_order,
+                        a.question,
+                        :h_quarter,
+                        :period + 100,
+                        b.contributor_industry,
+                        :contributor_reference,
+                        b.enterprise,
+                        'N',
+                        0,
+                        '',
+                        'N',
+                        0,
+                        ''
+            FROM        :temp_cqpv a,
+                        contributor_period b
+            WHERE       b.contributor_reference = :contributor_reference
+            AND         b.period = :period
+            AND         a.question_inquiry = 15
+            /*AND         MOD(a.question, 10000) / 100 <> 97*/
+            AND         a.question NOT IN (
+
+                        SELECT question
+                        FROM   asi_to_qsi_link
+                        WHERE  qsi_period = :h_quarter
+                        AND    contributor_reference = :contributor_reference);
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in inserting into atq_link next year'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ENDIF;
+
+        h_counter = :h_counter + 1;
+
+    ENDWHILE;
+
+    RETURN 0;
+}

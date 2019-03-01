@@ -1,0 +1,729 @@
+/*----------------------------------------------------------------------
+This used to be a form which called load_codes which popped up over it.
+But load_codes got really wide and could no longer be a pop-up, so we
+had to put all the fields that used to be on this (when this was a form)
+onto load_codes instead.
+----------------------------------------------------------------------*/
+
+PROCEDURE msab_fp_take_on_form (
+
+        contributor_reference = CHAR(11) NOT NULL,
+        period                = INTEGER4 NOT NULL,
+        contributor_industry  = INTEGER4 NOT NULL)=
+
+DECLARE h_frpr_name        = CHAR(24) NOT NULL,
+        h_output_category  = CHAR(1) NOT NULL,
+        form_taken_on      = CHAR(1) NOT NULL,
+        ret_val            = INTEGER4 NOT NULL,
+        temp_cqpv          = VARCHAR(20) NOT NULL,
+        temp_del_aos       = VARCHAR(20) NOT NULL,
+        add_name1          = VARCHAR(35) NOT NULL,
+        prev_period        = INTEGER4 NOT NULL,
+        alt_industry       = INTEGER4 NOT NULL,
+        reref              = CHAR(1) NOT NULL,
+        cmkr               = CHAR(1) NOT NULL,
+        h_receipt_date     = DATE NOT NULL,
+        h_correct_date     = DATE NOT NULL,
+        h_cycle_point      = CHAR(2) NOT NULL,
+        h_currency         = CHAR(1) NOT NULL,
+        h_span_end         = INTEGER4 NOT NULL,
+        register_emp       = INTEGER4 NOT NULL,
+        h_load_contributor = CHAR(11) NOT NULL,
+        h_idbr             = CHAR(11) NOT NULL,
+        h_dummy            = CHAR(11) NOT NULL,
+        country            = CHAR(2) NOT NULL,
+        data_cont          = CHAR(4) NOT NULL,
+        exchange_rate      = FLOAT8 NOT NULL,
+        cont_link          = CHAR(4) NOT NULL,
+        clink              = CHAR(1) NOT NULL,
+        h_yesno            = CHAR(1) NOT NULL,
+        h_keyresp          = INTEGER1 NOT NULL,
+        h_key              = CHAR(3) NOT NULL,
+        h_retries_allowed  = INTEGER1 NOT NULL,
+        h_retries          = INTEGER1 NOT NULL,
+        h_retry_or_not     = CHAR(5) NOT NULL
+
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msab_fp_take_on_form';
+
+    reref = 'N';
+    cmkr  = 'N';
+
+    MESSAGE 'Checking Contributor Reference . . .';
+
+    ret_val = CALLPROC msa_fp_get_ref (
+              h_dummy               = BYREF(:h_dummy),
+              h_idbr                = BYREF(:h_idbr),
+              contributor_reference = :contributor_reference);
+
+    IF ret_val <> 0
+    THEN
+        RETURN 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Check existence on contributor_period
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT contributor_reference AS contributor_reference
+        FROM   contributor_period
+        WHERE  contributor_reference IN (:h_idbr,:h_dummy)
+        AND    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing contributor_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Contributor does not exist for this Inquiry/Period'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+    ret_val = CALLPROC msa_fp_prev_periods (
+              inquiry      = 14,
+              period       = :period,
+              prev_period1 = BYREF(:prev_period));
+
+    /*------------------------------------------------------------------
+     Get span_end
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT span_end AS h_span_end
+        FROM   inquiry
+        WHERE  inquiry = 14;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Unable to find record on inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Get cycle_point
+    ------------------------------------------------------------------*/
+
+    IF period = :h_span_end
+    THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            SELECT industry_cycle_point AS h_cycle_point
+            FROM   industry
+            WHERE  industry = :contributor_industry;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing industry'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'Unable to find this Industry''s cycle point'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+        IF h_cycle_point = 'A' OR h_cycle_point = 'C' OR h_cycle_point = 'Q'
+        THEN
+            MESSAGE 'The forms have not yet been sent and' +
+                    ' so cannot be taken on.'
+            WITH STYLE = POPUP;
+            RETURN 1;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Get Contributor Name
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT add_name1
+        FROM   contributor
+        WHERE  contributor_reference IN (:h_idbr,:h_dummy);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing contributor'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        add_name1 := 'UNKNOWN';
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Check Enforcement - and prevent enter/edit values
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msa_fp_latest_details (
+              contributor_reference = :contributor_reference,
+              output_category       = BYREF(:h_output_category));
+
+    IF h_output_category = 'Y'
+    THEN
+        MESSAGE 'This Contributor is in Enforcement.' + X'0d0d' +
+                'Its values cannot be updated while it has an' +
+                ' enforcement marker.'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+
+    /*------------------------------------------------------------------
+     Check if contributor has been re_referenced
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT contributor_reference
+        FROM   reref_contributors
+        WHERE  contributor_reference = :contributor_reference;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing reref_contributors'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 0
+    THEN
+        reref = 'Y';
+        cmkr = 'Y';
+    ENDIF;
+
+   
+    /*------------------------------------------------------------------
+     Get Contributor Details
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT a.keyresp as h_keyresp,
+               b.country,
+               a.contributor_reference,
+               a.period,
+               a.contributor_industry,
+               a.alt_industry,
+               a.form_taken_on,
+               a.register_emp,
+               a.receipt_date AS h_receipt_date,
+               a.correct_date AS h_correct_date,
+               a.currency AS h_currency
+        FROM   contributor_period a,
+               region b
+        WHERE  a.contributor_reference IN (:h_idbr,:h_dummy)
+        AND    a.period                = :period
+        AND    a.contributor_industry  = :contributor_industry
+        AND    a.region = b.region;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing contributor_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This Contributor was not selected for this Industry' +
+                ' and this Period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    IF h_keyresp = 1
+    THEN
+        h_key = 'KEY';
+    ELSE
+        h_key = '';
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    If it's a Euro form, display the message and get the exchange rate.
+    If there is no available exchange rate, stop.
+    ------------------------------------------------------------------*/
+
+    IF :h_currency = 'E'
+    THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            SELECT euros AS exchange_rate
+            FROM   euro_exchange_rate
+            WHERE  period = :period
+            AND    fixed = 'Y';
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing euro_exchange_rate'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'This is a Euro form, but no exchange rate has ' +
+                    'yet been fixed for Period ' + VARCHAR(:period) +'.'
+            WITH STYLE = POPUP;
+            RETURN 0;
+        ENDIF;
+
+    ENDIF;
+
+    h_load_contributor = :contributor_reference;
+
+    IF h_idbr <> ''
+    THEN
+        contributor_reference = :h_idbr;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Highlight contrib and/or question links if data_continuity needs checking.
+    ------------------------------------------------------------------*/
+
+    IF reref = 'Y'
+    THEN
+        cont_link = 'CONT';
+        data_cont = 'LINK';
+    ELSE
+        data_cont = '';
+    ENDIF;
+
+    IF cmkr = 'Y'
+    THEN
+        clink = 'C';
+    ELSE
+        clink = '';
+    ENDIF;
+
+
+    /*-s----------------------------------------------------------------
+    Highlight the type of form:
+    If it's an Electronic Questionnaire, say so,
+    but if it's been scanned, 'ICR' overwrites it.
+    Commented out July 2003 as DBV wanted data_continuity contributors
+    highlighted more prominantly
+
+    type_of_form = '';
+
+    IF h_output_category = 'Q'
+    THEN
+        type_of_form = 'IQu';
+    ENDIF;
+
+    IF form_taken_on = 'S'
+    THEN
+        type_of_form = 'ICR';
+    ENDIF;
+
+    ------------------------------------------------------------------*/
+
+    /*-s----------------------------------------------------------------
+    IF AUTOMATIC RECEIPTING IS NOT WANTED, REPLACE THIS CODE .....
+    ------------------------------------------------------------------*/
+
+    IF :h_receipt_date = ''
+    THEN
+        h_yesno = '';
+        WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+        DO
+            h_yesno = PROMPT 'This Contributor has not yet been' +
+                             ' receipted for ' + VARCHAR(period) +
+                             '. Do you wish to' +
+                             ' receipt it? Type Y/N and press <return>'
+                      WITH STYLE = POPUP;
+            h_yesno = LOWERCASE(:h_yesno);
+        ENDWHILE;
+
+        IF h_yesno = 'n'
+        THEN
+            RETURN 0;
+        ENDIF;
+
+        ret_val = CALLPROC msab_fp_rec_form 
+                ( p_contributor_reference = :contributor_reference,
+                  p_period                = :period);
+
+         IF ret_val <> 0
+         THEN
+             RETURN ret_val;
+         ENDIF;
+
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     .... WITH THIS COMMENTED-OUT CODE
+
+    IF :h_receipt_date = ''
+    THEN
+        MESSAGE 'No data can be taken on until this Form has been' +
+                ' receipted'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+    ----------------------------------------------------------------e-*/
+
+    IF form_taken_on = 'N'
+    THEN
+        form_taken_on = 'O';
+    ENDIF;
+
+    MESSAGE 'Selecting Data . . .';
+
+    temp_cqpv = 't_' + :contributor_reference;
+    temp_del_aos = 't_' + :contributor_reference + '_del';
+
+    ret_val = CALLPROC msa_fp_drop_table(h_table = :temp_cqpv);
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC msa_fp_drop_table(h_table = :temp_del_aos);
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+      Create temporary tables - 1
+    ----------------------------------------------------------------e-*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        /*- Note that temp_cqpv does not include c or p!!! -*/
+
+        CREATE TABLE :temp_cqpv (
+        quest_order        INTEGER1 NOT NULL,
+        question           INTEGER4 NOT NULL,
+        acell              CHAR(2)  NOT NULL,
+        avalue             INTEGER4 NOT NULL,
+        evalue             INTEGER4 NOT NULL,
+        acell_type         CHAR(2)  NOT NULL,
+        rounded            CHAR(1)  NOT NULL,
+        aconstruction_type INTEGER1 NOT NULL,
+        confirmation_code  CHAR(1)  NOT NULL,
+        question_industry  INTEGER4 NOT NULL WITH DEFAULT,
+        question_inquiry   INTEGER1 NOT NULL WITH DEFAULT,
+        update_type        CHAR(1)  NOT NULL WITH DEFAULT,
+        error_msg          VARCHAR(100) NOT NULL WITH DEFAULT,
+	atypical           CHAR(1) NOT NULL WITh DEFAULT);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating ' + :temp_cqpv
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+      Create temporary tables - 2
+    ----------------------------------------------------------------e-*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :temp_del_aos(
+	question           INTEGER4 NOT NULL,
+        avalue             INTEGER4 NOT NULL);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error creating ' + :temp_del_aos
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Load Codes
+    ----------------------------------------------------------------e-*/
+
+    MESSAGE 'Calling Load Codes . . .';
+
+    ret_val = CALLFRAME msab_fr_load_codes (
+              inquiry                = 14,
+              contributor_reference  = :h_load_contributor,
+              h_dummy                = :h_dummy,
+              h_idbr                 = :h_idbr,
+              add_name1              = :add_name1,
+              country                = :country,
+              key_disp               = :h_key,
+              data_cont              = :data_cont,
+              clink                  = :clink,
+              cont_link              = :cont_link,
+              period                 = :period,
+              prev_period            = :prev_period,
+              register_emp           = :register_emp,
+              correct_date           = :h_correct_date,
+              contributor_industry   = :contributor_industry,
+              alt_industry           = :alt_industry,
+              form_taken_on          = :form_taken_on,
+              exchange_rate          = :exchange_rate,
+              currency               = :h_currency,
+              temp_del_aos           = :temp_del_aos,
+              temp_cqpv              = :temp_cqpv);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    MESSAGE 'Exiting TakeOn Screen . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table(h_table = :temp_cqpv);
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC msa_fp_drop_table(h_table = :temp_del_aos);
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+}
