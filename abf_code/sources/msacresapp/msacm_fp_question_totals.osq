@@ -1,0 +1,1070 @@
+/*----------------------------------------------------------------------
+                  MSACM_FP_QUESTION_TOTALS
+
+ This updates question_period with data from the sim tables
+----------------------------------------------------------------------*/
+
+PROCEDURE msacm_fp_question_totals () =
+
+DECLARE   ret_val       = INTEGER1 NOT NULL,
+          start_period  = INTEGER4 NOT NULL,
+          end_period    = INTEGER4 NOT NULL,
+          h_industry    = INTEGER4 NOT NULL,
+          h_frpr_name   = VARCHAR(25) NOT NULL,
+          t_cqpv        = VARCHAR(25) NOT NULL,
+          h_table       = VARCHAR(25) NOT NULL
+{
+    h_frpr_name = 'msacm_fp_question_totals';
+    h_table = 'quest_per_update';
+
+    start_period = :g_period[:g_periods].period;
+    end_period = :g_period[1].period;
+
+    SELECT   industry AS h_industry
+    FROM     :g_results_industry
+    WHERE    industry IN
+	     (SELECT industry
+	      FROM   industry_period
+	      WHERE  period = :g_input_period)
+	   
+    ORDER BY h_industry
+    {
+        t_cqpv = 'sim_' + VARCHAR(:h_industry) + '_' +
+                  VARCHAR(:end_period) + '_cqpv';
+
+        /*--------------------------------------------------------------
+         Index the table
+        --------------------------------------------------------------*/
+
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = 'x99_t_cqpv');
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        IF g_inquiry = :gc_asi
+        THEN
+            CREATE INDEX x99_t_cqpv
+            ON           :t_cqpv (question, aperiod);
+        ELSE
+            CREATE INDEX x99_t_cqpv
+            ON           :t_cqpv (question, qperiod);
+        ENDIF;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error creating index',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+             Zeroise the question_period table for all values
+        --------------------------------------------------------------*/
+    
+        UPDATE   question_period
+        SET      total_value       = 0,
+                 imp_total_value   = 0,
+                 con_total_value   = 0,
+                 prinprod          = 0,
+                 imp_prinprod      = 0,
+                 con_prinprod      = 0,
+                 carryin_qsi       = 0,
+                 imp_carryin_qsi   = 0,
+                 con_carryin_qsi   = 0,
+                 carryin_asi       = 0,
+                 imp_carryin_asi   = 0,
+                 con_carryin_asi   = 0,
+                 enterprise_count  = 0,
+                 grossed_value     = 0,
+                 contributor_count = 0,
+                 est_flag          = 'N'
+        WHERE    question_industry = :h_industry
+        AND      period BETWEEN :start_period AND :end_period;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error zeroising question_period ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        /*--------------------------------------------------------------
+         1. Total_value / enterprise / cref counts
+        --------------------------------------------------------------*/
+    
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = :h_table);
+    
+        IF ret_val <> 0
+        THEN
+            RETURN :ret_val;
+        ENDIF;
+    
+        IF :g_inquiry = :gc_asi
+        THEN
+            CREATE TABLE :h_table
+            AS SELECT    SUM(avalue) AS total_value,
+                         COUNT(DISTINCT(enterprise)) AS enterprise_count,
+                         COUNT(DISTINCT(contributor_reference)) AS contributor_count,
+                         question,
+                         aperiod AS period
+            FROM         :t_cqpv
+            GROUP BY     question,
+                         aperiod;
+        ELSE
+            CREATE TABLE :h_table
+            AS SELECT    SUM(avalue) AS total_value,
+                         COUNT(DISTINCT(enterprise)) AS enterprise_count,
+                         COUNT(DISTINCT(contributor_reference)) AS contributor_count,
+                         question,
+                         qperiod AS period
+            FROM         :t_cqpv
+            GROUP BY     question,
+                         qperiod;
+        ENDIF;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error creating totals/counts ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        UPDATE   question_period a
+        FROM     :h_table b
+        SET      total_value = b.total_value,
+                 enterprise_count = b.enterprise_count,
+                 contributor_count = b.contributor_count
+        WHERE    a.question = b.question
+        AND      a.period = b.period;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating totals/counts ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        /*--------------------------------------------------------------
+         2. Total_value imputed
+        --------------------------------------------------------------*/
+    
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = :h_table);
+    
+        IF ret_val <> 0
+        THEN
+            RETURN :ret_val;
+        ENDIF;
+    
+        IF :g_inquiry = :gc_asi
+        THEN
+            CREATE TABLE   :h_table
+            AS SELECT      SUM(avalue) AS imp_total_value,
+                           question,
+                           aperiod AS period
+            FROM           :t_cqpv
+            WHERE          acell = 'I'
+            GROUP BY       question,
+                           aperiod;
+        ELSE
+            CREATE TABLE   :h_table
+            AS SELECT      SUM(avalue) AS imp_total_value,
+                           question,
+                           qperiod AS period
+            FROM           :t_cqpv
+            WHERE          acell = 'I'
+            GROUP BY       question,
+                           qperiod;
+        ENDIF;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error creating totals imputed ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        UPDATE   question_period a
+        FROM     :h_table b
+        SET      imp_total_value = b.imp_total_value
+        WHERE    a.question = b.question
+        AND      a.period = b.period;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating totals imputed ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        /*--------------------------------------------------------------
+         3. Total value constructed
+        --------------------------------------------------------------*/
+    
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = :h_table);
+    
+        IF ret_val <> 0
+        THEN
+            RETURN :ret_val;
+        ENDIF;
+    
+        IF :g_inquiry = :gc_asi
+        THEN
+            CREATE TABLE   :h_table
+            AS SELECT      SUM(avalue) AS con_total_value,
+                           question,
+                           aperiod AS period
+            FROM           :t_cqpv
+            WHERE          acell IN ('C','A','P')
+            GROUP BY       question,
+                           aperiod;
+        ELSE
+            CREATE TABLE   :h_table
+            AS SELECT      SUM(avalue) AS con_total_value,
+                           question,
+                           qperiod AS period
+            FROM           :t_cqpv
+            WHERE          acell IN ('C','A','P')
+            GROUP BY       question,
+                           qperiod;
+        ENDIF;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error creating total constructed ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        UPDATE   question_period a
+        FROM     :h_table b
+        SET      con_total_value = b.con_total_value
+        WHERE    a.question = b.question
+        AND      a.period = b.period;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating total constructed ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        /*--------------------------------------------------------------
+         4. Principal products
+        --------------------------------------------------------------*/
+    
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = :h_table);
+    
+        IF ret_val <> 0
+        THEN
+            RETURN :ret_val;
+        ENDIF;
+    
+        IF :g_inquiry = :gc_asi
+        THEN
+            CREATE TABLE   :h_table
+            AS SELECT      SUM(avalue) AS prinprod,
+                           question,
+                           aperiod AS period
+            FROM           :t_cqpv
+            WHERE          question_industry = contributor_industry
+            GROUP BY       question,
+                           aperiod;
+        ELSE
+            CREATE TABLE   :h_table
+            AS SELECT      SUM(avalue) AS prinprod,
+                           question,
+                           qperiod AS period
+            FROM           :t_cqpv
+            WHERE          question_industry = contributor_industry
+            GROUP BY       question,
+                           qperiod;
+        ENDIF;
+        
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error creating prinprod ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        UPDATE   question_period a
+        FROM     :h_table b
+        SET      prinprod = b.prinprod
+        WHERE    a.question = b.question
+        AND      a.period = b.period;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating prinprod ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        /*--------------------------------------------------------------
+         5. Principal products carry_in
+        --------------------------------------------------------------*/
+    
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = :h_table);
+    
+        IF ret_val <> 0
+        THEN
+            RETURN :ret_val;
+        ENDIF;
+    
+        IF :g_inquiry = :gc_asi
+        THEN
+            CREATE TABLE   :h_table
+            AS SELECT      SUM(avalue) AS prinprod_carry_in,
+                           question,
+                           aperiod AS period
+            FROM           :t_cqpv
+            WHERE          question_industry <> contributor_industry
+            GROUP BY       question,
+                           aperiod;
+        ELSE
+            CREATE TABLE   :h_table
+            AS SELECT      SUM(avalue) AS prinprod_carry_in,
+                           question,
+                           qperiod AS period
+            FROM           :t_cqpv
+            WHERE          question_industry <> contributor_industry
+            GROUP BY       question,
+                           qperiod;
+        ENDIF;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error creating prinprod carryin ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        UPDATE   question_period a
+        FROM     :h_table b
+        SET      prinprod = (a.prinprod + b.prinprod_carry_in)
+        WHERE    a.question = b.question
+        AND      a.period = b.period;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating prinprod carryin ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        /*--------------------------------------------------------------
+         6. Imputed principal products
+        --------------------------------------------------------------*/
+    
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = :h_table);
+    
+        IF ret_val <> 0
+        THEN
+            RETURN :ret_val;
+        ENDIF;
+    
+        IF :g_inquiry = :gc_asi
+        THEN
+            CREATE TABLE   :h_table
+            AS SELECT      SUM(avalue) AS imp_prinprod,
+                           question,
+                           aperiod AS period
+            FROM           :t_cqpv
+            WHERE          question_industry = contributor_industry
+            AND            acell = 'I'
+            GROUP BY       question,
+                           aperiod;
+        ELSE
+            CREATE TABLE   :h_table
+            AS SELECT      SUM(avalue) AS imp_prinprod,
+                           question,
+                           qperiod AS period
+            FROM           :t_cqpv
+            WHERE          question_industry = contributor_industry
+            AND            acell = 'I'
+            GROUP BY       question,
+                           qperiod;
+        ENDIF;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error creating imputed prinprod ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        UPDATE   question_period a
+        FROM     :h_table b
+        SET      imp_prinprod = b.imp_prinprod
+        WHERE    a.question = b.question
+        AND      a.period = b.period;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating imputed prinprod ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        /*--------------------------------------------------------------
+         7. Constructed prinprod
+        --------------------------------------------------------------*/
+    
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = :h_table);
+    
+        IF ret_val <> 0
+        THEN
+            RETURN :ret_val;
+        ENDIF;
+    
+        IF :g_inquiry = :gc_asi
+        THEN
+            CREATE TABLE   :h_table
+            AS SELECT      SUM(avalue) AS con_prinprod,
+                           question,
+                           aperiod AS period
+            FROM           :t_cqpv
+            WHERE          question_industry = contributor_industry
+            AND            acell IN ('C','A','P')
+            GROUP BY       question,
+                           aperiod;
+        ELSE
+            CREATE TABLE   :h_table
+            AS SELECT      SUM(avalue) AS con_prinprod,
+                           question,
+                           qperiod AS period
+            FROM           :t_cqpv
+            WHERE          question_industry = contributor_industry
+            AND            acell IN ('C','A','P')
+            GROUP BY       question,
+                           qperiod;
+        ENDIF;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error creating constructed prinprod ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        UPDATE   question_period a
+        FROM     :h_table b
+        SET      con_prinprod = b.con_prinprod
+        WHERE    a.question = b.question
+        AND      a.period = b.period;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating constructed prinprod ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        /*--------------------------------------------------------------
+         8. Carryin_qsi
+        --------------------------------------------------------------*/
+    
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = :h_table);
+    
+        IF ret_val <> 0
+        THEN
+            RETURN :ret_val;
+        ENDIF;
+    
+        IF :g_inquiry = :gc_asi
+        THEN
+            CREATE TABLE :h_table
+            AS SELECT    SUM(avalue) AS carryin_qsi,
+                         question,
+                         aperiod AS period
+            FROM         :t_cqpv
+            WHERE        question_industry <> contributor_industry
+            AND          contributor_industry IN
+                         (SELECT industry FROM industry WHERE inquiry = :gc_qsi)
+            GROUP BY     question,
+                         aperiod;
+        ELSE
+            CREATE TABLE :h_table
+            AS SELECT    SUM(avalue) AS carryin_qsi,
+                         question,
+                         qperiod AS period
+            FROM         :t_cqpv
+            WHERE        question_industry <> contributor_industry
+            AND          contributor_industry IN
+                         (SELECT industry FROM industry WHERE inquiry = :gc_qsi)
+            GROUP BY     question,
+                         qperiod;
+        ENDIF;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error creating carryin qsi ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        UPDATE   question_period a
+        FROM     :h_table b
+        SET      carryin_qsi = b.carryin_qsi
+        WHERE    a.question = b.question
+        AND      a.period = b.period;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating carryin qsi ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        /*--------------------------------------------------------------
+         9. Imputed carryin_qsi
+        --------------------------------------------------------------*/
+    
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = :h_table);
+    
+        IF ret_val <> 0
+        THEN
+            RETURN :ret_val;
+        ENDIF;
+    
+        IF :g_inquiry = :gc_asi
+        THEN
+            CREATE TABLE :h_table
+            AS SELECT    SUM(avalue) AS imp_carryin_qsi,
+                         question,
+                         aperiod AS period
+            FROM         :t_cqpv
+            WHERE        question_industry <> contributor_industry
+            AND          contributor_industry IN
+                         (SELECT industry FROM industry WHERE inquiry = :gc_qsi)
+            AND          acell = 'I'
+            GROUP BY     question,
+                         aperiod;
+        ELSE
+            CREATE TABLE :h_table
+            AS SELECT    SUM(avalue) AS imp_carryin_qsi,
+                         question,
+                         qperiod AS period
+            FROM         :t_cqpv
+            WHERE        question_industry <> contributor_industry
+            AND          contributor_industry IN
+                         (SELECT industry FROM industry WHERE inquiry = :gc_qsi)
+            AND          acell = 'I'
+            GROUP BY     question,
+                         qperiod;
+        ENDIF;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error creating imp carryin qsi ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        UPDATE   question_period a
+        FROM     :h_table b
+        SET      imp_carryin_qsi = b.imp_carryin_qsi
+        WHERE    a.question = b.question
+        AND      a.period = b.period;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating imp carryin qsi ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        /*--------------------------------------------------------------
+         10. Constructed carryin_qsi
+        --------------------------------------------------------------*/
+    
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = :h_table);
+    
+        IF ret_val <> 0
+        THEN
+            RETURN :ret_val;
+        ENDIF;
+    
+        IF :g_inquiry = :gc_asi
+        THEN
+            CREATE TABLE :h_table
+            AS SELECT    SUM(avalue) AS con_carryin_qsi,
+                         question,
+                         aperiod AS period
+            FROM         :t_cqpv
+            WHERE        question_industry <> contributor_industry
+            AND          contributor_industry IN
+                         (SELECT industry FROM industry WHERE inquiry = :gc_qsi)
+            AND          acell IN ('C','A','P')
+            GROUP BY     question,
+                         aperiod;
+        ELSE
+            CREATE TABLE :h_table
+            AS SELECT    SUM(avalue) AS con_carryin_qsi,
+                         question,
+                         qperiod AS period
+            FROM         :t_cqpv
+            WHERE        question_industry <> contributor_industry
+            AND          contributor_industry IN
+                         (SELECT industry FROM industry WHERE inquiry = :gc_qsi)
+            AND          acell IN ('C','A','P')
+            GROUP BY     question,
+                         qperiod;
+        ENDIF;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error creating con carryin qsi ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        UPDATE   question_period a
+        FROM     :h_table b
+        SET      con_carryin_qsi = b.con_carryin_qsi
+        WHERE    a.question = b.question
+        AND      a.period = b.period;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating con carryin qsi ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        /*--------------------------------------------------------------
+         11. Carryin_asi
+        --------------------------------------------------------------*/
+    
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = :h_table);
+    
+        IF ret_val <> 0
+        THEN
+            RETURN :ret_val;
+        ENDIF;
+    
+        IF :g_inquiry = :gc_asi
+        THEN
+            CREATE TABLE :h_table
+            AS SELECT    SUM(avalue) AS carryin_asi,
+                         question,
+                         aperiod AS period
+            FROM         :t_cqpv
+            WHERE        question_industry <> contributor_industry
+            AND          contributor_industry IN
+                         (SELECT industry FROM industry WHERE inquiry = :gc_asi)
+            GROUP BY     question,
+                         aperiod;
+        ELSE
+            CREATE TABLE :h_table
+            AS SELECT    SUM(avalue) AS carryin_asi,
+                         question,
+                         qperiod AS period
+            FROM         :t_cqpv
+            WHERE        question_industry <> contributor_industry
+            AND          contributor_industry IN
+                         (SELECT industry FROM industry WHERE inquiry = :gc_asi)
+            GROUP BY     question,
+                         qperiod;
+        ENDIF;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error creating carryin asi ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        UPDATE   question_period a
+        FROM     :h_table b
+        SET      carryin_asi = b.carryin_asi
+        WHERE    a.question = b.question
+        AND      a.period = b.period;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating carryin asi ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        /*--------------------------------------------------------------
+         12. Imputed carryin_asi
+        --------------------------------------------------------------*/
+    
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = :h_table);
+    
+        IF ret_val <> 0
+        THEN
+            RETURN :ret_val;
+        ENDIF;
+    
+        IF :g_inquiry = :gc_asi
+        THEN
+            CREATE TABLE :h_table
+            AS SELECT    SUM(avalue) AS imp_carryin_asi,
+                         question,
+                         aperiod AS period
+            FROM         :t_cqpv
+            WHERE        question_industry <> contributor_industry
+            AND          contributor_industry IN
+                         (SELECT industry FROM industry WHERE inquiry = :gc_asi)
+            AND          acell = 'I'
+            GROUP BY     question,
+                         aperiod;
+        ELSE
+            CREATE TABLE :h_table
+            AS SELECT    SUM(avalue) AS imp_carryin_asi,
+                         question,
+                         qperiod AS period
+            FROM         :t_cqpv
+            WHERE        question_industry <> contributor_industry
+            AND          contributor_industry IN
+                         (SELECT industry FROM industry WHERE inquiry = :gc_asi)
+            AND          acell = 'I'
+            GROUP BY     question,
+                         qperiod;
+        ENDIF;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error creating imp carryin asi ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        UPDATE   question_period a
+        FROM     :h_table b
+        SET      imp_carryin_asi = b.imp_carryin_asi
+        WHERE    a.question = b.question
+        AND      a.period = b.period;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating imp carryin asi ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        /*--------------------------------------------------------------
+         13. Constructed carryin_asi
+        --------------------------------------------------------------*/
+    
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = :h_table);
+    
+        IF ret_val <> 0
+        THEN
+            RETURN :ret_val;
+        ENDIF;
+    
+        IF :g_inquiry = :gc_asi
+        THEN
+            CREATE TABLE :h_table
+            AS SELECT    SUM(avalue) AS con_carryin_asi,
+                         question,
+                         aperiod AS period
+            FROM         :t_cqpv
+            WHERE        question_industry <> contributor_industry
+            AND          contributor_industry IN
+                         (SELECT industry FROM industry WHERE inquiry = :gc_asi)
+            AND          acell IN ('C','A','P')
+            GROUP BY     question,
+                         aperiod;
+        ELSE
+            CREATE TABLE :h_table
+            AS SELECT    SUM(avalue) AS con_carryin_asi,
+                         question,
+                         qperiod AS period
+            FROM         :t_cqpv
+            WHERE        question_industry <> contributor_industry
+            AND          contributor_industry IN
+                         (SELECT industry FROM industry WHERE inquiry = :gc_asi)
+            AND          acell IN ('C','A','P')
+            GROUP BY     question,
+                         qperiod;
+        ENDIF;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error creating con carryin asi ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        UPDATE   question_period a
+        FROM     :h_table b
+        SET      con_carryin_asi = b.con_carryin_asi
+        WHERE    a.question = b.question
+        AND      a.period = b.period;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating con carryin asi ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        /*--------------------------------------------------------------
+         14. Est_flag
+        --------------------------------------------------------------*/
+    
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = :h_table);
+    
+        IF ret_val <> 0
+        THEN
+            RETURN :ret_val;
+        ENDIF;
+    
+        UPDATE   question_period
+        SET      est_flag = 'Y'
+        WHERE    FLOAT4(imp_total_value + con_total_value) >
+                 FLOAT4(total_value/2)
+        AND      period BETWEEN :start_period AND :end_period
+        AND      question_industry = :h_industry;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating est_flag ' + :t_cqpv,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+    };
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error selecting from ' + :g_results_industry,
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC msacm_fp_drop_table ( h_table = 'x99_t_cqpv');
+
+    RETURN 0;
+}

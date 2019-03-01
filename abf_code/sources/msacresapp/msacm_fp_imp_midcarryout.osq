@@ -1,0 +1,330 @@
+/*----------------------------------------------------------------------
+msacm_fp_imp_midcarryout
+Imputation for Quarterly Contributors asked Annual Questions
+----------------------------------------------------------------------*/
+
+PROCEDURE msacm_fp_imp_midcarryout (
+
+          t_calc                = VARCHAR(24) NOT NULL,
+          row_count             = INTEGER4 NOT NULL) =
+
+DECLARE   q_less_date           = INTEGER4 NOT NULL,
+          q_date                = INTEGER4 NOT NULL,
+          h_annual_period       = INTEGER4 NOT NULL,
+          h_rows                = INTEGER4 NOT NULL,
+          h_counter             = INTEGER1 NOT NULL,
+          ret_val               = INTEGER1 NOT NULL,
+          h_frpr_name           = VARCHAR(24) NOT NULL
+
+{
+
+    h_frpr_name = 'msacm_fp_imp_midcarryout';
+
+    /*------------------------------------------------------------------
+     For Annual results, only impute for the four quarterly periods - 
+     e.g. for 1995, impute for 9503, 9506, 9509 and 9512 only
+    ------------------------------------------------------------------*/
+
+    h_annual_period = :g_period[1].period;
+
+    q_less_date = :h_annual_period - 100 + 12;
+    q_date = :h_annual_period + 3;
+
+    /*------------------------------------------------------------------
+     Loop : if annual is 1995, q_less_date is first 9412, q_date 9503,
+                               q_less_date is then  9503, q_date 9506
+    ------------------------------------------------------------------*/
+
+    h_counter = 1;
+
+    WHILE h_counter <= 4
+    DO
+
+        /*--------------------------------------------------------------
+           Load current period's imputable data
+        --------------------------------------------------------------*/
+
+        INSERT INTO :t_calc (
+                    status,
+                    contributor_reference,
+                    question,
+                    quest_order,
+                    contributor_industry,
+                    period,
+                    prev_val,
+                    prev_acell,
+                    value,
+                    acell,
+                    acell_type,
+                    ratio)
+        SELECT      0,
+                    contributor_reference,
+                    question,
+                    quest_order,
+                    contributor_industry,
+                    period,
+                    0,
+                    'N',
+                    0,
+                    'N',
+                    acell_type,
+                    0
+        FROM        cqpv
+        WHERE       period            = :q_date
+        AND         acell             IN ('N', 'I')
+        AND         question_industry in 
+                    (SELECT industry FROM :g_results_industry)
+        AND         (MOD(question,10) IN (1,5,6,8,9)
+                     OR quest_order = 11);
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error inserting initial data',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        IF :h_counter = 1
+        THEN
+            /*----------------------------------------------------------
+              Update from previous period's data.
+              Imputed values for the first_time are obtained from cqpv 
+            ----------------------------------------------------------*/
+    
+            UPDATE :t_calc a 
+            FROM   cqpv b
+            SET    prev_val = b.avalue,
+                   prev_acell = b.acell
+            WHERE  b.acell IN ('V','P','A','C','I','Z')
+            AND    a.contributor_reference = b.contributor_reference
+            AND    a.period = :q_date
+            AND    b.period = :q_less_date
+            AND    a.question = b.question;
+        
+            ret_val = CALLPROC msacm_fp_check_inq_ing(
+                      h_num_row_ck = 1,
+                      h_rollback   = 'N',
+                      h_commit     = 'Y',
+                      h_frpr_name  = :h_frpr_name);
+        
+            IF ret_val = 9
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating VPIZ imputations',
+                          h_frpr_name = :h_frpr_name);
+                RETURN 9;
+            ENDIF;
+        
+            /*----------------------------------------------------------
+               Update from previous period's data - 
+               from question_history
+            ----------------------------------------------------------*/
+        
+            UPDATE :t_calc a 
+            FROM   cqpv b,
+                   question_history c
+            SET    prev_val = b.avalue,
+                   prev_acell = b.acell
+            WHERE  b.acell IN ('V','P','A','C','I','Z')
+            AND    a.contributor_reference = b.contributor_reference
+            AND    a.period = :q_date
+            AND    b.period = :q_less_date
+            AND    a.question = c.new_question
+            AND    b.question = c.old_question
+            AND    c.rep_type = 1;
+        
+            ret_val = CALLPROC msacm_fp_check_inq_ing(
+                      h_num_row_ck = 1,
+                      h_rollback   = 'N',
+                      h_commit     = 'Y',
+                      h_frpr_name  = :h_frpr_name);
+        
+            IF ret_val = 9
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                          h_text = 'Error updating VPIZ q/h imputations',
+                          h_frpr_name = :h_frpr_name);
+                RETURN 9;
+            ENDIF;
+
+        ELSE
+    
+            /*----------------------------------------------------------
+              For all subsequent passes, update from cqpv and :t_calc
+            ----------------------------------------------------------*/
+    
+            UPDATE :t_calc a 
+            FROM   cqpv b
+            SET    prev_val = b.avalue,
+                   prev_acell = b.acell
+            WHERE  b.acell IN ('V','P','A','C','Z')
+            AND    a.contributor_reference = b.contributor_reference
+            AND    a.period = :q_date
+            AND    b.period = :q_less_date
+            AND    a.question = b.question;
+    
+            ret_val = CALLPROC msacm_fp_check_inq_ing(
+                      h_num_row_ck = 1,
+                      h_rollback   = 'N',
+                      h_commit     = 'Y',
+                      h_frpr_name  = :h_frpr_name);
+    
+            IF ret_val = 9
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                          h_text = 'Error updating cqpv imputations',
+                          h_frpr_name = :h_frpr_name);
+                RETURN 9;
+            ENDIF;
+
+            UPDATE :t_calc a 
+            FROM   cqpv b,
+                   question_history c
+            SET    prev_val = b.avalue,
+                   prev_acell = b.acell
+            WHERE  b.acell IN ('V','P','A','C','Z')
+            AND    a.contributor_reference = b.contributor_reference
+            AND    a.period = :q_date
+            AND    b.period = :q_less_date
+            AND    a.question = c.new_question
+            AND    b.question = c.old_question
+            AND    c.rep_type = 1;
+    
+            ret_val = CALLPROC msacm_fp_check_inq_ing(
+                      h_num_row_ck = 1,
+                      h_rollback   = 'N',
+                      h_commit     = 'Y',
+                      h_frpr_name  = :h_frpr_name);
+    
+            IF ret_val = 9
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                          h_text = 'Error updating cqpv QH imputations',
+                          h_frpr_name = :h_frpr_name);
+                RETURN 9;
+            ENDIF;
+    
+            /*----------------------------------------------------------
+              Update from itself
+            ----------------------------------------------------------*/
+    
+            UPDATE :t_calc a
+            FROM   :t_calc b
+            SET    prev_val = b.value,
+                   prev_acell = 'I'
+            WHERE  a.period = :q_date
+            AND    b.period = :q_less_date
+            AND    a.acell IN ('N','I')
+            AND    b.acell = 'I'
+            AND    a.contributor_reference = b.contributor_reference
+            AND    a.question = b.question; 
+    
+            ret_val = CALLPROC msacm_fp_check_inq_ing(
+                      h_num_row_ck = 1,
+                      h_rollback   = 'N',
+                      h_commit     = 'Y',
+                      h_frpr_name  = :h_frpr_name);
+    
+            IF ret_val = 9
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                          h_text = 'Error updating I imputations',
+                          h_frpr_name = :h_frpr_name);
+                RETURN 9;
+            ENDIF;
+
+            UPDATE :t_calc a
+            FROM   :t_calc b,
+                   question_history c
+            SET    prev_val = b.value,
+                   prev_acell = 'I'
+            WHERE  a.period = :q_date
+            AND    b.period = :q_less_date
+            AND    a.acell IN ('N','I')
+            AND    b.acell = 'I'
+            AND    a.contributor_reference = b.contributor_reference
+            AND    a.question = c.new_question
+            AND    b.question = c.old_question
+            AND    c.rep_type = 1;
+    
+            ret_val = CALLPROC msacm_fp_check_inq_ing(
+                      h_num_row_ck = 1,
+                      h_rollback   = 'N',
+                      h_commit     = 'Y',
+                      h_frpr_name  = :h_frpr_name);
+    
+            IF ret_val = 9
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                          h_text = 'Error updating I imputations',
+                          h_frpr_name = :h_frpr_name);
+                RETURN 9;
+            ENDIF;
+
+        ENDIF;
+
+        /*--------------------------------------------------------------
+           Delete rows that couldn't be imputed (no previous data)
+        --------------------------------------------------------------*/
+    
+        DELETE FROM :t_calc 
+        WHERE       prev_acell = 'N';
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error deleting imputations',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        /*--------------------------------------------------------------
+           Update using current period's imputation ratio
+        --------------------------------------------------------------*/
+    
+        UPDATE :t_calc a
+        FROM   question_period b
+        SET    ratio = b.imputation_ratio,
+               value = (b.imputation_ratio * 1.0) * prev_val,
+               acell = 'I'
+        WHERE  b.period = :h_annual_period
+        AND    a.question = b.question
+        AND    a.period = :q_date;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row    = BYREF(:h_rows),
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error deleting imputations',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        h_counter = :h_counter + 1;
+        q_less_date = :q_date;
+        q_date = :q_date + 3;
+        row_count = :row_count + :h_rows;
+
+    ENDWHILE;
+
+    RETURN 0;
+}

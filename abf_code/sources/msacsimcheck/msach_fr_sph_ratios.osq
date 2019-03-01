@@ -1,0 +1,148 @@
+
+/*----------------------------------------------------------------------
+  Create SPH Ratios
+----------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(30) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+
+{
+    h_retries_allowed = 3;
+    msa_date = 'now';
+    h_frpr_name = 'msach_fr_sph_ratios';
+
+    industry = :g_industry;
+    inquiry = :g_inquiry;
+    period = :g_period[1].period;
+
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+    /*------------------------------------------------------------------
+      Get Industry Data
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Industry Data . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT sph_exclusion_pc,
+               sph_no_contribs
+        FROM   industry
+        WHERE  industry = :g_industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing industry'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Industry could not be found'
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Get SPH Data
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting SPH Data . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf  =
+
+        SELECT   question,
+                 period,
+                 one_sales_per_head AS one_ratio,
+                 pps_sales_per_head AS pps_ratio,
+                 und_sales_per_head AS under_ratio,
+                 com_sales_per_head AS com_ratio
+        FROM     question_sph_gross
+        WHERE    industry = :industry
+        AND      period = :g_period[1].period
+        ORDER BY question;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question_sph_gross'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'There are no SPH figures available for this Industry'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+    REDISPLAY;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}

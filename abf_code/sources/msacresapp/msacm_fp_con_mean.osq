@@ -1,0 +1,377 @@
+
+/*----------------------------------------------------------------------
+mean Constructions - one period at a time (going forwards)
+----------------------------------------------------------------------*/
+
+PROCEDURE msacm_fp_con_mean (
+
+          h_mean_table        = VARCHAR(24) NOT NULL,
+          curr_period         = INTEGER4 NOT NULL) =
+
+DECLARE   ret_val             = INTEGER1 NOT NULL,
+          h_frpr_name         = VARCHAR(24) NOT NULL,
+          h_table             = VARCHAR(24) NOT NULL,
+          h_table1            = VARCHAR(24) NOT NULL,
+          prev_period         = INTEGER4 NOT NULL,
+          lower               = INTEGER4 NOT NULL,
+          upper               = INTEGER4 NOT NULL,
+          ctr                 = INTEGER4 NOT NULL,
+          perc                = INTEGER4 NOT NULL,
+          aggval              = FLOAT8 NOT NULL,
+          aggvol              = FLOAT8 NOT NULL,
+          h_question          = INTEGER4 NOT NULL,
+          h_question_industry = INTEGER4 NOT NULL,
+          h_mid_row           = INTEGER4 NOT NULL,
+          mean_uv             = FLOAT8 NOT NULL,
+          h_rows              = INTEGER4 NOT NULL
+{
+
+    h_frpr_name = 'msacm_fp_con_mean';
+    h_table = 'temp_mean_uv';
+    h_table1 = 'temp_qrtly_carryin';
+
+    ret_val = CALLPROC msacm_fp_drop_table (
+                       h_table = :h_table);
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    ret_val = CALLPROC msacm_fp_drop_table (
+                       h_table = :h_table1);
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Create table of all UVs for all questions where both the Val & Vol
+    have cell codes of V C I or P for OWN inquiry first 
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Creating Mean Table for ' +
+            VARCHAR(curr_period) + ' . . .';
+
+    CREATE TABLE :h_table
+    AS SELECT    b.question,
+                 b.question_industry,
+		 a.avalue as value,
+		 b.avalue as volume,
+                 (a.avalue * 1000.0 / b.avalue) AS unit_value
+    FROM         cqpv a,
+                 cqpv b
+    WHERE        a.contributor_reference = b.contributor_reference
+    AND          a.contributor_inquiry = b.contributor_inquiry
+    AND          a.contributor_inquiry = :g_inquiry
+    AND          a.period = :curr_period
+    AND          a.period = b.period
+    AND          MOD(b.question,10) IN (2,4)
+    AND          a.question = b.question / 10 * 10 + 1
+    AND          a.question_industry IN (
+                 SELECT industry FROM :g_results_industry)
+    AND          a.acell IN ('V','I','C','P')
+    AND          b.acell IN ('V','I','C','P') 
+
+    /***********************************************************
+    This code used to exclude imputed uvs defaulted to 0 from the 
+    mean calculation.
+    ***********************************************************/
+
+    AND          (b.avalue > 0 and a.avalue > 0);     
+
+    /************************************************************
+    This code is to be used if the users (Cecil, Linda Rolls etc)
+    want unit values constructed on returned data only.
+    *************************************************************
+
+    AND          a.acell IN ('V')
+    AND          b.acell IN ('V');
+    ************************************************************/
+
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error creating ' + :h_table + ' for ' +
+                           VARCHAR(curr_period),
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ELSEIF ret_val = 1
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'No UVs found to make mean UV for ' +
+                           VARCHAR(curr_period),
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Create temporary table of all UVs for quarterly contributors 
+    answering annual questions. These must be added to the table above 
+    and used in the trimming afterwards. Only use quarterly contributors
+    who have responded to all 4 periods
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Creating CarryIn table for ' +
+            VARCHAR(curr_period) + ' . . .';
+
+    IF :g_inquiry = :gc_asi
+    THEN
+       CREATE TABLE :h_table1
+       AS SELECT    a.contributor_reference,
+                    COUNT(a.period) AS no_periods,
+                    b.question,
+                    b.question_industry,
+                    SUM(a.avalue) AS value,
+                    SUM(b.avalue) AS volume,
+                    SUM(a.avalue) * 1000.00 / SUM(b.avalue) AS unit_value
+       FROM         cqpv a,
+                    cqpv b
+       WHERE        a.contributor_reference = b.contributor_reference
+       AND          a.contributor_inquiry = b.contributor_inquiry
+       AND          a.contributor_inquiry = :gc_qsi
+       AND          a.period BETWEEN (:curr_period + 3)
+                             AND     (:curr_period + 12)
+       AND          a.period = b.period
+       AND          MOD(b.question,10) IN (2,4)
+       AND          a.question = b.question/10 * 10 + 1
+       AND          a.question_industry IN (
+                    SELECT industry FROM :g_results_industry)
+       AND          a.acell IN ('V','I','C','P')
+       AND          b.acell IN ('V','I','C','P')
+       GROUP BY     a.contributor_reference,
+                    b.question,
+                    b.question_industry
+       HAVING COUNT (a.period) = 4;
+
+       ret_val = CALLPROC msacm_fp_check_inq_ing(
+                 h_num_row_ck = 1,
+                 h_rollback   = 'N',
+                 h_commit     = 'Y',
+                 h_frpr_name  = :h_frpr_name);
+   
+       IF ret_val = 9
+       THEN
+           ret_val = CALLPROC msacm_fp_log_message (
+                     h_text = 'Error creating ' + :h_table1 + ' for ' +
+                              VARCHAR(curr_period),
+                     h_frpr_name  = :h_frpr_name);
+           RETURN 9;
+
+       ELSEIF ret_val = 0
+       THEN
+           INSERT INTO :h_table
+           SELECT      question,
+                       question_industry,
+                       value,
+                       volume,
+                       unit_value
+           FROM        :h_table1;
+
+           ret_val = CALLPROC msacm_fp_check_inq_ing(
+                     h_num_row_ck = 1,
+                     h_rollback   = 'N',
+                     h_commit     = 'Y',
+                     h_frpr_name  = :h_frpr_name);
+          
+           IF ret_val = 9
+           THEN
+               ret_val = CALLPROC msacm_fp_log_message (
+                         h_text = 'Error inserting carryin data into ' + :h_table + ' for ' + VARCHAR(curr_period),
+                         h_frpr_name  = :h_frpr_name);
+               RETURN 9;
+           ENDIF;
+
+       ENDIF;
+
+    ELSE 
+
+    /*------------------------------------------------------------------
+    Insert into h_table all annual contributors making quarterly   
+    products using values held on asi_to_qsi_link_table
+    ------------------------------------------------------------------*/
+
+        INSERT INTO :h_table
+        SELECT      b.question,
+                    a.question_industry,
+                    a.avalue,
+                    b.avalue,
+                    a.avalue * 1000.0 / b.avalue 
+        FROM        asi_to_qsi_link a,
+                    asi_to_qsi_link b
+        WHERE       a.contributor_reference = b.contributor_reference
+        AND         a.qsi_period = :curr_period
+        AND         a.qsi_period = b.qsi_period
+        AND         MOD(b.question,10) IN (2,4)
+        AND         a.question = b.question/10 * 10 + 1
+        AND         a.question_industry IN (
+                    SELECT industry FROM :g_results_industry)
+        AND         a.acell IN ('V','C','I','P')
+        AND         b.acell IN ('V','C','I','P');
+    
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error inserting atq_link into ' + :h_table + ' for ' +
+                               VARCHAR(curr_period),
+                      h_frpr_name  = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Take each question one at a time, and load all values into an array
+    ------------------------------------------------------------------*/
+
+    SELECT DISTINCT (question) AS h_question,
+           question_industry AS h_question_industry
+    FROM   :h_table
+    {
+        MESSAGE 'Calculating Mean for ' + VARCHAR(curr_period) +
+                ' Question ' + VARCHAR(h_question) + ' . . .';
+
+        ret_val = CALLPROC ARRAYCLEAR(g_uv_array);
+
+        g_uv_array =
+
+        SELECT   question,
+		 value,
+		 volume,
+                 unit_value
+        FROM     :h_table
+        WHERE    question = :h_question
+        AND      unit_value > 0
+        ORDER BY unit_value ASC;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row    = BYREF(:h_rows),
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error loading UV array for ' +
+                               VARCHAR(curr_period),
+                      h_frpr_name  = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+	/** testing and see later message  */
+/*
+	IF h_question = 325012002
+	then
+	 message 'h_rows = '+varchar(:h_rows)+' for question no '
+		+varchar(:h_question)
+	 with style = popup;
+        endif;
+*/
+
+        /*--------------------------------------------------------------
+        The unit value for each of the contributors is now used
+        to trim the data. Trimming should only take place if there
+        are 10 or more contributors. Trim the top 5% and bottom 5%
+
+        Set perc to equal the percentage you want to trim off the 
+        top and bottom
+        h_rows is the number of rows from the array above
+        --------------------------------------------------------------*/
+        IF h_rows > 0
+        THEN
+            perc = 5;
+    
+            lower = (((perc * 0.01) * h_rows) + 0.5);
+    
+            upper = h_rows - lower;
+    
+            ctr = 1;
+            aggval = 0;
+            aggvol = 0;
+       
+            WHILE ctr <= upper
+            DO
+                IF ctr > lower 
+                THEN
+                    aggval = aggval + :g_uv_array[:ctr].value;
+                    aggvol = aggvol + :g_uv_array[:ctr].volume;
+                ENDIF;
+    
+                ctr = ctr + 1;
+    
+            ENDWHILE;
+    
+            mean_uv = aggval * 1000.0 / aggvol;
+/* POPUP causes scheduled prods to crash
+	    message 'Question Number = '+varchar(:h_question)+X'0D'
+		   +'Mean Uv         = '+varchar(:mean_uv)+X'0D'
+		   +'Aggval          = '+varchar(:aggval)+X'0D'
+		   +'Aggvol          = '+varchar(:aggvol)+X'0D'
+		   +'Lower           = '+varchar(:lower)+X'0D'
+		   +'Upper           = '+varchar(:upper)+X'0D'
+		   +'Ctr             = '+varchar(:ctr)+X'0D'
+		   +'Current Period  = '+varchar(:curr_period)+X'0D'
+		   +'Number Rows     = '+varchar(:h_rows)+X'0D'
+       WITH STYLE = POPUP;
+*/
+    
+            INSERT INTO :h_mean_table (
+                        question_industry,
+                        question,
+                        period,
+                        unit_value)
+            VALUES (    :h_question_industry,
+                        :h_question,
+                        :curr_period,
+                        :mean_uv);
+        
+            ret_val = CALLPROC msacm_fp_check_inq_ing(
+                      h_num_row_ck = 1,
+                      h_rollback   = 'N',
+                      h_commit     = 'Y',
+                      h_frpr_name  = :h_frpr_name);
+        
+            IF ret_val <> 0
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                          h_text = 'Error inserting mean UV for ' +
+                                   VARCHAR(:h_question) + ' ' +
+                                   VARCHAR(curr_period),
+                          h_frpr_name  = :h_frpr_name);
+                RETURN 9;
+            ENDIF;
+        ENDIF;
+    };
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error in UV select loop for ' +
+                           VARCHAR(curr_period),
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+
+}

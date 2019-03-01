@@ -1,0 +1,191 @@
+/*----------------------------------------------------------------------
+ Calculates and displays ratios for a supplied inquiry, industry
+ and question for the latest period and indicates whether it
+ will be deleted from the imputation calculation or not
+----------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        t_rtio            = VARCHAR(25) NOT NULL
+
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msach_fr_imp_con_ratios';
+    industry = :g_industry;
+    inquiry = :g_inquiry;
+    period = :g_period[1].period;
+
+    current_period = :g_period[1].period;
+    previous_period = :g_period[2].period;
+
+    msa_date = 'now';
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+    t_rtio = 'sim_' + VARCHAR(:industry) + '_' + VARCHAR(:period) + '_rtio';
+
+    IF RIGHT(VARCHAR(question),1) = '2'
+    OR RIGHT(VARCHAR(question),1) = '4'
+    THEN
+        MESSAGE 'This option is not available for 2 and 4 questions'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+    old_ratio = :imp_rat;
+
+    /*------------------------------------------------------------------
+      Select from Industry
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Industry Details . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT ratio_exclusion_pc AS percentage
+        FROM   industry
+        WHERE  industry = :g_industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing industry'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This Industry could not be found'
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+    perc_change = FLOAT4((FLOAT4(imp_rat) - FLOAT4(last_ratio))
+                  * 100 / FLOAT4(last_ratio));
+
+    /*------------------------------------------------------------------
+      Select from Ratio Table
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Ratio Data . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT   a.contributor_reference,
+                 a.avalue/FLOAT4(b.avalue) AS ratio,
+                 LOWERCASE(c.status) AS status
+        FROM     cqpv a,
+                 cqpv b,
+                 :t_rtio c
+        WHERE    a.period = :current_period
+        AND      b.period = :previous_period
+        AND      a.acell IN ('V', 'C')
+        AND      a.acell = b.acell
+        AND      a.question = :question
+        AND      a.question = b.question
+        AND      a.question = c.question
+        AND      a.contributor_reference = b.contributor_reference
+        AND      a.contributor_reference = c.contributor_reference
+        UNION
+        SELECT   a.contributor_reference,
+                 a.avalue/FLOAT4(b.avalue) AS ratio,
+                 LOWERCASE(c.status) AS status
+        FROM     cqpv a,
+                 cqpv b,
+                 :t_rtio c,
+                 question_history d
+        WHERE    a.period = :current_period
+        AND      b.period = :previous_period
+        AND      a.acell IN ('V', 'C')
+        AND      d.rep_type = 1
+        AND      a.acell = b.acell
+        AND      a.question = :question
+        AND      a.question = c.question
+        AND      a.question = d.new_question
+        AND      b.question = d.old_question
+        AND      a.contributor_reference = b.contributor_reference
+        AND      a.contributor_reference = c.contributor_reference
+
+        ORDER BY ratio DESC;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing cqpv and ' + :t_rtio
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows found on cqpv and ' + :t_rtio
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}

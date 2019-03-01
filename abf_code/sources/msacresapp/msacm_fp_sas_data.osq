@@ -1,0 +1,3134 @@
+
+/*--------------------------------------------------------------
+    This procedure creates an extract file to load onto SAS
+--------------------------------------------------------------*/
+
+PROCEDURE msacm_fp_sas_data ()=
+
+DECLARE   ret_val           = INTEGER4 NOT NULL,
+          h_frpr_name       = VARCHAR(25) NOT NULL,
+          h_period          = INTEGER4 NOT NULL,
+          start_period      = INTEGER4 NOT NULL,
+          curr_period       = INTEGER4 NOT NULL,
+          end_period        = INTEGER4 NOT NULL,
+          froz_period       = INTEGER4 NOT NULL,
+          run_period        = INTEGER4 NOT NULL,
+	  prev1_avalue      = INTEGER4 NOT NULL,
+	  prev2_avalue      = INTEGER4 NOT NULL,
+	  prev3_avalue      = INTEGER4 NOT NULL,
+	  prev4_avalue      = INTEGER4 NOT NULL,
+	  prev1_acell       = CHAR(2) NOT NULL,
+	  prev2_acell       = CHAR(2) NOT NULL,
+	  prev3_acell       = CHAR(2) NOT NULL,
+	  prev4_acell       = CHAR(2) NOT NULL,
+          h_industry        = INTEGER4 NOT NULL,
+          h_count           = INTEGER4 NOT NULL,
+          h_cnt             = INTEGER4 NOT NULL,
+          h_rows            = INTEGER4 NOT NULL,
+          h_table           = VARCHAR(24) NOT NULL,
+          h_table1          = VARCHAR(24) NOT NULL,
+          h_table2          = VARCHAR(24) NOT NULL,
+          h_table3          = VARCHAR(24) NOT NULL,
+          h_table4          = VARCHAR(24) NOT NULL,
+          h_table5          = VARCHAR(24) NOT NULL,
+          h_table6          = VARCHAR(24) NOT NULL,
+          h_table7          = VARCHAR(24) NOT NULL,
+          h_table8          = VARCHAR(24) NOT NULL,
+          h_copy_table1     = VARCHAR(24) NOT NULL,
+          h_dups            = VARCHAR(24) NOT NULL,
+	  h_table_new       = VARCHAR(24) NOT NULL,
+          h_command         = VARCHAR(500) NOT NULL,
+          h_directory       = VARCHAR(100) NOT NULL,
+          h_copy_out       = VARCHAR(100) NOT NULL,
+          h_save_name       = VARCHAR(30) NOT NULL,
+          h_now             = VARCHAR(24) NOT NULL,
+	  tables_exist      = procedure returning integer
+{
+    h_frpr_name  = 'msacm_fp_sas_data';
+
+    h_table1 = 'tt_sas_cont';
+    h_table2 = 'tt_sas_data';
+    h_table3 = 'sas_non_responders';
+    h_table4 = 'sas_cross_distinct';
+    h_table5 = 'sas_cross_data';
+    h_table6 = 'sas_annual_data';
+    h_table7 = 'tt_sas_reg_emp';
+    h_table8 = 'tt_sas_avg_reg_emp';
+    h_dups = 'temp_non_dups';
+
+    IF g_periods > 5
+    THEN
+        g_row = 5;
+    ELSE
+        g_row = g_periods;
+    ENDIF;
+
+    IF g_inquiry = 14
+    THEN
+        start_period = :g_period[:g_periods].period;
+        h_now = VARCHAR(DATE('now'));
+        h_save_name = 'a' + ascii(:g_period[1].period) +
+                VARCHAR(DATE_PART('year','now')) +
+                RIGHT(LEFT(h_now,5),2) +
+                LEFT(h_now,2) + '.' + ascii(:g_inquiry);
+
+    ELSE
+        start_period = :g_period[:g_periods].period;
+        h_now = VARCHAR(DATE('now'));
+        h_save_name = 'q' + ascii(:g_period[1].period) +
+                VARCHAR(DATE_PART('year','now')) +
+                RIGHT(LEFT(h_now,5),2) +
+                LEFT(h_now,2) + '.' + ascii(:g_inquiry);
+
+    ENDIF;
+
+    end_period = :g_period[1].period;
+
+    run_period = :g_period[1].period;
+
+    IF g_inquiry = 15
+    THEN
+	g_annualised_period = run_period/100 * 100
+    ENDIF;
+
+   /*--------------------------------------------------------------
+message 'start ='  +ascii(:start_period)
++ 'end = ' + ascii(:end_period)
++ 'annualised = ' + ascii(:g_annualised_period)
+with style = popup;
+   --------------------------------------------------------------*/
+
+    h_copy_out = :g_path_name1 + :h_save_name;
+
+   /*--------------------------------------------------------------
+    Call procedure to set up previous quarterly periods to be used
+    when creating quarterly data for annual contributors carrying to
+    quarterly results
+   --------------------------------------------------------------*/
+
+    IF g_inquiry = 15
+    THEN
+        ret_val = CALLPROC msa_fp_prev_periods (
+                   inquiry      = :g_inquiry,
+                   period       = :run_period,
+                   prev_period1 = BYREF(:g_prev_period1),
+                   prev_period2 = BYREF(:g_prev_period2),
+                   prev_period3 = BYREF(:g_prev_period3),
+                   prev_period4 = BYREF(:g_prev_period4));
+
+         IF ret_val <> 0
+         THEN
+             INSERT INTO error_log
+             VALUES(     'now',
+                         'Error calling for previous periods',
+                         :h_frpr_name,
+                         :ret_val,
+                         :g_user_id);
+             COMMIT;
+             RETURN 9;
+         ENDIF;
+    ENDIF;
+
+
+   /*--------------------------------------------------------------
+    Create table that will hold the data in the format suitable 
+    for loading onto SAS
+    --------------------------------------------------------------*/
+
+    ret_val = CALLPROC msacm_fp_drop_table (
+              h_table = :h_table1);
+
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    CREATE TABLE :h_table1 (
+	  contributor_reference char(11) not null,
+	  period                integer4 not null,
+	  question              integer4 not null,
+	  quest_order           integer1 not null,
+	  question_industry     integer4 not null,
+	  lag                   char(1) not null,
+	  contributor_inquiry   integer2 not null,
+	  contributor_industry  integer4 not null,
+	  proposed_industry     integer4 not null,
+	  enterprise            char(10) not null,
+	  register_emp          integer4 not null,
+	  acell                 char(2) not null,
+	  avalue                integer4 not null)
+	  WITH LOCATION = (prod2);
+
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error creating ' + :h_table1,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+
+       /*--------------------------------------------------------------
+	    Create a temporary table that will hold all of the five
+	    periods in the span in columns rather than rows
+        --------------------------------------------------------------*/
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = :h_table2);
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        CREATE table :h_table2(
+               contributor_reference    char(11) not null,
+               period                   integer4 not null,
+               question                 integer4 not null,
+               question_industry        integer4 not null,
+               contributor_industry     integer4 not null,
+               avalue                   integer4 not null,
+               acell                    char(2)  not null,
+               prev_period1             integer4 not null,
+               prev_question1           integer4 not null,
+               prev_qindustry1          integer4 not null,
+               prev_cindustry1          integer4 not null,
+               prev_avalue1             integer4 not null,
+               prev_acell1              char(2)  not null,
+               prev_period2             integer4 not null,
+               prev_question2           integer4 not null,
+               prev_qindustry2          integer4 not null,
+               prev_cindustry2          integer4 not null,
+               prev_avalue2             integer4 not null,
+               prev_acell2              char(2)  not null,
+               prev_period3             integer4 not null,
+               prev_question3           integer4 not null,
+               prev_qindustry3          integer4 not null,
+               prev_cindustry3          integer4 not null,
+               prev_avalue3             integer4 not null,
+               prev_acell3              char(2)  not null,
+               prev_period4             integer4 not null,
+               prev_question4           integer4 not null,
+               prev_qindustry4          integer4 not null,
+               prev_cindustry4          integer4 not null,
+               prev_avalue4             integer4 not null,
+               prev_acell4              char(2)  not null,
+               inquiry                  integer2 not null)
+	       WITH LOCATION = (prod2);
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error creating ' + :h_table2,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+   /*----------------------------------------------------------------
+    1. Copy the sim tables data into the main table, one table at a time
+    ----------------------------------------------------------------*/
+
+    SELECT   industry AS h_industry,
+             period AS h_period
+    FROM     :g_results_industry
+    ORDER BY h_industry
+    {
+        h_table = 'sim_' + VARCHAR(:h_industry) + '_' +
+                  VARCHAR(:h_period) + '_cqpv';
+
+        ret_val = CALLPROC tables_exist ( table_name = :h_table);
+
+        IF ret_val > 1
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+        IF ret_val = 0
+        THEN
+
+        MESSAGE 'Inserting table - ' + :h_table;
+
+        INSERT INTO :h_table1
+	SELECT a.contributor_reference,
+	       a.qperiod as period,
+	       a.question,
+	       a.quest_order,
+	       a.question_industry,
+	       '0' as lag,
+	       a.inquiry,
+	       a.contributor_industry,
+	       a.contributor_industry as proposed_industry,
+	       a.enterprise,
+	       int4(0) as register_emp,
+	       acell,
+	       avalue
+        FROM :h_table a;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error inserting data ' + :h_table,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+
+      ENDIF;
+
+    };
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'System Error in select loop for sim tables ',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+
+        ELSEIF ret_val = 1
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'No rows in select loop for sim tables ',
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+
+    /*---------------------------------------------------------------
+     2. Now insert the non responders into main table.
+
+     These are contributors/questions that have not been dealt
+     with in the results processing i.e they have not been received
+     and not constructed or imputed. They are on cqpv with a cell
+     code of 'N' plus they must not already exist in the sim tables
+     data that has already been inserted into the main sas table -
+     sasconttemp.
+     Check for duplicates after selecting as there should be none.
+
+     The reason duplicates can be found here is due to timing.
+     If this process has to be re run with a gap between when the 
+     original sim tables were created and when this process is run then
+     some contributors who were once included on the sim tables have 
+     since been dereceipted and had their cqpv values/markers set to 
+     'N' and 'O'. These will be selected in the statement below 
+     and they will already be on the table sasconttemp from the sim 
+     table insert above.
+
+     If any are found write to a table to be checked after results.
+     Delete the duplicates but do not make the program fail.
+     
+     ---------------------------------------------------------------*/
+    ret_val = CALLPROC msacm_fp_drop_table (
+              h_table = :h_table3);
+
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    CREATE TABLE :h_table3
+    AS SELECT a.contributor_reference,
+	      a.period,
+	      a.question,
+	      a.quest_order,
+	      a.question_industry,
+	      '0' as lag,
+	      :g_inquiry as inquiry,
+	      a.contributor_industry,
+	      a.contributor_industry as proposed_industry,
+	      b.enterprise,
+	      b.register_emp,
+	      a.acell,
+	      a.avalue
+        FROM  cqpv a,
+              contributor_period b
+        WHERE a.acell = 'N'
+        AND   a.contributor_reference = b.contributor_reference
+        AND   a.period = b.period
+        AND   a.period BETWEEN :start_period
+                       AND     :end_period
+        AND   a.contributor_inquiry = :g_inquiry
+        AND   question_industry IN
+              (SELECT industry FROM :g_results_industry);
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_num_row    = BYREF(:h_rows),
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error creating ' + :h_table3,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = :h_dups);
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        CREATE TABLE :h_dups
+	AS SELECT a.*
+	FROM      :h_table3 a
+        WHERE contributor_reference IN(
+              SELECT contributor_reference
+              FROM   :h_table1 b
+              WHERE  a.question = b.question
+              AND    a.period   = b.period);
+              
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_num_row    = BYREF(:h_rows),
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error creating ' + :h_dups,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ELSEIF ret_val = 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                         VARCHAR(:h_rows) + ' Duplicates found from non-responders - check table ' + :h_dups,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+
+            DELETE FROM :h_table3 a
+            WHERE contributor_reference IN
+                  (SELECT contributor_reference
+                   FROM   :h_dups b
+                   WHERE  a.question = b.question
+                   AND    a.period = b.period);
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_num_row    = BYREF(:h_rows),
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+            IF ret_val = 9
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error deleting duplicates from ' + :h_table3,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+        ENDIF;
+
+        MESSAGE 'Inserting non responders into ' + :h_table1;
+
+        INSERT INTO :h_table1
+        SELECT *
+        FROM   :h_table3;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error inserting non-responder data from cqpv into ' + :h_table1,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+      /*-----------------------------------------------------------
+       Modify table to speed up processing
+        
+        MESSAGE 'Modifying table ' + h_table1;
+        
+        MODIFY :h_table1 
+        TO BTREE UNIQUE ON  contributor_reference,
+                            quest_order,
+                            question,
+                            period;
+        
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+      
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error modifying ' + :h_table1,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+      ------------------------------------------------------------*/
+
+    /*------------------------------------------------------------------
+     3. Now insert the cross inquiry data into the main table.
+
+        If we are running quarterly results then we need a record for
+        each contributor from the annual inquiry to be used in 
+        estimation on the SAS system.
+
+        To achieve this we use the 9200 question from cqpv and create
+        5 quarterly records for the span out the annual data.
+        There are 2 ways to do this depending on where we are in the
+        annual/quarterly cycle.
+
+        We need to take the quarterly run period and annualise it. Then
+        we need to find out if that annual period is live on table
+        inquiry_period. Depending on whether it is or not the program
+        goes down 2 different paths to create the made up quarterly
+        records. The records do not need to have 'real' values or
+        acells. All that needs to be correct is that the quarterly
+        record is in the correct home industry i.e contributor_industry
+        for the correct annual year. This is because contributors can
+        be reclassified from one annual period to another. Also some
+        annual contributors may only be selected for part of the
+        quarterly span so we do not want incorrect records taken down
+        into SAS.
+
+        Example 1 := 5 periods     200109 200112 |200203 200206 200209
+                     2 industries     22220      |       19100
+
+        Example 2 := 5 periods     200109 200112 |200203 200206 200209
+               Selection history      Y      Y   |   N      N     N
+
+        Example 3 := 5 periods     200109 200112 |200203 200206 200209
+               Selection history      N      N   |   Y      Y     Y
+    ------------------------------------------------------------------*/
+
+    /*--------------------------------------------------------------
+        Check to see where in quarterly/annual cycle we are    
+
+	If annual period exists do the first type of creation of annual
+	carryin records - if not do the second type
+    --------------------------------------------------------------*/
+
+    IF g_inquiry = 15
+    THEN
+
+        SELECT DISTINCT period AS h_period
+	FROM   contributor_period
+	WHERE  period = :g_annualised_period;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+/*
+message 'retval ' + ascii(:ret_val)
+with style = popup;
+*/
+        IF ret_val = 0
+        THEN
+       /* period exists do this */
+       /*--------------------------------------------------------------
+	Update any annual contributors on this table to make their
+	inquiry say 14 rather than 15 as it has been selected as from
+        the sim tables
+        --------------------------------------------------------------*/
+
+            UPDATE :h_table1 a
+	    FROM   contributor_period b
+	    SET    contributor_inquiry = :gc_asi
+	    WHERE  a.contributor_reference = b.contributor_reference
+	    AND    b.inquiry = :gc_asi
+	    AND    a.period/100 = b.period/100;
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9 
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating carryin contributors to inquiry 14 on ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+           /*----------------------------------------------------------
+	    Create a table to select every annual contributor who has 
+            been selected in either of the 2 periods 
+            ----------------------------------------------------------*/
+            ret_val = CALLPROC msacm_fp_drop_table (
+                      h_table = :h_table4);
+
+            IF ret_val = 9
+            THEN
+                RETURN 9;
+            ENDIF;
+
+            CREATE TABLE :h_table4
+	    AS SELECT 
+	    DISTINCT contributor_reference
+	    FROM     contributor_period
+	    WHERE    inquiry = :gc_asi
+	    AND      period IN (:g_annualised_period,
+				:g_annualised_period - 100);
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0  
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error creating distinct annual contributors ' + :h_table4,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+           /*---------------------------------------------------------
+            Insert each distinct contributor into the temp_sas_data 
+            table with the 5 data periods of the quarterly span
+            ---------------------------------------------------------*/
+
+            INSERT INTO :h_table2
+            SELECT contributor_reference,
+                   :run_period as period,
+                   0 as question,
+                   0 as question_industry,
+                   0 as contributor_industry,
+                   0 as avalue,
+                  '' as acell,
+                   :g_prev_period1 as prev_period1,
+                   0 as prev_question1,
+                   0 as prev_qindustry1,
+                   0 as prev_cindustry1,
+                   0 as prev_avalue1,
+                  '' as prev_acell1,
+                   :g_prev_period2 as prev_period2,
+                   0 as prev_question2,
+                   0 as prev_qindustry2,
+                   0 as prev_cindustry2,
+                   0 as prev_avalue2,
+                  '' as prev_acell2,
+                   :g_prev_period3 as prev_period3,
+                   0 as prev_question3,
+                   0 as prev_qindustry3,
+                   0 as prev_cindustry3,
+                   0 as prev_avalue3,
+                  '' as prev_acell3,
+                   :g_prev_period4 as prev_period4,
+                   0 as prev_question4,
+                   0 as prev_qindustry4,
+                   0 as prev_cindustry4,
+                   0 as prev_avalue4,
+                  '' as prev_acell4,
+                   :gc_asi as inquiry
+            FROM   :h_table4;
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0  
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error inserting distinct annual contributors into ' + :h_table2,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+/********now create table of data from cqpv and then update table4 from it***/
+
+           /*----------------------------------------------------------
+	    Create a table to select the data for every annual 
+            contributor who has been selected in either of the 2 
+            periods from cqpv. Use this to update the blank records 
+            in the table sas_cross_distinct above
+            ----------------------------------------------------------*/
+            ret_val = CALLPROC msacm_fp_drop_table (
+                      h_table = :h_table5);
+
+            IF ret_val = 9
+            THEN
+                RETURN 9;
+            ENDIF;
+
+            CREATE TABLE :h_table5
+	    AS SELECT  *
+	    FROM     contributor_period
+	    WHERE    inquiry = :gc_asi
+	    AND      period IN (:g_annualised_period,
+				:g_annualised_period - 100);
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0  
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error creating table of data for annual contributors ' + :h_table5,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+          /*-------------------------------------------------------
+           Modify table to speed up processing
+        
+            MESSAGE 'Modifying table ' + :h_table2;
+        
+            MODIFY :h_table2 
+            TO BTREE UNIQUE ON  contributor_reference,
+                                period,
+                                question;
+        
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+        
+            IF ret_val <> 0
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error modifying ' + :h_table2,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+          ----------------------------------------------------------*/
+
+            UPDATE :h_table2 a
+            FROM   :h_table5 b
+            SET    question             = (b.contributor_industry * 10000) + 9200,
+                   question_industry    = b.contributor_industry,
+                   contributor_industry = b.contributor_industry
+            WHERE  a.contributor_reference = b.contributor_reference
+            AND    a.period/100 = b.period/100;
+ 
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9   
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating annual contributors with cqpv data - 1st' + :h_table2,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            UPDATE :h_table2 a
+            FROM   :h_table5 b
+            SET    prev_question1  = (b.contributor_industry * 10000) + 9200,
+                   prev_qindustry1 = b.contributor_industry,
+                   prev_cindustry1 = b.contributor_industry
+            WHERE  a.contributor_reference = b.contributor_reference
+            AND    a.prev_period1/100 = b.period/100;
+ 
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9   
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating annual contributors with cqpv data - 2nd' + :h_table2,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            UPDATE :h_table2 a
+            FROM   :h_table5 b
+            SET    prev_question2  = (b.contributor_industry * 10000) + 9200,
+                   prev_qindustry2 = b.contributor_industry,
+                   prev_cindustry2 = b.contributor_industry
+            WHERE  a.contributor_reference = b.contributor_reference
+            AND    a.prev_period2/100 = b.period/100;
+ 
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9   
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating annual contributors with cqpv data - 3nd' + :h_table2,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            UPDATE :h_table2 a
+            FROM   :h_table5 b
+            SET    prev_question3  = (b.contributor_industry * 10000) + 9200,
+                   prev_qindustry3 = b.contributor_industry,
+                   prev_cindustry3 = b.contributor_industry
+            WHERE  a.contributor_reference = b.contributor_reference
+            AND    a.prev_period3/100 = b.period/100;
+ 
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9   
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating annual contributors with cqpv data - 4th' + :h_table2,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            UPDATE :h_table2 a
+            FROM   :h_table5 b
+            SET    prev_question4  = (b.contributor_industry * 10000) + 9200,
+                   prev_qindustry4 = b.contributor_industry,
+                   prev_cindustry4 = b.contributor_industry
+            WHERE  a.contributor_reference = b.contributor_reference
+            AND    a.prev_period4/100 = b.period/100;
+ 
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9   
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating annual contributors with cqpv data - 5th' + :h_table2,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+           /*----------------------------------------------------------
+            As the future data may not yet be live on contributor_period
+            some periods data may have been left as zeros in the above 
+            updates. Update again where they remain zero
+            ----------------------------------------------------------*/
+
+            UPDATE :h_table2 a
+            FROM   :h_table5 b
+            SET    question             = (b.contributor_industry * 10000) + 9200,
+                   question_industry    = b.contributor_industry,
+                   contributor_industry = b.contributor_industry
+            WHERE  a.contributor_reference = b.contributor_reference
+            AND    a.period/100 - 1 = b.period/100
+            AND    a.question = 0;
+ 
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9   
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating annual contributors with cqpv data - 1st' + :h_table2,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            UPDATE :h_table2 a
+            FROM   :h_table5 b
+            SET    prev_question1  = (b.contributor_industry * 10000) + 9200,
+                   prev_qindustry1 = b.contributor_industry,
+                   prev_cindustry1 = b.contributor_industry
+            WHERE  a.contributor_reference = b.contributor_reference
+            AND    a.prev_period1/100 - 1 = b.period/100
+            AND    a.prev_question1 = 0;
+ 
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9   
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating annual contributors with cqpv data - 2nd' + :h_table2,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            UPDATE :h_table2 a
+            FROM   :h_table5 b
+            SET    prev_question2  = (b.contributor_industry * 10000) + 9200,
+                   prev_qindustry2 = b.contributor_industry,
+                   prev_cindustry2 = b.contributor_industry
+            WHERE  a.contributor_reference = b.contributor_reference
+            AND    a.prev_period2/100 - 1 = b.period/100
+            AND    a.prev_question2 = 0;
+ 
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9   
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating annual contributors with cqpv data - 3nd' + :h_table2,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            UPDATE :h_table2 a
+            FROM   :h_table5 b
+            SET    prev_question3  = (b.contributor_industry * 10000) + 9200,
+                   prev_qindustry3 = b.contributor_industry,
+                   prev_cindustry3 = b.contributor_industry
+            WHERE  a.contributor_reference = b.contributor_reference
+            AND    a.prev_period3/100 - 1 = b.period/100
+            AND    a.prev_question3 = 0;
+ 
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9   
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating annual contributors with cqpv data - 4th' + :h_table2,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            UPDATE :h_table2 a
+            FROM   :h_table5 b
+            SET    prev_question4  = (b.contributor_industry * 10000) + 9200,
+                   prev_qindustry4 = b.contributor_industry,
+                   prev_cindustry4 = b.contributor_industry
+            WHERE  a.contributor_reference = b.contributor_reference
+            AND    a.prev_period4/100 - 1 = b.period/100
+            AND    a.prev_question4 = 0;
+ 
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9   
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating annual contributors with cqpv data - 5th' + :h_table2,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+           /*----------------------------------------------------------
+             Now insert all the data from temp_sas_data into the main 
+             sas data table - sasconttemp one period at a time.
+            ----------------------------------------------------------*/
+
+            INSERT INTO :h_table1
+            SELECT contributor_reference,
+                   period,
+                   question,
+                   10 as quest_order,
+                   contributor_industry as question_industry,
+                   '5' as lag,
+                   14 as contributor_inquiry,
+                   contributor_industry,
+                   contributor_industry as proposed_industry,
+                   '' as enterprise,
+                   0 as register_emp,
+                   '' as acell,
+                   0 as avalue
+            FROM   :h_table2
+            WHERE  period = :run_period;
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0   
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error 1st insert - all data into ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            INSERT INTO :h_table1
+            SELECT contributor_reference,
+                   prev_period1,
+                   prev_question1,
+                   10 as quest_order,
+                   prev_cindustry1 as prev_qindustry1,
+                   '5' as lag,
+                   14 as contributor_inquiry,
+                   prev_cindustry1,
+                   prev_cindustry1 as proposed_industry,
+                   '' as enterprise,
+                   0 as register_emp,
+                   '' as prev_acell1,
+                   0 as prev_avalue1
+            FROM   :h_table2
+            WHERE  prev_period1 = :g_prev_period1;
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0   
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error 2nd insert - all data into ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            INSERT INTO :h_table1
+            SELECT contributor_reference,
+                   prev_period2,
+                   prev_question2,
+                   10 as quest_order,
+                   prev_cindustry2 as prev_qindustry2,
+                   '5' as lag,
+                   14 as contributor_inquiry,
+                   prev_cindustry2,
+                   prev_cindustry2 as proposed_industry,
+                   '' as enterprise,
+                   0 as register_emp,
+                   '' as prev_acell2,
+                   0 as prev_avalue2
+            FROM   :h_table2
+            WHERE  prev_period2 = :g_prev_period2;
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0   
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error 3rd insert - all data into ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            INSERT INTO :h_table1
+            SELECT contributor_reference,
+                   prev_period3,
+                   prev_question3,
+                   10 as quest_order,
+                   prev_cindustry3 as prev_qindustry3,
+                   '5' as lag,
+                   14 as contributor_inquiry,
+                   prev_cindustry3,
+                   prev_cindustry3 as proposed_industry,
+                   '' as enterprise,
+                   0 as register_emp,
+                   '' as prev_acell3,
+                   0 as prev_avalue3
+            FROM   :h_table2
+            WHERE  prev_period3 = :g_prev_period3;
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0   
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error 4th insert - all data into ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            INSERT INTO :h_table1
+            SELECT contributor_reference,
+                   prev_period4,
+                   prev_question4,
+                   10 as quest_order,
+                   prev_cindustry4 as prev_qindustry4,
+                   '5' as lag,
+                   14 as contributor_inquiry,
+                   prev_cindustry4,
+                   prev_cindustry4 as proposed_industry,
+                   '' as enterprise,
+                   0 as register_emp,
+                   '' as prev_acell4,
+                   0 as prev_avalue4
+            FROM   :h_table2
+            WHERE  prev_period4 = :g_prev_period4;
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0   
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error 5th insert - all data into ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+           /*----------------------------------------------------------
+             now delete any contributors who are not selected for the 
+             annual periods (there shouldn't be any) or that have 
+             redundant links on asi_to_qsi_link
+            ----------------------------------------------------------*/
+            DELETE FROM :h_table1 a
+            WHERE  question = 0
+            AND    contributor_reference NOT IN
+                   (SELECT contributor_reference
+                    FROM   contributor_period b
+                    WHERE  a.period/100 = b.period/100);          
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9    
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error deleting cp redundant contributors from ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            DELETE FROM :h_table1 a
+            WHERE  question = 0
+            AND    contributor_reference NOT IN
+                   (SELECT contributor_reference
+                    FROM   asi_to_qsi_link b
+                    WHERE  a.period/100 = b.asi_period/100);          
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9    
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error deleting atq redundant contributors from ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+           /*----------------------------------------------------------
+            Update table with register_emp
+            1. - for quarterly refs 
+            2. - for carry-in refs
+            3. - for carry-in refs for future periods not yet live 
+            ----------------------------------------------------------*/
+
+            UPDATE :h_table1 a
+            FROM   contributor_period b
+            SET    register_emp = b.register_emp
+            WHERE  a.contributor_inquiry = :g_inquiry
+            AND    a.period = b.period
+            ANd    a.contributor_reference = b.contributor_reference;
+            
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9    
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating same inquiry register_emp on ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            UPDATE :h_table1 a
+            FROM   contributor_period b
+            SET    register_emp = b.register_emp
+            WHERE  b.inquiry = :gc_asi
+            AND    (a.period/100) * 100 = b.period
+            AND    a.contributor_reference = b.contributor_reference
+            AND    a.register_emp = 0;
+            
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9    
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating cross inquiry register_emp on ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+
+            UPDATE :h_table1 a
+            FROM   contributor_period b
+            SET    register_emp = b.register_emp
+            WHERE  a.contributor_reference = b.contributor_reference
+            AND    (a.period/100) * 100 = b.period + 100
+            AND    b.inquiry = :gc_asi
+            AND    a.register_emp = 0;
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9    
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating register_emp future on ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+           /*----------------------------------------------------------
+            Update table with acells      
+            The records from the sim tables will already have acells 
+            completed but the carry-in 9200 questions should still be 
+            blank at this stage. Update them to equal what is held on 
+            cqpv. If the annualised quarterly period is not yet live 
+            on the system then the acell will still be blank. 
+            Update it to equal 'N' if the previous period is 'N' or 
+            otherwise make it 'C' .
+            ----------------------------------------------------------*/
+
+            UPDATE :h_table1 a
+            FROM   cqpv b
+            SET    acell = b.acell
+            WHERE  (a.period/100) * 100  = b.period
+            AND    MOD(a.question,10000) = 9200
+            AND    a.question = b.question
+            AND    a.acell = ''
+            AND    a.contributor_inquiry = :gc_asi
+            AND    a.contributor_inquiry = b.contributor_inquiry
+            AND    a.contributor_reference = b.contributor_reference;
+            
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9    
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error first update of acells on ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+
+            UPDATE :h_table1 a
+            FROM   cqpv b
+            SET    acell = 'N'     
+            WHERE  (a.period/100) * 100 = :g_annualised_period
+            AND    (b.period/100) * 100 = :g_annualised_period - 100
+            AND    MOD(a.question,10000) = 9200
+            AND    a.question = b.question
+            AND    a.acell = ''
+            AND    b.acell = 'N'
+            AND    a.contributor_inquiry = :gc_asi
+            AND    a.contributor_inquiry = b.contributor_inquiry
+            AND    a.contributor_reference = b.contributor_reference;
+            
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9    
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error 2nd update of acells on ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            UPDATE :h_table1 a
+            FROM   cqpv b
+            SET    acell = 'C'     
+            WHERE  (a.period/100) * 100 = :g_annualised_period
+            AND    (b.period/100) * 100 = :g_annualised_period - 100
+            AND    MOD(a.question,10000) = 9200
+            AND    a.question = b.question
+            AND    a.acell = ''
+            AND    b.acell <> 'N'
+            AND    a.contributor_inquiry = :gc_asi
+            AND    a.contributor_inquiry = b.contributor_inquiry
+            AND    a.contributor_reference = b.contributor_reference;
+            
+/*
+this was the 2nd update and was wrong moved to the 3rd update and 
+ changed code as above*/
+/*
+            UPDATE :h_table1 a
+            SET    acell  = 'C'
+            WHERE  acell in  ('','N')
+            AND    MOD(question,10000) = 9200;
+*/
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9    
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error 3rd update of acells on ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+           /*----------------------------------------------------------
+            Update table with enterprise
+            1. - for quarterly refs 
+            2. - for carry-in refs
+            3. - for carry-in refs for future periods not yet live 
+            ----------------------------------------------------------*/
+
+            UPDATE :h_table1 a
+            FROM   contributor_period b
+            SET    enterprise = b.enterprise
+            WHERE  a.contributor_reference = b.contributor_reference
+            AND    a.period = b.period
+            AND    a.enterprise = '';
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9    
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating enterprise on ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+
+            UPDATE :h_table1 a
+            FROM   contributor_period b
+            SET    enterprise = b.enterprise
+            WHERE  a.contributor_reference = b.contributor_reference
+            AND    (a.period/100) * 100 = b.period
+            AND    b.inquiry = :gc_asi
+            AND    a.enterprise = '';
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9    
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating enterprise on ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+
+            UPDATE :h_table1 a
+            FROM   contributor_period b
+            SET    enterprise = b.enterprise
+            WHERE  a.contributor_reference = b.contributor_reference
+            AND    (a.period/100) * 100 = b.period + 100
+            AND    b.inquiry = :gc_asi
+            AND    a.enterprise = '';
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9    
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating enterprise on ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+/* elseif ret_val = 1 period does not exist do the other*/
+	   
+        ELSE
+	   
+           /*-----------------------------------------------------------
+	    Update any annual contributors on this table to make their
+	    inquiry say 14 rather than 15 as it has been selected as 
+            from the sim tables
+           -----------------------------------------------------------*/
+
+            UPDATE :h_table1 a
+	    FROM   contributor_period b
+	    SET    contributor_inquiry = :gc_asi
+	    WHERE  a.contributor_reference = b.contributor_reference
+	    AND    b.inquiry = :gc_asi
+	    AND    a.period/100 = b.period/100;
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9 
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating carryin contributors to inquiry 14 on ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+
+       /*--------------------------------------------------------------
+         Update again to ensure the future periods have 14 as inquiry
+
+            UPDATE :h_table1 a
+	    FROM   contributor_period b
+	    SET    contributor_inquiry = :gc_asi
+	    WHERE  a.contributor_reference = b.contributor_reference
+	    AND    b.inquiry = :gc_asi
+	    AND    (a.period/100) * 100 = b.period + 100;
+         NEW update as the above was amending to many contributor 
+         inquiries to equal 14. eg if a contributor was annula in 
+         a previous period but was then reclassified then the above 
+         update was making the quarterly records say 14 as inquiry.
+        --------------------------------------------------------------*/
+        IF :g_inquiry = 15
+        THEN
+            UPDATE :h_table1 
+            SET    contributor_inquiry = :gc_asi
+            WHERE  contributor_inquiry = :gc_qsi
+            AND    contributor_industry IN
+                   (SELECT industry
+                    FROM   industry
+                    WHERE  inquiry = :gc_asi); 
+        ENDIF;
+            UPDATE :h_table1 
+            SET    contributor_inquiry = :gc_qsi
+            WHERE  contributor_inquiry = :gc_asi
+            AND    contributor_industry IN
+                   (SELECT industry
+                    FROM   industry
+                    WHERE  inquiry = :gc_qsi); 
+
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9 
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error 2nd update carryin contributors to inquiry 14 on ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+
+           /*----------------------------------------------------------
+	    Create a table to select all annual contributors  for 
+            the latest annual period as the future period has not yet 
+            been selected
+            ----------------------------------------------------------*/
+            ret_val = CALLPROC msacm_fp_drop_table (
+                      h_table = :h_table4);
+
+            IF ret_val = 9
+            THEN
+                RETURN 9;
+            ENDIF;
+
+            CREATE TABLE :h_table4
+	    AS SELECT *
+	    FROM     contributor_period
+	    WHERE    inquiry = :gc_asi
+	    AND      period = :g_annualised_period - 100;
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0  
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error creating annual contributors ' + :h_table4,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+/****message
+'run_period = ' + ascii(:run_period) +
+'g_prev_period1 = ' + ascii(:g_prev_period1) +
+'g_prev_period2 = ' + ascii(:g_prev_period2) +
+'g_prev_period3 = ' + ascii(:g_prev_period3) +
+'g_prev_period4 = ' + ascii(:g_prev_period4) 
+with style = popup;
+***/
+
+           /*----------------------------------------------------------
+            Insert each distinct contributor into the temp_sas_data 
+            table with the 5 data periods of the quarterly span
+            ----------------------------------------------------------*/
+
+            INSERT INTO :h_table2
+            SELECT contributor_reference,
+                   :run_period as period,
+                   (contributor_industry * 10000) + 9200 as question,
+                   contributor_industry as question_industry,
+                   contributor_industry,
+                   0 as avalue,
+                  '' as acell,
+                   :g_prev_period1 as prev_period1,
+                   (contributor_industry * 10000) + 9200 as question,
+                   contributor_industry as question_industry,
+                   contributor_industry,
+                   0 as avalue,
+                  '' as acell,
+                   :g_prev_period2 as prev_period2,
+                   (contributor_industry * 10000) + 9200 as question,
+                   contributor_industry as question_industry,
+                   contributor_industry,
+                   0 as avalue,
+                  '' as acell,
+                   :g_prev_period3 as prev_period3,
+                   (contributor_industry * 10000) + 9200 as question,
+                   contributor_industry as question_industry,
+                   contributor_industry,
+                   0 as avalue,
+                  '' as acell,
+                   :g_prev_period4 as prev_period4,
+                   (contributor_industry * 10000) + 9200 as question,
+                   contributor_industry as question_industry,
+                   contributor_industry,
+                   0 as avalue,
+                  '' as acell,
+                   :gc_asi as inquiry
+            FROM   :h_table4;
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0  
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error inserting contributors into ' + :h_table2,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+          /*-------------------------------------------------------
+           Modify table to speed up processing
+        
+            MESSAGE 'Modifying table ' + :h_table2;
+        
+            MODIFY :h_table2 
+            TO BTREE UNIQUE ON  contributor_reference,
+                                period,
+                                question;
+        
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+        
+            IF ret_val <> 0
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error modifying ' + :h_table2,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+          ----------------------------------------------------------*/
+
+           /*----------------------------------------------------------
+             Now insert all the data from temp_sas_data into the main 
+             sas data table - sasconttemp one period at a time.
+            ----------------------------------------------------------*/
+
+            INSERT INTO :h_table1
+            SELECT contributor_reference,
+                   period,
+                   question,
+                   10 as quest_order,
+                   question_industry,
+                   '5' as lag,
+                   14 as contributor_inquiry,
+                   contributor_industry,
+                   contributor_industry as proposed_industry,
+                   '' as enterprise,
+                   0 as register_emp,
+                   acell,
+                   avalue
+            FROM   :h_table2
+            WHERE  period = :run_period;
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0   
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error 1st insert - all data into ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            INSERT INTO :h_table1
+            SELECT contributor_reference,
+                   prev_period1,
+                   prev_question1,
+                   10 as quest_order,
+                   prev_qindustry1,
+                   '5' as lag,
+                   14 as contributor_inquiry,
+                   prev_cindustry1,
+                   prev_cindustry1 as proposed_industry,
+                   '' as enterprise,
+                   0 as register_emp,
+                   prev_acell1,
+                   prev_avalue1
+            FROM   :h_table2
+            WHERE  prev_period1 = :g_prev_period1;
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0   
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error 2nd insert - all data into ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            INSERT INTO :h_table1
+            SELECT contributor_reference,
+                   prev_period2,
+                   prev_question2,
+                   10 as quest_order,
+                   prev_qindustry2,
+                   '5' as lag,
+                   14 as contributor_inquiry,
+                   prev_cindustry2,
+                   prev_cindustry2 as proposed_industry,
+                   '' as enterprise,
+                   0 as register_emp,
+                   prev_acell2,
+                   prev_avalue2
+            FROM   :h_table2
+            WHERE  prev_period2 = :g_prev_period2;
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0   
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error 3rd insert - all data into ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            INSERT INTO :h_table1
+            SELECT contributor_reference,
+                   prev_period3,
+                   prev_question3,
+                   10 as quest_order,
+                   prev_qindustry3,
+                   '5' as lag,
+                   14 as contributor_inquiry,
+                   prev_cindustry3,
+                   prev_cindustry3 as proposed_industry,
+                   '' as enterprise,
+                   0 as register_emp,
+                   prev_acell3,
+                   prev_avalue3
+            FROM   :h_table2
+            WHERE  prev_period3 = :g_prev_period3;
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0   
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error 4th insert - all data into ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            INSERT INTO :h_table1
+            SELECT contributor_reference,
+                   prev_period4,
+                   prev_question4,
+                   10 as quest_order,
+                   prev_qindustry4,
+                   '5' as lag,
+                   14 as contributor_inquiry,
+                   prev_cindustry4,
+                   prev_cindustry4 as proposed_industry,
+                   '' as enterprise,
+                   0 as register_emp,
+                   prev_acell4,
+                   prev_avalue4
+            FROM   :h_table2
+            WHERE  prev_period4 = :g_prev_period4;
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0   
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error 5th insert - all data into ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+
+           /*----------------------------------------------------------
+             now delete any contributors who are not selected for the 
+             annual periods (there shouldn't be any) or that have 
+             redundant links on asi_to_qsi_link
+            ----------------------------------------------------------*/
+
+            DELETE FROM :h_table1 a
+            WHERE  question = 0
+            AND    contributor_reference NOT IN
+                   (SELECT contributor_reference
+                    FROM   contributor_period b
+                    WHERE  a.period/100 = b.period/100);          
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9    
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error deleting cp redundant contributors from ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            DELETE FROM :h_table1 a
+            WHERE  question = 0
+            AND    contributor_reference NOT IN
+                   (SELECT contributor_reference
+                    FROM   asi_to_qsi_link b
+                    WHERE  a.period/100 = b.asi_period/100);          
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9    
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error deleting atq redundant contributors from ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+
+           /*----------------------------------------------------------
+            Update table with register employment three times
+            1. - for quarterly refs 
+            2. - for carry-in refs
+            3. - for carry-in refs for future periods not yet live 
+                 on annual
+            ----------------------------------------------------------*/
+
+            UPDATE :h_table1 a
+            FROM   contributor_period b
+            SET    register_emp = b.register_emp
+            WHERE  a.contributor_inquiry = :g_inquiry
+            AND    a.period = b.period
+            ANd    a.contributor_reference = b.contributor_reference;
+            
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9    
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating same inquiry register_emp on ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            UPDATE :h_table1 a
+            FROM   contributor_period b
+            SET    register_emp = b.register_emp
+            WHERE  b.inquiry = :gc_asi
+            AND    (a.period/100) * 100 = b.period
+            AND    a.contributor_reference = b.contributor_reference
+            AND    a.register_emp = 0;
+            
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9    
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating cross inquiry register_emp on ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            UPDATE :h_table1 a
+            FROM   contributor_period b
+            SET    register_emp = b.register_emp
+            WHERE  b.inquiry = :gc_asi
+            AND    (a.period/100) * 100 = b.period + 100
+            AND    a.contributor_reference = b.contributor_reference
+            AND    a.register_emp = 0;
+            
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9    
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating cross inquiry future register_emp on ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+           /*----------------------------------------------------------
+            Update table with acells      
+            The records from the sim tables will already have acells 
+            completed but the carry-in 9200 questions should still be 
+            blank at this stage. Update them to equal what is held on 
+            cqpv. If the annualised quarterly period is not yet live 
+            on the system then the acell will be blank. 
+            Update it to equal 'N' if the previous period is 'N' or 
+            otherwise make it 'C' .
+
+            June 2003
+            RAP found there were no never responders when running 
+            200303 results as in the following update I amended 
+            acell = 'C' in the wrong order. I had amended the part 
+            of the code where the annual period was live (the first 
+            part of IF statement above) but not the else where the 
+            future period was not yet live below
+            ----------------------------------------------------------*/
+
+            UPDATE :h_table1 a
+            FROM   cqpv b
+            SET    acell = b.acell
+            WHERE  (a.period/100) * 100  = b.period
+            AND    MOD(a.question,10000) = 9200
+            AND    a.question = b.question
+            AND    a.acell = ''
+            AND    a.contributor_inquiry = :gc_asi
+            AND    a.contributor_inquiry = b.contributor_inquiry
+            AND    a.contributor_reference = b.contributor_reference;
+            
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9    
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            '2. Error first update of acells on ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+/************
+this was updating true acells of 'N' to 'C' and causing the never responders bit not to work
+            UPDATE :h_table1 a
+            SET    acell  = 'C'
+            WHERE  acell in ('','N')
+            AND    MOD(question,10000) = 9200;
+***************/
+            UPDATE :h_table1 a
+            FROM   cqpv b
+            SET    acell = 'N'    
+            WHERE  (a.period/100) * 100  = :g_annualised_period
+            AND    (b.period/100) * 100  = :g_annualised_period - 100
+            AND    MOD(a.question,10000) = 9200
+            AND    a.question = b.question
+            AND    a.acell = ''
+            AND    b.acell = 'N'
+            AND    a.contributor_inquiry = :gc_asi
+            AND    a.contributor_inquiry = b.contributor_inquiry
+            AND    a.contributor_reference = b.contributor_reference;
+            
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9    
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            '2. Error 2nd update of acells on ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+            UPDATE :h_table1 a
+            FROM   cqpv b
+            SET    acell = 'C'    
+            WHERE  (a.period/100) * 100 = :g_annualised_period
+            AND    (b.period/100) * 100 = :g_annualised_period - 100
+            AND    MOD(a.question,10000) = 9200
+            AND    a.question = b.question
+            AND    a.acell = ''
+            AND    b.acell <> 'N'
+            AND    a.contributor_inquiry = :gc_asi
+            AND    a.contributor_inquiry = b.contributor_inquiry
+            AND    a.contributor_reference = b.contributor_reference;
+            
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9    
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            '3. Error 3rd update of acells on ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+
+
+           /*----------------------------------------------------------
+            Update table with enterprise
+            1. - for quarterly refs 
+            2. - for carry-in refs
+            3. - for carry-in refs for future periods not yet live 
+            ----------------------------------------------------------*/
+
+            UPDATE :h_table1 a
+            FROM   contributor_period b
+            SET    enterprise = b.enterprise
+            WHERE  a.contributor_reference = b.contributor_reference
+            AND    a.period = b.period
+            AND    a.enterprise = '';
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9    
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating enterprise on ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+
+            UPDATE :h_table1 a
+            FROM   contributor_period b
+            SET    enterprise = b.enterprise
+            WHERE  a.contributor_reference = b.contributor_reference
+            AND    (a.period/100) * 100 = b.period
+            AND    b.inquiry = :gc_asi
+            AND    a.enterprise = '';
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9    
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating enterprise on ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+
+            UPDATE :h_table1 a
+            FROM   contributor_period b
+            SET    enterprise = b.enterprise
+            WHERE  a.contributor_reference = b.contributor_reference
+            AND    (a.period/100) * 100 = b.period + 100
+            AND    b.inquiry = :gc_asi
+            AND    a.enterprise = '';
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9    
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error updating enterprise on ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+       ENDIF; /* 2 types of qsi*/ 
+
+/**
+        COPY table :h_table1(
+            	  contributor_reference = c(0)'^',
+            	  period                = c(0)'^' ,
+            	  question              = c(0)'^' ,
+            	  quest_order           = c(0)'^' ,
+            	  question_industry     = c(0)'^' ,
+            	  lag                   = c(0)'^' ,
+            	  contributor_inquiry   = c(0)'^' ,
+            	  contributor_industry  = c(0)'^' ,
+            	  proposed_industry     = c(0)'^' ,
+            	  enterprise            = c(0)'^',
+            	  register_emp          = c(0)'^' ,
+            	  acell                 = c(0)'^',
+            	  avalue                = c0nl )
+        INTO :h_copy_out;
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error copying to file ' + :h_table1,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+**/
+
+/* end of if inquiry = 15 */
+
+
+/*return 0;*/
+
+   /********************
+    Tidy this code up for if running annual results
+    Not looked at yet - 13/8/2002
+   edited 25/9/2002
+   ***********************/
+
+/*******************************************************************
+removing code that applies to quarterly processing and was causing a 
+failure when running all industries as annual. 13/03/06.
+********************************************************************/
+/***
+    ELSEIF g_inquiry = 14
+    THEN
+
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = :h_table4);
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        MESSAGE 'Creating table . . . . . . . ' + :h_table4;
+
+	CREATE TABLE :h_table4
+	AS SELECT contributor_reference ,
+                  period as period,
+		  period/100*100 as asi_period,
+                  question,
+                  quest_order,
+                  question_industry,
+                  contributor_industry,
+                  avalue,
+		  acell
+	FROM      cqpv 
+        WHERE     contributor_inquiry = 15
+	AND       MOD(question,10000) = 9200
+        AND       period/100*100 
+        BETWEEN   :start_period AND :end_period;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error creating ' + :h_table4,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+        MESSAGE 'Creating table . . . . . . .  . ' + :h_table5;
+
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = :h_table5);
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+	CREATE TABLE :h_table5
+	AS SELECT contributor_reference ,
+                  asi_period as period,
+                  question,
+                  quest_order,
+                  question_industry,
+                  contributor_industry,
+                  sum(avalue) as avalue
+	FROM     :h_table4
+        GROUP BY  contributor_reference,
+		  asi_period,
+		  question,
+		  quest_order,
+	          question_industry,
+		  contributor_industry;
+	
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error creating ' + :h_table4,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+        MESSAGE 'Creating table. . . . . . . .  .' + :h_table6;
+
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = :h_table6);
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+	CREATE TABLE :h_table6
+	AS SELECT contributor_reference ,
+                  period as period,
+                  question,
+                  quest_order,
+                  question_industry,
+                  '0' as lag,
+                  :g_inquiry as inquiry,
+                  contributor_industry,
+                  contributor_industry as proposed_industry,
+                  '            ' as enterprise,
+                  int4(0) as register_emp,
+                  'N' as acell,
+                   avalue
+	FROM      :h_table5;
+	
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error creating ' + :h_table6,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+        MESSAGE 'Updating . . . . . . . .  ' + :h_table6;
+
+        UPDATE :h_table6 a
+        FROM   contributor_period b
+        SET    enterprise = b.enterprise,
+               inquiry = :gc_qsi 
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.period+12 = b.period
+	AND    a.enterprise in ('','0')
+        AND    b.inquiry = 15;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error updating enterprise 1 ' + :h_table6,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+        UPDATE :h_table6 a
+        FROM   contributor_period b
+        SET    enterprise = b.enterprise,
+               inquiry = :gc_qsi
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.period+9 = b.period
+        AND    b.inquiry = 15;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error updating enterprise 2' + :h_table6,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+        UPDATE :h_table6 a
+        FROM   contributor_period b
+        SET    enterprise = b.enterprise,
+               inquiry = :gc_qsi
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.period+6 = b.period
+        AND    b.inquiry = 15;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error updating enterprise 3 ' + :h_table6,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+        UPDATE :h_table6 a
+        FROM   contributor_period b
+        SET    enterprise = b.enterprise,
+               inquiry = :gc_qsi
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.period+3 = b.period
+        AND    b.inquiry = 15;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error updating enterprise 4 ' + :h_table6,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+        UPDATE :h_table6 a
+        SET    acell = 'I'
+        WHERE  contributor_reference IN(
+               SELECT contributor_reference 
+               FROM :h_table4 b
+               WHERE  acell = 'I'
+               AND    a.question = b.question
+               AND    b.period 
+               BETWEEN b.period/100*100+3 AND b.period/100*100+12);
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error updating with I ' + :h_table6,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+        UPDATE :h_table6 a
+        SET    acell = 'A'
+        WHERE  contributor_reference IN(
+               SELECT contributor_reference 
+               FROM :h_table4 b
+               WHERE  acell = 'A'
+               AND    a.question = b.question
+               AND b.period 
+               BETWEEN b.period/100*100+3 AND b.period/100*100+12)
+               AND acell <> 'I';
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error updating with A ' + :h_table6,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+
+        UPDATE :h_table6 a
+        SET    acell = 'C'
+        WHERE  contributor_reference IN(
+               SELECT contributor_reference 
+               FROM :h_table4 b
+               WHERE  acell = 'C'
+               AND    a.question = b.question
+               AND    b.period 
+               BETWEEN b.period/100*100+3 AND b.period/100*100+12)
+	       AND acell NOT IN ('I','A');
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error updating C ' + :h_table6,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+
+        UPDATE :h_table6 a
+        SET    acell = 'P'
+        WHERE  contributor_reference IN(
+               SELECT contributor_reference 
+               FROM :h_table4 b
+               WHERE  acell = 'P'
+               AND    a.question = b.question
+               AND    b.period 
+               BETWEEN b.period/100*100+3 AND b.period/100*100+12)
+	       AND    acell NOT IN ('I','A','C');
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error updating P ' + :h_table6,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+
+        UPDATE :h_table6 a
+        SET    acell = 'V'
+        WHERE  contributor_reference IN(
+               SELECT contributor_reference 
+               FROM :h_table4 b
+               WHERE  acell = 'V'
+               AND    a.question = b.question
+               AND    b.period 
+               BETWEEN b.period/100*100+3 AND b.period/100*100+12)
+	       AND    acell NOT IN ('I','A','C','P');
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error updating V ' + :h_table6,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+
+        UPDATE :h_table6 a
+        SET    acell = 'B'
+        WHERE  contributor_reference IN(
+               SELECT contributor_reference 
+               FROM :h_table4 b
+               WHERE  acell = 'B'
+               AND    a.question = b.question
+               AND    b.period 
+               BETWEEN b.period/100*100+3 AND b.period/100*100+12)
+	       AND    acell NOT IN ('I','A','C','P','V');
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error updating B ' + :h_table6,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+        ENDIF;
+
+        MESSAGE 'Inserting table6 into . . . . . . .' + :h_table1;
+
+	INSERT INTO :h_table1
+	SELECT * FROM :h_table6;
+	
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error inserting into sasconttemp from ' + :h_table5,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+**** end of removal of code to allow annual only processing*****/
+   ENDIF; /* of if 15 or 14 */
+
+  /*----------------------------------------------------------
+   Update sasconttemp with register_emp for annual only (qtrly
+   already updated in above code)
+   1. - for annual refs 
+   2. - for carry-in refs (average of all quarters in span)
+   ----------------------------------------------------------*/
+   IF :g_inquiry = 14
+   THEN
+        UPDATE :h_table1 a
+        FROM    contributor_period b
+        SET     register_emp = b.register_emp
+        WHERE   a.contributor_reference = b.contributor_reference 
+        AND     a.period = b.period
+        AND     b.inquiry = :gc_asi;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error updating annual contributors with register_emp on ' + :h_table1,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+       /*----------------------------------------------------------
+        create temp table to select quarterly carryin refs 
+        register_emp
+        ----------------------------------------------------------*/
+
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = :h_table7);
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        MESSAGE 'Creating Table . . . . . . .' + :h_table7;
+
+        CREATE TABLE :h_table7
+        AS SELECT contributor_reference,
+                  period as qsi_period,
+                  period/100 * 100 as asi_period,
+                  register_emp
+        FROM      contributor_period
+        WHERE     period/100 * 100 
+        BETWEEN  :start_period 
+        AND      :end_period
+        AND      inquiry = 15;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9 
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error creating reg emp on ' + :h_table7,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+                   
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = :h_table8);
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        MESSAGE 'Creating Table . . . . . . .' + :h_table8;
+
+        CREATE TABLE :h_table8
+        AS SELECT contributor_reference,
+                  asi_period as period,
+                  AVG(register_emp) as register_emp
+        FROM      :h_table7
+        GROUP BY  contributor_reference,asi_period;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9 
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error creating avg reg_emp' + :h_table8,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+        MESSAGE 'Updating reg_emp on . . . . . . .' + :h_table1;
+     
+        UPDATE :h_table1 a
+        FROM   :h_table8 b
+        SET    register_emp = b.register_emp
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.period = b.period;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9 
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error updating with reg_emp on ' + :h_table1,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+   ENDIF;
+
+   /*-----------------------------------------------------------------
+    Added Feb 28 2003 as missed off last year!
+    _________________________________________________________________*/
+
+   MESSAGE 'Updating SAS table for lag';
+
+   IF :g_inquiry = 15
+   THEN
+
+       UPDATE :h_table1 a
+       FROM   question_library b
+       SET    lag = varchar(b.lag)
+       WHERE  a.question = b.question
+       AND    a.period/100*100 = b.period;
+
+
+       ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+    
+       IF ret_val = 9
+       THEN
+           INSERT INTO error_log
+           VALUES (    'now',
+                       'Error updating lag for 015 on ' + :h_table1,
+                       :h_frpr_name,
+                       :ret_val,
+                       :g_user_id);
+           COMMIT;
+           RETURN ret_val;
+       ENDIF;
+    
+   ELSE 
+
+       UPDATE :h_table1 a
+       FROM   question_library b
+       SET    lag = varchar(b.lag)
+       WHERE  a.question = b.question
+       AND    a.period = b.period;
+
+
+       ret_val = CALLPROC batch_check_inq_ing (
+                 h_num_row_ck = 1,
+                 h_commit     = 'Y',
+                 h_rollback   = 'N',
+                 h_frpr_name  = :h_frpr_name);
+    
+       IF ret_val = 9
+       THEN
+           INSERT INTO error_log
+           VALUES (    'now',
+                       'Error updating lag for 014 on ' + :h_table1,
+                       :h_frpr_name,
+                       :ret_val,
+                       :g_user_id);
+           COMMIT;
+           RETURN ret_val;
+       ENDIF;
+    
+   ENDIF;
+
+       ret_val = CALLPROC batch_check_inq_ing (
+                 h_num_row_ck = 1,
+                 h_commit     = 'Y',
+                 h_rollback   = 'N',
+                 h_frpr_name  = :h_frpr_name);
+   
+       IF ret_val = 9
+       THEN
+           INSERT INTO error_log
+           VALUES (    'now',
+                       'Error updating lags ' + :h_copy_table1,
+                       :h_frpr_name,
+                       :ret_val,
+                       :g_user_id);
+           COMMIT;
+           RETURN ret_val;
+       ENDIF;
+   /*-----------------------------------------------------------------
+    Added June 2003 as both qtrly and annual contributor inquiries 
+    were sometimes incorrect so I inserted this update to ensure 
+    the contributor_industry belongs to the correct 
+    contributor_inquiry
+    _________________________________________________________________*/
+
+
+            UPDATE :h_table1 
+            SET    contributor_inquiry = :gc_qsi
+            WHERE  contributor_inquiry = :gc_asi
+            AND    contributor_industry IN
+                   (SELECT industry
+                    FROM   industry
+                    WHERE  inquiry = :gc_qsi); 
+
+
+            ret_val = CALLPROC batch_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9 
+            THEN
+                INSERT INTO error_log
+                VALUES (    'now',
+                            'Error 2nd update carryin contributors to inquiry 14 on ' + :h_table1,
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN ret_val;
+            ENDIF;
+
+
+   /******************
+    Tidy up above code
+tidied up 25/9/2002 - my anniversary today not divorced, yet!
+*************************/
+
+        MESSAGE 'Copying SAS table to delimited file';
+
+        COPY table :h_table1(
+            	  contributor_reference = c(0)'^',
+            	  period                = c(0)'^' ,
+            	  question              = c(0)'^' ,
+            	  quest_order           = c(0)'^' ,
+            	  question_industry     = c(0)'^' ,
+            	  lag                   = c(0)'^' ,
+            	  contributor_inquiry   = c(0)'^' ,
+            	  contributor_industry  = c(0)'^' ,
+            	  proposed_industry     = c(0)'^' ,
+            	  enterprise            = c(0)'^',
+            	  register_emp          = c(0)'^' ,
+            	  acell                 = c(0)'^',
+            	  avalue                = c0nl )
+        INTO :h_copy_out;
+
+        ret_val = CALLPROC batch_check_inq_ing (
+                  h_num_row_ck = 1,
+                  h_commit     = 'Y',
+                  h_rollback   = 'N',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val <> 0
+        THEN
+            INSERT INTO error_log
+            VALUES (    'now',
+                        'Error copying to file ' + :h_table1,
+                        :h_frpr_name,
+                        :ret_val,
+                        :g_user_id);
+            COMMIT;
+            RETURN ret_val;
+        ENDIF;
+
+
+    RETURN 0;
+}
+PROCEDURE tables_exist(table_name = char(24) not null) =
+
+{
+
+  SELECT table_name
+  FROM   iitables
+  WHERE  table_name = :table_name
+  AND    table_owner = :g_user_id;
+
+  ret_val = CALLPROC msacm_fp_check_inq_ing(h_num_row_ck = 1,
+			      h_commit     = 'Y',
+                              h_rollback   = 'N',
+                              h_frpr_name = :h_frpr_name);
+
+  RETURN ret_val;
+
+}

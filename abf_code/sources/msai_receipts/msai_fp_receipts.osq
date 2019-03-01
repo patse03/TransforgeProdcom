@@ -1,0 +1,329 @@
+
+PROCEDURE msai_fp_receipts() =
+
+DECLARE h_frpr_name        = VARCHAR(24) NOT NULL,
+        h_table            = VARCHAR(24) NOT NULL,
+        h_file1            = VARCHAR(100) NOT NULL,
+        h_file2            = VARCHAR(100) NOT NULL,
+        h_command          = VARCHAR(240) NOT NULL,
+        h_varchar_variable = VARCHAR(240) NOT NULL,
+        h_integer_variable = INTEGER4 NOT NULL,
+        h_rows             = INTEGER4 NOT NULL,
+        h_param1           = VARCHAR(10) NOT NULL,
+        h_param2           = VARCHAR(10) NOT NULL,
+        start_date         = DATE NOT NULL,
+        end_date           = DATE NOT NULL,
+        inquiry            = INTEGER1 NOT NULL,
+        days               = INTEGER2 NOT NULL,
+        ret_val            = INTEGER1 NOT NULL
+				
+{
+    h_frpr_name = 'msai_fp_receipts';
+    h_table = 'idbr_receipts';
+
+    SELECT DBMSINFO('username') AS g_user_id;
+
+    SELECT DBMSINFO('database') AS g_database;
+
+
+    /*------------------------------------------------------------------
+     Get parameters: 1st = Inquiry, 2nd = Days (2nd is optional)
+    ------------------------------------------------------------------*/
+
+    h_varchar_variable = CALLPROC CommandLineParameters();
+    h_varchar_variable = SQUEEZE (h_varchar_variable);
+
+    h_integer_variable = LOCATE (h_varchar_variable, ' ');
+    h_param1           = LEFT   (h_varchar_variable, h_integer_variable - 1);
+    h_varchar_variable = SHIFT  (h_varchar_variable, - h_integer_variable);
+
+    h_integer_variable = LOCATE (h_varchar_variable, ' ');
+    h_param2           = LEFT   (h_varchar_variable, h_integer_variable - 1);
+    h_varchar_variable = SHIFT  (h_varchar_variable, - h_integer_variable);
+
+    /*------------------------------------------------------------------
+     Check Inquiry
+    ------------------------------------------------------------------*/
+
+    IF :h_param1 <> '14' AND :h_param1 <> '15'
+    THEN
+
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Invalid Inquiry ' + :h_param1,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+
+        COMMIT;
+        RETURN 9;
+    ELSE
+        inquiry = INT1(:h_param1);
+    ENDIF;
+
+    IF g_database = 'prodlivedb'
+    THEN
+        h_file1 = '/prodcom/live5/files/text/receipts0' +
+                  VARCHAR(:inquiry) + '.tmp';
+
+        h_file2 = '/prodcom/live5/files/text/receipts0' +
+                  VARCHAR(:inquiry);
+    ELSE
+        h_file1 = '/home/prodcom/admin/produser/receipts0' +
+                  VARCHAR(:inquiry) + '.tmp';
+
+        h_file2 = '/home/prodcom/admin/produser/receipts0' +
+                  VARCHAR(:inquiry);
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Check Days - default to 7 if not supplied
+    ------------------------------------------------------------------*/
+
+    IF :h_param2 <> ''
+    THEN
+        IF :h_param2 LIKE '\[0-9\]' escape '\' OR
+           :h_param2 LIKE '\[0-9\]\[0-9\]' escape '\' OR
+           :h_param2 LIKE '\[0-9\]\[0-9\]\[0-9\]' escape '\'
+        THEN
+            days = INT2(:h_param2);
+        ENDIF;
+    ELSE
+        days = 7;
+    ENDIF;
+
+/*  IF days < 1 OR days > 366 */
+
+    IF days < 1 OR days > 700
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Invalid Days = ' + VARCHAR(:days),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    end_date = 'today';
+    start_date = (date('today') - (varchar(:days) + ' days'));
+
+    /*------------------------------------------------------------------
+     Start
+    ------------------------------------------------------------------*/
+
+    INSERT INTO error_log
+    VALUES (    'now',
+                'Receipting Starts for Inquiry = ' +
+                 VARCHAR(:inquiry) + ', Days = ' +
+                 VARCHAR(:days),
+                :h_frpr_name,
+                0,
+                :g_user_id);
+     COMMIT;
+
+    /*------------------------------------------------------------------
+     Create table of contributors receipted in specified span
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC batch_fp_drop_table (
+	      h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    IF :inquiry = 15
+    THEN
+        CREATE TABLE  :h_table
+        AS SELECT     contributor_reference,
+                      ' ' AS check_letter,
+                      '015' AS inquiry,
+                      VARCHAR(period) AS period
+        FROM          contributor_period
+        WHERE         inquiry = :inquiry
+        AND           receipt_date BETWEEN :start_date AND :end_date;
+    ELSE
+        CREATE TABLE  :h_table
+        AS SELECT     contributor_reference,
+                      ' ' AS check_letter,
+                      '014' AS inquiry,
+                      LEFT(VARCHAR(period),4) + '12' AS period
+        FROM          contributor_period
+        WHERE         inquiry = :inquiry
+        AND           receipt_date BETWEEN :start_date AND :end_date;
+
+    ENDIF;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row    = BYREF(:h_rows),
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error creating ' + :h_table,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ELSEIF ret_val = 1
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'No receipted Contributors found',
+                    :h_frpr_name,
+                    1,
+                    :g_user_id);
+        COMMIT;
+        RETURN 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Modify table to sort on period
+    ------------------------------------------------------------------*/
+
+    MODIFY :h_table to btree unique on period,contributor_reference;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error modifying ' + :h_table,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Update table from idbr_lookup
+    ------------------------------------------------------------------*/
+
+    UPDATE :h_table a
+    FROM   idbr_lookup b
+    SET    contributor_reference = b.new_reference
+    WHERE  a.contributor_reference = b.dummy_reference
+    AND    a.contributor_reference LIKE '8888%';
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error updating ' + :h_table,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Copy table to file
+    ------------------------------------------------------------------*/
+
+    COPY TABLE :h_table (
+               contributor_reference = c11, colon = d1,
+               check_letter = c1, colon = d1,
+               inquiry = c3, colon = d1,
+               period = c6, nl = d1)
+    INTO       :h_file1;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error copying table to ' + :h_file1,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ELSEIF ret_val = 1
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'No rows copied to ' + :h_file1,
+                    :h_frpr_name,
+                    1,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Call C program to update output file with check_letters, then
+     delete the intermediate file.
+    ------------------------------------------------------------------*/
+ 
+    ret_val = CALLPROC msai_cp_checkletter(:h_file1,
+					   :h_file2);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error calling msai_cp_checkletter',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    h_command = '\rm ' + :h_file1;
+
+    ret_val = msa_cp_callsys (:h_command);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Error deleting ' + :h_file1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     End
+    ------------------------------------------------------------------*/
+
+    INSERT INTO error_log
+    VALUES (    'now',
+                VARCHAR(:h_rows) + ' Contributors Receipted for Inquiry = ' +
+                 VARCHAR(:inquiry) + ', Days = ' + VARCHAR(:days),
+                :h_frpr_name,
+                0,
+                :g_user_id);
+    COMMIT;
+    RETURN 0;
+}

@@ -1,0 +1,152 @@
+/*----------------------------------------------------------------------
+  Select Imputation Ratios from question_period
+----------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        previous_period   = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL
+{    
+    msa_date = 'now';
+    h_retries_allowed = 3;
+    h_frpr_name = 'msach_fr_imp_ratios';
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+    industry = :g_industry;
+    inquiry  = :g_inquiry;
+
+    IF :g_periods < 2
+    THEN
+        MESSAGE 'There is no Previous Period to show Imputation' +
+                ' Ratios for.'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+    current_period = :g_period[1].period;
+    previous_period = :g_period[2].period;
+
+    MESSAGE 'Retrieving Ratios . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT DISTINCT a.question AS question,
+                        a.imputation_ratio AS imputation_ratio,
+                        b.imputation_ratio AS last_ratio
+        FROM            question_period a,
+                        question_period b
+        WHERE           a.question = b.question 
+        AND             MOD(a.question,10) NOT IN (2,4)
+        AND             a.inquiry = :g_inquiry
+        AND             a.question_industry   = :g_industry
+        AND             a.period  = :current_period
+        AND             b.inquiry = :g_inquiry
+        AND             b.question_industry = :g_industry
+        AND             b.period  = :previous_period
+
+        UNION
+        SELECT DISTINCT a.question AS question,
+                        a.imputation_ratio AS imputation_ratio,
+                        b.imputation_ratio AS last_ratio
+        FROM            question_period a,
+                        question_period b,
+                        question_history c
+        WHERE           a.question = c.new_question 
+        AND             b.question = c.old_question 
+        AND             c.rep_type = 1
+        AND             MOD(a.question,10) NOT IN (2,4)
+        AND             a.inquiry = :g_inquiry
+        AND             a.question_industry   = :g_industry
+        AND             a.period  = :current_period
+        AND             b.inquiry = :g_inquiry
+        AND             b.question_industry = :g_industry
+        AND             b.period  = :previous_period
+        ORDER BY        question;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No ratios were found for this Industry'
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+    RESUME FIELD tf.question; 
+
+}    
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'History' = 
+{
+    ret_val = CALLFRAME msach_fr_imp_rat_hist (
+               question = :tf.question);
+
+    IF ret_val <> 0 
+    THEN
+        RETURN 1;
+    ENDIF;
+    msa_date = 'now';
+}
+
+'ContributorRatios' =
+{
+    IF :g_inquiry = :gc_asi
+    THEN
+        MESSAGE 'This option is only available for Quarterly Inquiries'
+        WITH STYLE = POPUP;
+    ELSE
+        ret_val = CALLFRAME msach_fr_imp_con_ratios (
+                  question    = tf.question,
+                  last_ratio  = tf.last_ratio,
+                  perc_change = tf.perc_change,
+                  imp_rat     = tf.imputation_ratio);
+    ENDIF;
+    msa_date = 'now';
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}

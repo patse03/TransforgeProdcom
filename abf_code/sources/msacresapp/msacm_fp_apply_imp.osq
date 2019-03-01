@@ -1,0 +1,743 @@
+/*----------------------------------------------------------------------
+                      MSACM_FP_APPLY_IMP
+
+      This procedure will be used as a base to create the code to
+      begin the imputation phase of the results sequence
+----------------------------------------------------------------------*/
+
+PROCEDURE msacm_fp_apply_imp () =
+
+DECLARE   t_calc        = VARCHAR(24) NOT NULL,
+          h_9200_table  = VARCHAR(24) NOT NULL,
+          h_9200_table2 = VARCHAR(24) NOT NULL,
+          h_9200_table3 = VARCHAR(24) NOT NULL,
+          h_9200_table4 = VARCHAR(24) NOT NULL,
+          start_period  = INTEGER4 NOT NULL,
+          end_period    = INTEGER4 NOT NULL,
+          imp_date      = INTEGER4 NOT NULL,
+          impless_date  = INTEGER4 NOT NULL,
+          ret_val       = INTEGER4 NOT NULL,
+          h_return      = INTEGER4 NOT NULL,
+          h_return2     = INTEGER4 NOT NULL,
+          row_count     = INTEGER4 NOT NULL,
+          h_frpr_name   = VARCHAR(25) NOT NULL,
+          h_contributor_reference = CHAR(11) NOT NULL,
+          h_period      = INTEGER4 NOT NULL,
+          h_question    = INTEGER4 NOT NULL,
+          h_avalue      = INTEGER4 NOT NULL,
+          total_rows    = INTEGER4 NOT NULL,
+          h_q1          = INTEGER4 NOT NULL,
+          h_q2          = INTEGER4 NOT NULL,
+          h_q3          = INTEGER4 NOT NULL,
+          h_q4          = INTEGER4 NOT NULL,
+          h_year        = INTEGER4 NOT NULL,
+          h_table       = VARCHAR(25) NOT NULL,
+          first_time    = CHAR(1)  NOT NULL,
+
+  lp_write_to_audit_trail = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+    h_frpr_name = 'msacm_fp_apply_imp';
+    h_table = 'temp_atq_update';
+
+    IF g_periods = 1
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Unable to calculate ratios with 1 period',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 0;
+    ENDIF;
+
+    IF :g_periods > 5
+    THEN
+        g_row = 5;
+    ELSE
+        g_row = g_periods - 1;
+    ENDIF;
+
+    start_period = :g_period[:g_row].period;
+    end_period =   :g_period[1].period;
+
+    /*--------------------------------------------------------------
+      Create new tables
+    --------------------------------------------------------------*/
+
+    t_calc    = 'sim_calc';
+    h_9200_table = 'apply_imp_9200';
+    h_9200_table2 = 'apply_imp_con_9200a';
+    h_9200_table3 = 'apply_imp_con_9200b';
+    h_9200_table4 = 'apply_imp_con_9200c';
+
+    ret_val = CALLPROC msacm_fp_drop_table ( h_table = :t_calc);
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    CREATE TABLE :t_calc (
+         status                   INTEGER1 NOT NULL,
+         contributor_reference    CHAR(11) NOT NULL,
+         question                 INTEGER4 NOT NULL,
+         quest_order              INTEGER1 NOT NULL,
+         contributor_industry     INTEGER4 NOT NULL,
+         period                   INTEGER4 NOT NULL,
+         prev_val                 INTEGER4 NOT NULL WITH DEFAULT,
+         prev_acell               CHAR(2)  NOT NULL WITH DEFAULT,
+         value                    INTEGER4 NOT NULL WITH DEFAULT,
+         acell                    CHAR(2)  NOT NULL WITH DEFAULT,
+         acell_type               CHAR(2)  NOT NULL WITH DEFAULT,
+         ratio                    FLOAT4   NOT NULL WITH DEFAULT)
+         WITH LOCATION = (prod2);
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error creating table ' + :t_calc,
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+        Start loop for each period
+    --------------------------------------------------------------*/
+
+    first_time = 'y';
+    total_rows = 0;
+
+    WHILE g_row > 0
+    DO
+        imp_date = g_period[:g_row].period;
+        impless_date = g_period[:g_row + 1].period;
+
+        /*--------------------------------------------------------------
+         Procedure to insert into temp table all imputed values
+        --------------------------------------------------------------*/
+        ret_val = CALLPROC msacm_fp_qsi_imp_simul (
+                  t_calc       = :t_calc,
+                  impless_date = :impless_date,
+                  imp_date     = :imp_date,
+                  first_time   = :first_time,
+                  row_count    = BYREF(row_count));
+
+        IF ret_val <> 0
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        first_time = 'n';
+        total_rows = total_rows + row_count;
+        g_row = g_row - 1;
+
+    /*--------------------------------------------------------------
+     Update the annualised quarterly data to keep the imputed values
+     created in the annualisation process
+    --------------------------------------------------------------*/
+    	UPDATE :t_calc a
+    	FROM   annualised_cqpv b
+    	SET    value = b.avalue,
+     	       acell  = b.acell
+    	WHERE  a.contributor_reference = b.contributor_reference
+    	AND    a.period                = b.period
+    	AND    a.question              = b.question;
+
+    	ret_val = CALLPROC msacm_fp_check_inq_ing(
+    	          h_num_row_ck = 1,
+                  h_rollback   = 'N',
+        	  h_commit     = 'Y',
+    	          h_frpr_name  = :h_frpr_name);
+
+    	IF ret_val = 9
+    	THEN
+        	ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error updating tcalc with annualised data',
+                  h_frpr_name = :h_frpr_name);
+        	RETURN 9;
+    	ENDIF;
+    ENDWHILE;
+
+    /*------------------------------------------------------------------
+    For Midcarryout, calculate imputation for Quarterly Contributors
+    who answer annual questions 
+    ------------------------------------------------------------------*/
+    IF :g_inquiry = :gc_asi
+    THEN
+        ret_val = CALLPROC msacm_fp_imp_midcarryout (
+                  t_calc = :t_calc,
+                  row_count = BYREF(row_count));
+
+        IF ret_val <> 0
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        total_rows = total_rows + row_count;
+    ENDIF;
+
+    IF total_rows <> 0
+    THEN
+        MODIFY :t_calc TO BTREE
+        ON     period,
+               question,
+               contributor_reference;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error modifying table ' + :t_calc,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+  /*------------------------------------------------------------------
+    Write imputations to audit trail.
+   ------------------------------------------------------------------*/
+
+  SELECT contributor_reference AS h_contributor_reference,
+         period                AS h_period,
+         question              AS h_question,
+         value                 AS h_avalue
+  FROM   :t_calc
+  WHERE  acell = 'I'
+    AND  period = (SELECT MAX(period) FROM :t_calc)
+  BEGIN
+
+    h_return2 = CALLPROC lp_write_to_audit_trail
+              ( p_contributor_reference = :h_contributor_reference,
+                p_period                = :h_period,
+                p_question              = :h_question,
+                p_val_2                 = :h_avalue,
+                p_code                  = 9);
+
+    IF h_return2 != 0
+    THEN
+      /* Error reported by external procedure */
+      RETURN 9;
+    ENDIF; 
+
+  END;
+
+  h_return = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+
+  IF h_return != 0
+  THEN
+    h_return2 = CALLPROC msacm_fp_log_message (
+    h_text = 'ERROR: Failed to select for audit trail check loop. '
+           + 'Error code ' +VARCHAR(:h_return2) +'.',
+    h_frpr_name = :h_frpr_name);
+    RETURN 9;
+  ENDIF;
+
+       /*--------------------------------------------------------------
+         Update cqpv with sim_calc's values
+        --------------------------------------------------------------*/
+        UPDATE cqpv a
+        FROM   :t_calc b
+        SET    avalue = b.value,
+               acell  = b.acell
+        WHERE  a.question = b.question
+        AND    a.contributor_reference = b.contributor_reference
+        AND    a.period                = b.period
+        AND    a.contributor_industry  = b.contributor_industry;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating table cqpv',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ELSEIF ret_val = 1
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'No rows to update on cqpv',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 1;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+         Midcarryout: impute for VOLUMES after the values have been
+         re-inserted into cqpv
+        --------------------------------------------------------------*/
+
+        IF :g_inquiry = :gc_asi
+        THEN
+            ret_val = CALLPROC msacm_fp_impuv_midcarryout ();
+
+            IF ret_val <> 0
+            THEN
+                RETURN 9;
+            ENDIF;
+    
+        ENDIF;
+
+        /*--------------------------------------------------------------
+         Processes asi_to_qsi for Imputed Data
+        --------------------------------------------------------------*/
+
+        IF :g_inquiry = :gc_qsi
+        THEN
+            ret_val = CALLPROC msacm_fp_imp_atq();
+
+            IF ret_val <> 0
+            THEN
+                RETURN 9;
+            ENDIF;
+
+        ENDIF;
+
+    ELSE
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Comment: No imputation to be carried out',
+                  h_frpr_name = :h_frpr_name);
+    ENDIF;
+
+    IF g_periods > 5
+    THEN
+        g_row = 5;
+    ELSE
+        g_row = g_periods - 1;
+    ENDIF;
+
+    WHILE g_row > 0
+    DO
+        imp_date = g_period[:g_row].period;
+        impless_date = g_period[:g_row + 1].period;
+        ret_val = CALLPROC msacm_fp_impuvs (
+                  imp_date     = :imp_date,
+                  impless_date = :impless_date);
+
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        g_row = g_row - 1;
+
+    ENDWHILE;
+
+    /*------------------------------------------------------------------
+    If Quarterly Results are running, make sure the values for the last
+    full year on asi_to_qsi_link are updated on cqpv
+
+    For 199612,      look for 199603 - 199612 and update cqpv's 199600 
+    For 199603-199609, look for 199503 - 199512 and update cqpv's 199500
+    ------------------------------------------------------------------*/
+
+    IF :g_inquiry = :gc_qsi
+    THEN
+        h_year = g_input_period / 100 * 100;
+
+        IF MOD(g_input_period,100) <> 12
+        THEN
+            h_year = h_year - 100;
+        ENDIF;
+
+        h_q1 = h_year + 3;
+        h_q2 = h_year + 6;
+        h_q3 = h_year + 9;
+        h_q4 = h_year + 12;
+    
+        ret_val = CALLPROC msacm_fp_drop_table ( h_table = :h_table);
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+    
+        CREATE TABLE :h_table
+        AS SELECT    a.contributor_reference,
+                     a.question,
+                     (a.avalue + b.avalue + c.avalue + d.avalue) AS atq_value
+        FROM         asi_to_qsi_link a,
+                     asi_to_qsi_link b,
+                     asi_to_qsi_link c,
+                     asi_to_qsi_link d
+        WHERE        a.contributor_reference = b.contributor_reference
+        AND          a.contributor_reference = c.contributor_reference
+        AND          a.contributor_reference = d.contributor_reference
+        AND          a.question = b.question
+        AND          a.question = c.question
+        AND          a.question = d.question
+        AND          a.qsi_period = :h_q1
+        AND          b.qsi_period = :h_q2
+        AND          c.qsi_period = :h_q3
+        AND          d.qsi_period = :h_q4
+        AND          a.acell = 'I'
+        AND          b.acell = 'I'
+        AND          c.acell = 'I'
+        AND          d.acell = 'I'
+        AND          a.question_industry IN (SELECT industry FROM :g_results_industry)
+	with location = (prod2);
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error creating ' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        UPDATE cqpv a
+        FROM   :h_table b
+        SET    avalue = b.atq_value,
+               acell = 'I'
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.question = b.question
+        AND    a.period = :h_year
+        AND    a.acell IN ('I','N')
+        AND    b.atq_value <> 0;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating cqpv with imputed atq',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+    ENDIF;
+
+    /*--------------------------------------------------------------
+     Create table to work out Total Sales Imputation:
+     (Sum all 01 values from cqpv to make total sales)
+    --------------------------------------------------------------*/
+
+    ret_val = CALLPROC msacm_fp_drop_table ( h_table = :h_9200_table);
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    CREATE TABLE :h_9200_table
+    AS SELECT    contributor_reference,
+                 contributor_industry,
+                 period,
+                 SUM(avalue) AS sum_value
+    FROM         cqpv
+    WHERE        contributor_industry IN (
+                 SELECT industry FROM :g_results_industry) 
+    AND          period BETWEEN :start_period AND :end_period
+    AND          MOD(question,10) = 1
+    AND          acell = 'I'
+    AND          contributor_inquiry = :g_inquiry
+    GROUP BY     contributor_industry,
+                 contributor_reference,
+                 period
+		 with Location = (prod2);
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error creating ' + :h_9200_table,
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF; 
+
+    /*--------------------------------------------------------------
+     Update the Total Sales from the sum of 01s
+    --------------------------------------------------------------*/
+    UPDATE cqpv a
+    FROM   :h_9200_table b
+    SET    avalue = b.sum_value,
+           acell  = 'I'
+    WHERE  MOD(a.question,10000)   = 9200
+    AND    a.contributor_reference = b.contributor_reference
+    AND    a.period                = b.period
+    AND    a.contributor_industry  = b.contributor_industry;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error updating cqpv with imp total sales',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+     April 2003
+     A problem was found with partially constructed forms where there
+     was a mixture of 'P' cell codes and 'N' non-reponse. When results 
+     were run the 'N's were being imputed for (if imputation could be 
+     calculated) and the questions were marked as 'I'. Therefore in 
+     the above update the total sales value was being made equal to 
+     the sum of the 'I's and ignoring the 'P's. The following code will 
+     sum up the 'I's and 'P's to make the total sales equal the sum of 
+     all 01 questions.
+
+     Create first table to find all imputed Total Sales contributors:
+    --------------------------------------------------------------*/
+
+    ret_val = CALLPROC msacm_fp_drop_table ( h_table = :h_9200_table2);
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    CREATE TABLE :h_9200_table2
+    AS SELECT    *
+    FROM         cqpv
+    WHERE        contributor_industry IN (
+                 SELECT industry FROM :g_results_industry) 
+    AND          period BETWEEN :start_period AND :end_period
+    AND          MOD(question,10000) = 9200
+    AND          acell = 'I'
+    AND          contributor_inquiry = :g_inquiry
+		 with location = (prod2);
+		 
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error creating ' + :h_9200_table2,
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+    Delete any uncleared contributors as these may have an imputed 
+    Total Sales question but may have a mixture or returned and 
+    imputed values for their product questions
+    --------------------------------------------------------------*/
+    DELETE FROM  :h_9200_table2 a
+    WHERE        contributor_reference IN (
+                 SELECT contributor_reference
+                 FROM   contributor_period b
+                 WHERE  receipt_date <> '' 
+                 AND    a.period = b.period);
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error deleting uncleared forms from ' + :h_9200_table2,
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+     Create a table to select all of these imputed 9200 contributors 
+     who have any constructed values for their product questions 
+     (acell = 'P')
+    --------------------------------------------------------------*/
+
+    ret_val = CALLPROC msacm_fp_drop_table ( h_table = :h_9200_table3);
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    CREATE TABLE :h_9200_table3
+    AS SELECT    *
+    FROM         cqpv
+    WHERE        contributor_industry IN (
+                 SELECT industry FROM :g_results_industry) 
+    AND          period BETWEEN :start_period AND :end_period
+    AND          MOD(question,10) = 1
+    AND          acell = 'P'
+    AND          contributor_inquiry = :g_inquiry
+    AND          contributor_reference IN(
+                 SELECT contributor_reference
+                 FROM   :h_9200_table2)
+		 with location = (prod2);
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error creating ' + :h_9200_table3,
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+     Create another table  to sum up the values of these contributors 
+    --------------------------------------------------------------*/
+
+    ret_val = CALLPROC msacm_fp_drop_table ( h_table = :h_9200_table4);
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    CREATE TABLE :h_9200_table4
+    AS SELECT    contributor_reference,
+                 contributor_industry,
+                 period,
+                 SUM(avalue) as tot_01s
+    FROM         cqpv
+    WHERE        contributor_industry IN (
+                 SELECT industry FROM :g_results_industry) 
+    AND          period BETWEEN :start_period AND :end_period
+    AND          MOD(question,10) = 1
+    AND          contributor_inquiry = :g_inquiry
+    AND          contributor_reference IN(
+                 SELECT contributor_reference
+                 FROM   :h_9200_table3)
+    GROUP BY     contributor_industry,
+                 contributor_reference,
+                 period
+		 with location = (prod2);
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error creating ' + :h_9200_table4,
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+     Update the Total Sales from the sum of 01s
+    --------------------------------------------------------------*/
+
+    UPDATE cqpv a
+    FROM   :h_9200_table4 b
+    SET    avalue = b.tot_01s,
+           acell  = 'P'
+    WHERE  MOD(a.question,10000)   = 9200
+    AND    a.contributor_reference = b.contributor_reference
+    AND    a.period                = b.period
+    AND    a.contributor_industry  = b.contributor_industry;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error updating cqpv with imp total sales from ' + :h_9200_table4,
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+     Update the annualised quarterly data to keep the imputed volumes
+     and total sales codes created in the annualisation process
+    --------------------------------------------------------------*/
+    UPDATE cqpv a
+    FROM   annualised_cqpv b
+    SET    avalue = b.avalue,
+           acell  = b.acell
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.period                = b.period
+    AND    a.question              = b.question;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error updating cqpv with annualised data',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+    RETURN 0;
+}
+/**************************** LOCAL PROCEDURES ****************************/
+
+
+/*=======================================================================
+    Local procedure to write to audit trail.
+=======================================================================*/
+
+PROCEDURE lp_write_to_audit_trail
+        ( p_contributor_reference = CHAR(11)    NOT NULL WITH DEFAULT,
+          p_question              = INTEGER4    NOT NULL WITH DEFAULT,
+          p_period                = INTEGER4    NOT NULL WITH DEFAULT,
+          p_code                  = INTEGER1    NOT NULL WITH DEFAULT,
+          p_val_1                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_val_2                 = INTEGER4    NOT NULL WITH DEFAULT,
+          p_val_3                 = VARCHAR(20) NOT NULL WITH DEFAULT,
+          p_frpr_name             = VARCHAR(36) NOT NULL WITH DEFAULT )=
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC write_to_audit_trail 
+            ( p_contributor_reference = :p_contributor_reference, 
+              p_question              = :p_question,
+              p_period                = :p_period,
+              p_code                  = :p_code, 
+              p_val_1                 = :p_val_1,
+              p_val_2                 = :p_val_2,
+              p_val_3                 = :p_val_3,
+              p_frpr_name             = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

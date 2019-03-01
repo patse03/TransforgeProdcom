@@ -1,0 +1,881 @@
+INITIALIZE (
+
+        h_search          = CHAR(11) NOT NULL,
+        t_cqpv            = CHAR(21) NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_dummy           = CHAR(11) NOT NULL,
+        h_idbr            = CHAR(11) NOT NULL,
+        h_industry        = INTEGER4 NOT NULL,
+        h_count           = INTEGER4 NOT NULL,
+        h_period          = INTEGER4 NOT NULL,
+        h_period1         = INTEGER4 NOT NULL,
+        h_period2         = INTEGER4 NOT NULL,
+        h_period3         = INTEGER4 NOT NULL,
+        h_period4         = INTEGER4 NOT NULL,
+        h_period5         = INTEGER4 NOT NULL,
+        h_period6         = INTEGER4 NOT NULL,
+        h_quest_order     = INTEGER1 NOT NULL,
+        h_display         = INTEGER1 NOT NULL,
+        h_reference       = CHAR(11) NOT NULL,
+        h_yesno           = CHAR(1) NOT NULL
+
+{
+    msa_date = 'now';
+    h_frpr_name = 'msach_fr_ins_qrp';
+    h_retries_allowed = 3;
+
+    inquiry = :g_inquiry;
+    question_industry = :g_industry;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(contributor_reference) = 0,
+                        REVERSE(contributor_reference) = 0,
+                        UNDERLINE(contributor_reference) = 1,
+                        DISPLAYONLY(period) = 0,
+                        REVERSE(period) = 0,
+                        UNDERLINE(period) = 1,
+                        DISPLAYONLY(contributor_industry) = 0,
+                        REVERSE(contributor_industry) = 0,
+                        UNDERLINE(contributor_industry) = 1,
+                        DISPLAYONLY(enterprise) = 0,
+                        REVERSE(enterprise) = 0,
+                        UNDERLINE(enterprise) = 1,
+                        DISPLAYONLY(avalue) = 0,
+                        REVERSE(avalue) = 0,
+                        UNDERLINE(avalue) = 1,
+                        DISPLAYONLY(acell) = 0,
+                        REVERSE(acell) = 0,
+                        UNDERLINE(acell) = 1);
+
+    /*------------------------------------------------------------------
+    Only allow inserts for periods that questions were live for
+    ------------------------------------------------------------------*/
+
+    h_period1 = 0;
+    h_period2 = 0;
+    h_period3 = 0;
+    h_period4 = 0;
+    h_period5 = 0;
+    h_period6 = 0;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT quest_order AS h_quest_order,
+               period AS h_period
+        FROM   question_library
+        WHERE  question = :question
+        AND    lag <> 9
+        {
+            IF :h_period1 = 0
+            THEN
+                h_period1 = :h_period;
+            ELSEIF :h_period2 = 0
+            THEN
+                h_period2 = :h_period;
+            ELSEIF :h_period3 = 0
+            THEN
+                h_period3 = :h_period;
+            ELSEIF :h_period4 = 0
+            THEN
+                h_period4 = :h_period;
+            ELSEIF :h_period5 = 0
+            THEN
+                h_period5 = :h_period;
+            ELSEIF :h_period6 = 0
+            THEN
+                h_period6 = :h_period;
+            ENDIF;
+        };
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question table'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Error - cannot find this Question as being live'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+}
+
+FIELD contributor_reference =
+{
+    IF :contributor_reference = ''
+    THEN
+        MESSAGE 'You must supply a Contributor Reference'
+        WITH STYLE = POPUP;
+        RESUME FIELD contributor_reference;
+    ENDIF;
+
+    ret_val = CALLPROC msa_fp_get_ref (
+              h_dummy = BYREF(:h_dummy),
+              h_idbr = BYREF(:h_idbr),
+              contributor_reference = :contributor_reference);
+
+    IF ret_val <> 0
+    THEN
+
+        h_yesno = '';
+        WHILE h_yesno <> 'y' AND h_yesno <> 'n'
+        DO
+            h_yesno = PROMPT 'This Contributor is not known to the' +
+                         ' system. Do you really want to save this' +
+                         ' Contributor? Type Y/N and press <return>'
+                      WITH STYLE = POPUP;
+            h_yesno = LOWERCASE(:h_yesno);
+        ENDWHILE;
+
+        IF :h_yesno = 'n'
+        THEN
+            RETURN 0;
+        ENDIF;
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            INSERT INTO idbr_lookup (
+                        dummy_reference,
+                        new_reference)
+            VALUES (    :contributor_reference,
+                        :contributor_reference);
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error saving onto idbr_lookup table'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'Error - no row was saved onto the idbr_lookup table'
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+        h_dummy = :contributor_reference;
+        h_idbr  = :contributor_reference;
+
+        MESSAGE 'Contributor has been saved OK'
+        WITH STYLE = POPUP;
+
+        /*--------------------------------------------------------------
+           Save onto the insert_log too
+        --------------------------------------------------------------*/
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            INSERT INTO qrp_insert_lookup_log (
+                        time,
+                        user_id,
+                        contributor_reference)
+            VALUES (    'now',
+                        :g_user_id,
+                        :contributor_reference);
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error accessing qrp_insert_lookup_log'
+            WITH STYLE = POPUP;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No row saved onto the qrp_insert_lookup_log'
+            WITH STYLE = POPUP;
+        ENDIF;
+
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(contributor_reference) = 1,
+                        REVERSE(contributor_reference) = 1,
+                        UNDERLINE(contributor_reference) = 0);
+
+    RESUME FIELD period;
+
+}
+
+FIELD period =
+{
+    IF :g_inquiry = :gc_qsi
+    THEN
+        IF  :period <> :g_period[1].period
+        AND :period <> :g_period[2].period
+        AND :period <> :g_period[3].period
+        AND :period <> :g_period[4].period
+        AND :period <> :g_period[5].period
+        THEN
+            MESSAGE VARCHAR(:period) + ' is not a valid Period'
+            WITH STYLE = POPUP;
+            CLEAR FIELD period;
+            RESUME FIELD period;
+        ENDIF;
+
+        IF (:period / 100 * 100 <> :h_period1
+        AND :period / 100 * 100 <> :h_period2
+        AND :period / 100 * 100 <> :h_period3
+        AND :period / 100 * 100 <> :h_period4
+        AND :period / 100 * 100 <> :h_period5
+        AND :period / 100 * 100 <> :h_period6) OR :period = 0
+        THEN
+            MESSAGE 'This Question was not live for ' +
+                    VARCHAR(:period)
+            WITH STYLE = POPUP;
+            CLEAR FIELD period;
+            RESUME FIELD period;
+        ENDIF;
+    ELSE
+        IF  :period <> :g_period[1].period
+        AND :period <> :g_period[2].period
+        AND :period <> :g_period[3].period
+        THEN
+            MESSAGE VARCHAR(:period) + ' is not a valid Period'
+            WITH STYLE = POPUP;
+            CLEAR FIELD period;
+            RESUME FIELD period;
+        ENDIF;
+        IF (:period <> :h_period1
+        AND :period <> :h_period2
+        AND :period <> :h_period3
+        AND :period <> :h_period4
+        AND :period <> :h_period5
+        AND :period <> :h_period6) OR :period = 0
+        THEN
+            MESSAGE 'This Question was not live for ' +
+                    VARCHAR(:period)
+            WITH STYLE = POPUP;
+            CLEAR FIELD period;
+            RESUME FIELD period;
+        ENDIF;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+       Check for existence on t_cqpv
+    --------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        IF :g_inquiry = :gc_asi
+        THEN
+            SELECT COUNT(*) AS h_count
+            FROM   :t_cqpv
+            WHERE  aperiod = :period
+            AND    question = :question
+            AND    contributor_reference IN (:h_dummy,:h_idbr);
+        ELSE
+            SELECT COUNT(*) AS h_count
+            FROM   :t_cqpv
+            WHERE  qperiod = :period
+            AND    question = :question
+            AND    contributor_reference IN (:h_dummy,:h_idbr);
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing sim table'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    IF :h_count > 0
+    THEN
+        MESSAGE 'Data for this Contributor and this Period already' +
+                ' exists. Please use the UPDATE option instead.'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(period) = 1,
+                        REVERSE(period) = 1,
+                        UNDERLINE(period) = 0);
+
+    /*--------------------------------------------------------------
+       Check for existence on contributor_period
+    --------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT enterprise AS enterprise,
+               contributor_industry AS contributor_industry
+        FROM   contributor_period
+        WHERE  contributor_reference IN (:h_dummy,:h_idbr)
+        AND    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                   h_num_row_ck      = 1,
+                   h_commit          = 'Y',
+                   h_rollback        = 'N',
+                   h_retries         = :h_retries,
+                   h_retries_allowed = :h_retries_allowed,
+                   h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in selecting from contributor_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This Contributor was not selected for this Period.' +
+                ' Please supply a Contributor Industry and an' +
+                ' Enterprise.'
+        WITH STYLE = POPUP;
+    ENDIF;
+
+    RESUME FIELD contributor_industry;
+
+}
+
+FIELD contributor_industry =
+{
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT industry AS h_industry
+        FROM   industry
+        WHERE  industry = :contributor_industry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in selecting from industry'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This Industry is not a valid Industry'
+        WITH STYLE = POPUP;
+        CLEAR FIELD contributor_industry;
+        RESUME FIELD contributor_industry;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(contributor_industry) = 1,
+                        REVERSE(contributor_industry) = 1,
+                        UNDERLINE(contributor_industry) = 0);
+
+    RESUME FIELD enterprise;
+}
+
+FIELD enterprise =
+{
+    SET_FORMS FIELD '' (DISPLAYONLY(enterprise) = 1,
+                        REVERSE(enterprise) = 1,
+                        UNDERLINE(enterprise) = 0);
+    RESUME FIELD avalue;
+}
+
+FIELD avalue =
+{
+    SET_FORMS FIELD '' (DISPLAYONLY(avalue) = 1,
+                        REVERSE(avalue) = 1,
+                        UNDERLINE(avalue) = 0);
+    RESUME FIELD acell;
+}
+
+FIELD acell =
+{
+    IF  :acell <> 'V'
+    AND :acell <> 'C'
+    AND :acell <> 'I'
+    AND :acell <> 'Z'
+    AND :acell <> 'N'
+    THEN
+        MESSAGE 'Invalid cell code supplied'
+        WITH STYLE = POPUP;
+        RESUME FIELD acell;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(acell) = 1,
+                        REVERSE(acell) = 1,
+                        UNDERLINE(acell) = 0);
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'Clear' =
+{
+    CLEAR FIELD contributor_reference, period, contributor_industry,
+                enterprise, avalue, acell;
+               
+    msa_date = 'now';
+
+    SET_FORMS FIELD '' (DISPLAYONLY(contributor_reference) = 0,
+                        REVERSE(contributor_reference) = 0,
+                        UNDERLINE(contributor_reference) = 1,
+                        DISPLAYONLY(period) = 0,
+                        REVERSE(period) = 0,
+                        UNDERLINE(period) = 1,
+                        DISPLAYONLY(contributor_industry) = 0,
+                        REVERSE(contributor_industry) = 0,
+                        UNDERLINE(contributor_industry) = 1,
+                        DISPLAYONLY(enterprise) = 0,
+                        REVERSE(enterprise) = 0,
+                        UNDERLINE(enterprise) = 1,
+                        DISPLAYONLY(avalue) = 0,
+                        REVERSE(avalue) = 0,
+                        UNDERLINE(avalue) = 1,
+                        DISPLAYONLY(acell) = 0,
+                        REVERSE(acell) = 0,
+                        UNDERLINE(acell) = 1);
+
+    RESUME FIELD contributor_reference;
+
+}
+
+'Insert', KEY FRSKEY4 =
+{
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(contributor_reference));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Reference' WITH STYLE = POPUP;
+        RESUME FIELD contributor_reference;
+    ENDIF;
+
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(period));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Period' WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(contributor_industry));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Industry' WITH STYLE = POPUP;
+        RESUME FIELD contributor_industry;
+    ENDIF;
+
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(enterprise));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Enterprise' WITH STYLE = POPUP;
+        RESUME FIELD enterprise;
+    ENDIF;
+
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(avalue));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Value' WITH STYLE = POPUP;
+        RESUME FIELD avalue;
+    ENDIF;
+
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(acell));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Cell Code and press <return>'
+        WITH STYLE = POPUP;
+        RESUME FIELD acell;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        IF :g_inquiry = :gc_asi
+        THEN
+
+            IF :period = 199300
+            THEN
+                h_reference = :h_dummy;
+            ELSE
+                h_reference = :h_idbr;
+            ENDIF;
+
+            INSERT INTO :t_cqpv (
+                         contributor_reference,
+                         quest_order,
+                         question,
+                         aperiod,
+                         qperiod,
+                         inquiry,
+                         contributor_industry,
+                         question_industry,
+                         acell,
+                         avalue,
+                         acell_type,
+                         imputation_ratio,
+                         enterprise,
+                         confirmation_code,
+                         confirmation_date)
+            VALUES (     :h_reference,
+                         :h_quest_order,
+                         :question,
+                         :period,
+                         :period,
+                         :g_inquiry,
+                         :contributor_industry,
+                         :g_industry,
+                         :acell,
+                         :avalue,
+                         '  ',
+                         1.0,
+                         :enterprise,
+                         ' ',
+                         'today');
+        ELSE
+            IF :period < 199406
+            THEN
+                h_reference = :h_dummy;
+            ELSE
+                h_reference = :h_idbr;
+            ENDIF;
+
+            INSERT INTO :t_cqpv (
+                         contributor_reference,
+                         quest_order,
+                         question,
+                         aperiod,
+                         qperiod,
+                         inquiry,
+                         contributor_industry,
+                         question_industry,
+                         acell,
+                         avalue,
+                         acell_type,
+                         imputation_ratio,
+                         enterprise,
+                         confirmation_code,
+                         confirmation_date)
+            VALUES (     :h_reference,
+                         :h_quest_order,
+                         :question,
+                         :period / 100 * 100,
+                         :period,
+                         :g_inquiry,
+                         :contributor_industry,
+                         :g_industry,
+                         :acell,
+                         :avalue,
+                         '  ',
+                         1.0,
+                         :enterprise,
+                         ' ',
+                         'today');
+
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error inserting record'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Error inserting this record'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+       Save the Inserted details onto the qrp_insert_log too
+    --------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        INSERT INTO qrp_insert_log (
+                    time,
+                    sim_table,
+                    user_id,
+                    inquiry,
+                    question_industry,
+                    contributor_reference,
+                    contributor_industry,
+                    question,
+                    period,
+                    avalue,
+                    acell,
+                    enterprise)
+        VALUES (    'now',
+                    :t_cqpv,
+                    :g_user_id,
+                    :g_inquiry,
+                    :g_industry,
+                    :h_reference,
+                    :contributor_industry,
+                    :question,
+                    :period,
+                    :avalue,
+                    :acell,
+                    :enterprise);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error inserting record into qrp_insert_log'
+        WITH STYLE = POPUP;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Error inserting this record into qrp_insert_log'
+        WITH STYLE = POPUP;
+    ENDIF;
+
+    IF MOD(:question,10000) = 9200
+    THEN
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            IF :g_inquiry = :gc_asi
+            THEN
+                UPDATE :t_cqpv
+                SET contributor_industry = :question_industry
+                WHERE contributor_reference IN (:h_idbr,:h_dummy)
+                AND aperiod = :period;
+            ELSE
+                UPDATE :t_cqpv
+                SET contributor_industry = :question_industry
+                WHERE contributor_reference IN (:h_idbr,:h_dummy)
+                AND qperiod = :period;
+            ENDIF;
+
+            ret_val = CALLPROC check_inq_ing (
+                       h_num_row_ck      = 1,
+                       h_commit          = 'Y',
+                       h_rollback        = 'N',
+                       h_retries         = :h_retries,
+                       h_retries_allowed = :h_retries_allowed,
+                       h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error when updating ind on sim table '
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No rows updated to contributor_industry '
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+    ENDIF;
+
+    h_search = :h_idbr;
+
+    MESSAGE 'Contributor Details saved OK'
+    WITH STYLE = POPUP;
+
+    RETURN 0;
+}
+
+'EndWithoutInserting', KEY FRSKEY6 =
+{
+    RETURN 0;
+}

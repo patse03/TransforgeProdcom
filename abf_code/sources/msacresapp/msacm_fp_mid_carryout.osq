@@ -1,0 +1,393 @@
+/*----------------------------------------------------------------------
+Quarterly Contributors answering annual questions
+----------------------------------------------------------------------*/
+
+PROCEDURE msacm_fp_mid_carryout (
+
+          period             = INTEGER4 NOT NULL) =
+
+DECLARE   ret_val            = INTEGER1 NOT NULL,
+          q1                 = INTEGER4 NOT NULL,
+          q2                 = INTEGER4 NOT NULL,
+          q3                 = INTEGER4 NOT NULL,
+          q4                 = INTEGER4 NOT NULL,
+          h_counter          = INTEGER1 NOT NULL,
+          curr_period        = INTEGER4 NOT NULL,
+          h_priority         = VARCHAR(10) NOT NULL,
+          h_priority_counter = INTEGER1 NOT NULL,
+          h_acell            = CHAR(1) NOT NULL,
+          h_frpr_name        = VARCHAR(25) NOT NULL
+
+{
+    h_frpr_name = 'msacm_fp_mid_carryout';
+    h_counter = 0;
+    curr_period = period;
+
+    WHILE h_counter < :g_results_span
+    DO
+
+        q1 = :curr_period + 3;
+        q2 = :curr_period + 6;
+        q3 = :curr_period + 9;
+        q4 = :curr_period + 12;
+
+        /*--------------------------------------------------------------
+         Create carryout as a select from cqpv of all annual questions
+         being asked of quarterly contributors
+        --------------------------------------------------------------*/
+
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = 'carryout');
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        CREATE TABLE carryout
+        AS SELECT    *
+        FROM         cqpv
+        WHERE        quest_order = 1
+        AND          question_industry <> contributor_industry
+        AND          period IN (:q1,:q2,:q3,:q4)
+        AND          contributor_inquiry = 15
+        AND          acell <> 'N'
+        AND          question_industry IN (SELECT industry FROM :g_results_industry);
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error creating carryout',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        MODIFY    carryout TO BTREE
+        UNIQUE ON contributor_reference,
+                  question,
+                  period;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error modifying carryout',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        UPDATE carryout a
+        FROM   idbr_lookup b
+        SET    contributor_reference = b.new_reference
+        WHERE  a.contributor_reference = b.dummy_reference
+        AND    a.period = 199403;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating idbr refs',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+         Sum the quarters to get an annual value
+        --------------------------------------------------------------*/
+
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = 'carryout_sum');
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        CREATE TABLE carryout_sum
+        AS SELECT    contributor_reference,
+                     question,
+                     SUM(avalue) AS avalue,
+                     '  ' AS acell
+        FROM         carryout
+        GROUP BY     contributor_reference,
+                     question;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error creating carryout_sum',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+	 This was added in May 2002 but was not implemented:
+
+         Count the quarters that contributor has responded to a 
+         question. If a contributor has not been sampled or does not 
+         return data ( and cannot be imputed for),  for 4 periods in 
+         the calendar year, then any annual products must be inflated 
+         to include the missing quarters.
+         The calculation is as follows:
+
+                     4
+         ________________________ * [Sum of quarters returned]
+          No of quarters returned
+
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = 'carryout_periods');
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        CREATE TABLE carryout_periods
+        AS SELECT    contributor_reference,
+                     question,
+                     COUNT(period) AS no_periods
+        FROM         carryout
+        GROUP BY     contributor_reference,
+                     question;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error creating carryout_periods',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        MODIFY    carryout_sum TO BTREE
+        UNIQUE ON contributor_reference,
+                  question;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error modifying carryout_sum',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        UPDATE carryout_sum a
+        FROM   carryout_periods b
+        SET    avalue = a.avalue * (4/(b.no_periods * 1.0))
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.question = b.question;
+
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating carryout_sum',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+        --------------------------------------------------------------*/
+
+        /*--------------------------------------------------------------
+        To get an annual cell code from 4 quarters that could all be
+        different, the following priority applies:
+
+        1. If any qtr's cell code is I, the annual cell code is I
+        2. If any qtr's cell code is A, the annual cell code is A
+        3. If any qtr's cell code is C, the annual cell code is C
+        4. If any qtr's cell code is P, the annual cell code is P
+        5. If any qtr's cell code is V, the annual cell code is V
+        6. If any qtr's cell code is Z, the annual cell code is Z
+        7. If any qtr's cell code is B, the annual cell code is B
+        --------------------------------------------------------------*/
+
+        h_priority = 'IACPVZB';
+        h_priority_counter = 1;
+
+        WHILE h_priority_counter <= LENGTH(h_priority)
+        DO
+            h_acell = CHAREXTRACT(h_priority,h_priority_counter);
+
+            UPDATE carryout_sum a
+            SET    acell = :h_acell
+            WHERE  contributor_reference IN
+                 (SELECT contributor_reference 
+                 FROM   carryout b
+                 WHERE  a.contributor_reference = b.contributor_reference
+                 AND    a.question = b.question
+                 AND    a.acell = ''
+                 AND    b.acell = :h_acell);
+
+            ret_val = CALLPROC msacm_fp_check_inq_ing(
+                      h_num_row_ck = 1,
+                      h_commit = 'Y',
+                      h_rollback = 'N',
+                      h_frpr_name = :h_frpr_name);
+
+            IF ret_val = 9
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                          h_text = 'Error updating carryout_sum ' + :h_acell,
+                          h_frpr_name = :h_frpr_name);
+                RETURN 9;
+            ENDIF;
+
+            h_priority_counter = h_priority_counter + 1;
+
+        ENDWHILE;
+
+        /*--------------------------------------------------------------
+         Just in case there's any left that had no quarters IPCAVZB
+         (shouldn't be any)
+        --------------------------------------------------------------*/
+
+        DELETE FROM carryout_sum
+        WHERE       acell = '';
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error deleting from carryout_sum',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+         Get rid of any duplicates on carryout prior to inserting into
+         midcarryout - just leave the most recent period.
+         This data (question_industry,contributor_industry, etc) will
+         be re-inserted into mid_carryout along with the summed values
+         from carryout_sum.
+        --------------------------------------------------------------*/
+
+        DELETE FROM carryout a
+        WHERE       a.period < (
+                    SELECT b.period
+                    FROM   carryout b
+                    WHERE  a.question = b.question
+                    AND    a.contributor_reference = b.contributor_reference);
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error deleting duplicates ',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+         Replace mid_carryout rows
+        --------------------------------------------------------------*/
+
+        DELETE FROM mid_carryout
+        WHERE       period = :curr_period
+        AND         question_industry IN (SELECT industry FROM :g_results_industry);
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error clearing ' + VARCHAR(:curr_period) +
+                               ' from mid_carryout';
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        INSERT INTO mid_carryout
+        SELECT      a.contributor_reference,
+                    a.quest_order,
+                    a.question,
+                    :curr_period,
+                    a.contributor_inquiry,
+                    a.contributor_industry,
+                    a.question_industry,
+                    b.acell,
+                    b.avalue,
+                    a.acell_type,
+                    a.aconstruction_type,
+                    a.fcell,
+                    a.fvalue,
+                    a.fcell_type,
+                    a.fconstruction_type,
+                    a.confirmation_code,
+                    a.confirmation_date,
+                    atypical
+        FROM        carryout a,
+                    carryout_sum b
+        WHERE       a.contributor_reference = b.contributor_reference
+        AND         a.question = b.question;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error inserting into mid_carryout',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        h_counter = :h_counter + 1;
+        curr_period = :curr_period - 100;
+
+    ENDWHILE;
+
+    RETURN 0;
+
+}

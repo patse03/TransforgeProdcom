@@ -1,0 +1,370 @@
+/*----------------------------------------------------------------------
+Contributor Constructions - one period at a time (going forwards)
+----------------------------------------------------------------------*/
+
+PROCEDURE msacm_fp_con_cont (
+
+          h_inquiry           = INTEGER1 NOT NULL,
+          curr_period         = INTEGER4 NOT NULL) =
+
+DECLARE   ret_val             = INTEGER1 NOT NULL,
+          h_frpr_name         = VARCHAR(24) NOT NULL,
+          h_table             = VARCHAR(24) NOT NULL,
+          prev_period         = INTEGER4 NOT NULL,
+          h_structure	      = char(16) not null
+{
+
+    h_frpr_name = 'msacm_fp_con_cont';
+    h_table = 'temp_batch_con';
+
+    ret_val = CALLPROC msa_fp_prev_periods (
+              period       = :curr_period,
+              inquiry      = :h_inquiry,
+              prev_period1 = BYREF(:prev_period));
+
+    /*------------------------------------------------------------------
+    Get rows to construct for
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Finding Constructions for ' +
+            VARCHAR(curr_period) + ' . . .';
+
+    ret_val = CALLPROC msacm_fp_drop_table (
+                       h_table = :h_table);
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+/* examine storage structure of results_industry_14 */
+
+select storage_structure as h_structure from iitables
+where table_name = :g_results_industry;
+
+ret_val = CALLPROC msacm_fp_log_message (
+h_text = 'Storage structure of ' + :g_results_industry + ' = ' + :h_structure,
+                  h_frpr_name  = :h_frpr_name);
+
+/* examine storage structure of cqpv */
+
+select storage_structure as h_structure from iitables
+where table_name = 'cqpv';
+
+ret_val = CALLPROC msacm_fp_log_message (
+h_text = 'Storage structure of cqpv = ' + :h_structure,
+                  h_frpr_name  = :h_frpr_name);
+
+/* Select replaced with something hopefully more efficient..
+    CREATE TABLE :h_table
+    AS SELECT    contributor_reference,
+                 question,
+                 INT4(0) AS value01,
+                 INT4(0) AS vol_value,
+                 FLOAT8(0) AS prev_uv
+    FROM         cqpv
+    WHERE        question_industry IN (
+                 SELECT industry FROM :g_results_industry)
+    AND          period = :curr_period
+    AND          contributor_inquiry = :h_inquiry
+    AND          MOD(question,10) IN (2,4)
+    AND          acell = 'B';
+*/
+
+    CREATE TABLE :h_table
+    AS SELECT    a.contributor_reference,
+                 a.question,
+                 INT4(0) AS value01,
+                 INT4(0) AS vol_value,
+                 FLOAT8(0) AS prev_uv
+    FROM         cqpv a, :g_results_industry b
+    WHERE        a.question_industry = b.industry 
+    AND          a.period = :curr_period
+    AND          a.contributor_inquiry = :h_inquiry
+    AND          MOD(a.question,10) IN (2,4)
+    AND          a.acell = 'B';
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error creating ' + :h_table,
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ELSEIF ret_val = 1
+    THEN
+        /*--------------------------------------------------------------
+        Return if there are no constructions to carry out
+        --------------------------------------------------------------*/
+        RETURN 0;
+    ENDIF;
+
+    MESSAGE 'Modifying . . .';
+
+    MODIFY    :h_table TO BTREE
+    UNIQUE ON contributor_reference,
+              question;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error modifying ' + :h_table,
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Delete any questions whose volumes have changed
+    (e.g. from kg to 1000kg) as previous period UVs will not be valid
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Deleting Volume Changes . . .';
+
+    DELETE FROM :h_table a
+    WHERE       question IN (
+                SELECT question
+                FROM   takeon_unit_changes b
+                WHERE  b.period = :curr_period);
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error deleting vol changes from ' + :h_table,
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+/*----------------------------------------------------------------------
+Added Nov 2009 by MJE to break link with specified questions for 'C'
+construction.
+----------------------------------------------------------------------*/
+
+    DELETE FROM :h_table a
+    WHERE       (a.question/10) IN (
+                SELECT eightdig
+                FROM   link_breaks b
+                WHERE  b.period = :curr_period);
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error deleting link breaks from ' + :h_table,
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+
+    /*------------------------------------------------------------------
+    Get current period's 01 value
+    ------------------------------------------------------------------*/
+
+    MESSAGE '01 Values from ' +
+            VARCHAR(curr_period) + ' . . .';
+
+    UPDATE :h_table a
+    FROM   cqpv b
+    SET    value01 = b.avalue
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    b.period = :curr_period
+    AND    b.contributor_inquiry = :h_inquiry
+    AND    b.question = a.question / 10 * 10 + 1;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error updating 01 value on ' + :h_table,
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*-----------------------------------------------------------------
+    Get previous period's Unit Value (in £s)
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Finding Unit Values from ' + VARCHAR(prev_period) +
+            ' for ' + VARCHAR(curr_period) + ' . . .';
+
+    UPDATE :h_table a
+    FROM   cqpv b,
+           cqpv c
+    SET    prev_uv = (b.avalue * 1000.0 / c.avalue)
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.contributor_reference = c.contributor_reference
+    AND    b.contributor_inquiry = :h_inquiry
+    AND    b.contributor_inquiry = c.contributor_inquiry
+    AND    b.period = :prev_period
+    AND    b.period = c.period
+    AND    b.avalue <> 0
+    AND    c.avalue <> 0
+    AND    b.acell IN ('V','C','P')
+    AND    c.acell IN ('V','C','P')
+    AND    c.question = a.question
+    AND    b.question = a.question / 10 * 10 + 1;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error updating 01 value on ' + :h_table,
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Get previous period's Unit Value - Question History
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Finding QH Unit Values from ' + VARCHAR(prev_period) +
+            ' for ' + VARCHAR(curr_period) + ' . . .';
+
+    UPDATE :h_table a
+    FROM   cqpv b,
+           cqpv c,
+           question_history d
+    SET    prev_uv = (b.avalue * 1000.0 / c.avalue)
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.contributor_reference = c.contributor_reference
+    AND    b.contributor_inquiry = :h_inquiry
+    AND    b.contributor_inquiry = c.contributor_inquiry
+    AND    b.period = :prev_period
+    AND    b.period = c.period
+    AND    b.avalue <> 0
+    AND    c.avalue <> 0
+    AND    b.acell IN ('V','C','P')
+    AND    c.acell IN ('V','C','P')
+    AND    d.rep_type = 1
+    AND    a.question = d.new_question
+    AND    c.question = d.old_question
+    AND    b.question = c.question / 10 * 10 + 1;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error updating QH 01 value on ' + :h_table,
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Calculate the New Volume
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Calculate Volume for ' +
+            VARCHAR(curr_period) + ' . . .';
+
+    UPDATE :h_table
+    SET    vol_value = (value01 * 1000.0 / prev_uv) + 0.5
+    WHERE  value01 <> 0
+    AND    prev_uv <> 0;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error calculating current Volume',
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Remove any records where we have been unable to get a contributor
+    construction - i.e. those ones with a zero value/volume prev period
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Deleting UnConstructables for ' +
+            VARCHAR(curr_period) + ' . . .';
+
+    DELETE FROM :h_table
+    WHERE       vol_value = 0;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error deleting unconstructables from ' + :h_table,
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Update cqpv
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Updating cqpv volumes for ' +
+            VARCHAR(curr_period) + ' . . .';
+
+    UPDATE cqpv a
+    FROM   :h_table b
+    SET    avalue = b.vol_value,
+           acell = 'C'
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.question = b.question
+    AND    a.contributor_inquiry = :h_inquiry
+    AND    a.period = :curr_period;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error updating cqpv volume',
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+
+}

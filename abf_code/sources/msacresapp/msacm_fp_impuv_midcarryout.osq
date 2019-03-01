@@ -1,0 +1,451 @@
+/*----------------------------------------------------------------------
+msacm_fp_impuv_midcarryout
+Imputation for Quarterly Contributors asked Annual Questions: VOLUMES
+
+Loop through this program calculating imputation and updating cqpv
+each pass through
+----------------------------------------------------------------------*/
+
+PROCEDURE msacm_fp_impuv_midcarryout () =
+
+DECLARE   ret_val         = INTEGER1 NOT NULL,
+          h_frpr_name     = VARCHAR(24) NOT NULL,
+          h_table         = VARCHAR(24) NOT NULL,
+          q_date          = INTEGER4 NOT NULL,
+          q_less_date     = INTEGER4 NOT NULL,
+          h_counter       = INTEGER1 NOT NULL,
+          h_annual_period = INTEGER4 NOT NULL
+
+{
+
+    h_frpr_name = 'msacm_fp_impuv_midcarryout';
+    h_table = 'impuv_midcarryout';
+
+    /*------------------------------------------------------------------
+     For Annual results, only impute for the four quarterly periods - 
+     e.g. for 199500, impute for 199503, 199506, 199509 and 199512 only
+    ------------------------------------------------------------------*/
+
+    h_annual_period = :g_period[1].period;
+
+    q_less_date = :h_annual_period - 100 + 12;
+    q_date = :h_annual_period + 3;
+
+    /*------------------------------------------------------------------
+     Loop: 
+     If annual is 199500, q_less_date is first 199412, q_date 199503,
+                          q_less_date is then 199503, q_date 199506
+    ------------------------------------------------------------------*/
+
+    h_counter = 1;
+
+    WHILE h_counter <= 4
+    DO
+        /*--------------------------------------------------------------
+        02 Volumes
+        --------------------------------------------------------------*/
+    
+        ret_val = CALLPROC msacm_fp_drop_table ( h_table = :h_table);
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+    
+        CREATE TABLE :h_table
+        AS SELECT    contributor_reference,
+                     period,
+                     question,
+                     quest_order,
+                     question_industry,
+                     INT4(0) AS newval,
+                     FLOAT8(1) AS uv
+        FROM         cqpv
+        WHERE        period = :q_date
+        AND          MOD(question,10) = 2
+        AND          acell IN ('I','N')
+        AND          question_industry IN (SELECT industry FROM :g_results_industry);
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error creating ' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        MODIFY    :h_table TO  BTREE
+        UNIQUE ON contributor_reference,
+                  question;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error modifying ' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        /*--------------------------------------------------------------
+         Get previous period's unit value
+        --------------------------------------------------------------*/
+    
+        UPDATE :h_table a
+        FROM   cqpv b,
+               cqpv c
+        SET    uv = FLOAT8(b.avalue*1000.0)/FLOAT8(c.avalue)
+        WHERE  b.question              = c.question - 1
+        AND    a.question              = c.question
+        AND    b.period                = c.period
+        AND    b.period                = :q_less_date
+        AND    MOD(b.question,10)      = 1
+        AND    MOD(c.question,10)      = 2
+        AND    b.quest_order           = 1
+        AND    b.quest_order           = c.quest_order
+        AND    c.contributor_reference = b.contributor_reference
+        AND    a.contributor_reference = b.contributor_reference
+        AND    b.question_industry     = c.question_industry
+        AND    c.question_industry     = a.question_industry;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating 2/1 ' +:h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        UPDATE :h_table a
+        FROM   cqpv b,
+               cqpv c,
+               question_history d
+        SET    uv = FLOAT8(b.avalue*1000.0)/FLOAT8(c.avalue)
+        WHERE  b.question              = c.question - 1
+        AND    a.question              = d.new_question
+        AND    b.question              = d.old_question
+        AND    c.question              = d.old_question + 1
+        AND    b.period                = c.period
+        AND    b.period                = :q_less_date
+        AND    MOD(b.question,10)      = 1
+        AND    MOD(c.question,10)      = 2
+        AND    b.quest_order           = 1
+        AND    b.quest_order           = c.quest_order
+        AND    c.contributor_reference = b.contributor_reference
+        AND    a.contributor_reference = b.contributor_reference
+        AND    b.question_industry     = c.question_industry
+        AND    c.question_industry     = a.question_industry
+        AND    d.rep_type = 1;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating 2/1 QH' +:h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        /*--------------------------------------------------------------
+         Create new 02 value from the previous period's unit value
+         applied to the current period's 01 value
+        --------------------------------------------------------------*/
+    
+        UPDATE :h_table a
+        FROM   cqpv b
+        SET    newval = ((FLOAT8(b.avalue)*1.000)/a.uv*1000) + 0.5
+        WHERE  a.question              = b.question + 1
+        AND    b.period                = :q_date
+        AND    a.contributor_reference = b.contributor_reference
+        AND    b.quest_order           = 1;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating from cqpv to ' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        UPDATE :h_table
+        SET    newval = 1
+        WHERE  newval = 0
+        AND    uv > 0;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating newvalues on ' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        /*--------------------------------------------------------------
+         Restore imputed value on cqpv
+        --------------------------------------------------------------*/
+    
+        UPDATE cqpv a
+        FROM   :h_table b
+        SET    avalue = newval,
+               acell = 'I'
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.period                = :q_date
+        AND    a.question              = b.question
+        AND    a.quest_order           = 1
+        AND    a.quest_order           = b.quest_order;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating cqpv from ' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        /*--------------------------------------------------------------
+        04 Volumes
+        --------------------------------------------------------------*/
+    
+        ret_val = CALLPROC msacm_fp_drop_table ( h_table = :h_table);
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+    
+        CREATE TABLE :h_table
+        AS SELECT    contributor_reference,
+                     period,
+                     question,
+                     quest_order,
+                     question_industry,
+                     INT4(0) AS newval,
+                     FLOAT8(1) AS uv
+        FROM         cqpv
+        WHERE        period = :q_date
+        AND          MOD(question,10) = 4
+        AND          acell IN ('I','N')
+        AND          question_industry IN (SELECT industry FROM :g_results_industry);
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error creating ' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        MODIFY    :h_table TO  BTREE
+        UNIQUE ON contributor_reference,
+                  question;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error modifying ' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        /*--------------------------------------------------------------
+         Get previous period's unit value
+        --------------------------------------------------------------*/
+    
+        UPDATE :h_table a
+        FROM   cqpv b,
+               cqpv c
+        SET    uv = FLOAT8(b.avalue*1000.0)/FLOAT8(c.avalue)
+        WHERE  b.question              = c.question - 3
+        AND    a.question              = c.question
+        AND    b.period                = c.period
+        AND    b.period                = :q_less_date
+        AND    MOD(b.question,10)      = 1
+        AND    MOD(c.question,10)      = 4
+        AND    b.quest_order           = 1
+        AND    b.quest_order           = c.quest_order
+        AND    c.contributor_reference = b.contributor_reference
+        AND    a.contributor_reference = b.contributor_reference
+        AND    b.question_industry     = c.question_industry
+        AND    c.question_industry     = a.question_industry;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating 2/1 ' +:h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        UPDATE :h_table a
+        FROM   cqpv b,
+               cqpv c,
+               question_history d
+        SET    uv = FLOAT8(b.avalue*1000.0)/FLOAT8(c.avalue)
+        WHERE  b.question              = c.question - 3
+        AND    a.question              = d.new_question
+        AND    b.question              = d.old_question
+        AND    c.question              = d.old_question + 3
+        AND    b.period                = c.period
+        AND    b.period                = :q_less_date
+        AND    MOD(b.question,10)      = 1
+        AND    MOD(c.question,10)      = 4
+        AND    b.quest_order           = 1
+        AND    b.quest_order           = c.quest_order
+        AND    c.contributor_reference = b.contributor_reference
+        AND    a.contributor_reference = b.contributor_reference
+        AND    b.question_industry     = c.question_industry
+        AND    c.question_industry     = a.question_industry
+        AND    d.rep_type = 1;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating 2/1 QH' +:h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        /*--------------------------------------------------------------
+         Create new 02 value from the previous period's unit value 
+         applied to the current period's 01 value
+        --------------------------------------------------------------*/
+    
+        UPDATE :h_table a
+        FROM   cqpv b
+        SET    newval = ((FLOAT8(b.avalue)*1.000)/a.uv*1000) + 0.5
+        WHERE  a.question              = b.question + 3
+        AND    b.period                = :q_date
+        AND    a.contributor_reference = b.contributor_reference
+        AND    b.quest_order           = 1;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating from cqpv to ' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        UPDATE :h_table
+        SET    newval = 1
+        WHERE  newval = 0
+        AND    uv > 0;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating newvalues on ' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        /*--------------------------------------------------------------
+         Restore imputed value on cqpv
+        --------------------------------------------------------------*/
+    
+        UPDATE cqpv a
+        FROM   :h_table b
+        SET    avalue = newval,
+               acell = 'I'
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.period                = :q_date
+        AND    a.question              = b.question
+        AND    a.quest_order           = 1
+        AND    a.quest_order           = b.quest_order;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating cqpv from ' + :h_table,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        h_counter = :h_counter + 1;
+        q_less_date = :q_date;
+        q_date = :q_date + 3;
+
+    ENDWHILE;
+
+    RETURN 0;
+}

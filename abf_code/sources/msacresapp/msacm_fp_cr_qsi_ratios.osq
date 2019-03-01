@@ -1,0 +1,119 @@
+/*--------------------------------------------------------------
+                 MSACM_FP_CR_QSI_RATIOS
+--------------------------------------------------------------*/
+
+PROCEDURE msacm_fp_cr_qsi_ratios (
+
+          rat_date     = INTEGER4 NOT NULL,
+          ratless_date = INTEGER4 NOT NULL) =
+
+DECLARE   ret_val      = INTEGER1 NOT NULL,
+          h_frpr_name  = VARCHAR(25) NOT NULL
+
+{    
+    h_frpr_name = 'msacm_fp_cr_qsi_ratios';
+
+    /*--------------------------------------------------------------
+     Delete any data currently in array
+    --------------------------------------------------------------*/
+
+    ret_val = CALLPROC ARRAYCLEAR ( t_rtio );
+
+    IF ret_val <> 0 
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Failure clearing array for ' + VARCHAR(:g_industry),
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+    Select first set of data directly into array ordered 
+    --------------------------------------------------------------*/
+
+    t_rtio = 
+
+    SELECT   a.contributor_reference AS contributor_reference,
+             a.question AS question,
+             FLOAT4(a.avalue) / FLOAT4(b.avalue) AS ratio,
+             'Y' AS status
+    FROM     cqpv a,
+             cqpv b
+    WHERE    a.question_industry     = b.question_industry
+    AND      a.question_industry     = :g_industry
+    AND      a.period                = :rat_date
+    AND      b.period                = :ratless_date
+    AND      a.question              = b.question
+    AND      a.contributor_reference = b.contributor_reference
+    AND      a.acell                 IN ('V', 'P')
+    AND      b.acell                 IN ('V', 'P')
+    UNION
+    SELECT   a.contributor_reference AS contributor,
+             a.question AS question,
+             FLOAT4(a.avalue) / FLOAT4(b.avalue) AS ratio,
+             'Y' AS status
+    FROM     asi_to_qsi_link a,
+             asi_to_qsi_link b
+    WHERE    a.question_industry     = b.question_industry
+    AND      a.question_industry     = :g_industry
+    AND      a.qsi_period            = :rat_date
+    AND      b.qsi_period            = :ratless_date
+    AND      a.question              = b.question
+    AND      a.contributor_reference = b.contributor_reference
+    AND      a.acell                 IN ('V', 'P')
+    AND      b.acell                 IN ('V', 'P')
+    UNION
+    SELECT   a.contributor_reference AS contributor_reference,
+             a.question AS question,
+             FLOAT4(a.avalue) / FLOAT4(b.avalue) AS ratio,
+             'Y' AS status
+    FROM     cqpv a,
+             cqpv b, 
+             question_history c
+    WHERE    a.question_industry     = b.question_industry
+    AND      a.question_industry     = :g_industry
+    AND      a.period                = :rat_date
+    AND      b.period                = :ratless_date
+    AND      a.question              = c.new_question
+    AND      b.question              = c.old_question
+    AND      a.contributor_reference = b.contributor_reference
+    AND      a.acell                 IN ('V', 'P')
+    AND      b.acell                 IN ('V', 'P')
+    AND      c.rep_type = 1
+    UNION
+    SELECT   a.contributor_reference AS contributor,
+             a.question AS question,
+             FLOAT4(a.avalue) / FLOAT4(b.avalue) AS ratio,
+             'Y' AS status
+    FROM     asi_to_qsi_link a,
+             asi_to_qsi_link b,
+             question_history c
+    WHERE    a.question_industry     = b.question_industry
+    AND      a.question_industry     = :g_industry
+    AND      a.qsi_period            = :rat_date
+    AND      b.qsi_period            = :ratless_date
+    AND      a.question              = c.new_question
+    AND      b.question              = c.old_question
+    AND      a.contributor_reference = b.contributor_reference
+    AND      a.acell                 IN ('V', 'P')
+    AND      b.acell                 IN ('V', 'P')
+    AND      c.rep_type = 1
+    ORDER BY question, 
+             ratio;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing (
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9 
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Failure inserting data for ' + VARCHAR(:g_industry),
+                  h_frpr_name = :h_frpr_name);
+         RETURN 9;
+    ENDIF;
+
+    RETURN 0; 
+} 

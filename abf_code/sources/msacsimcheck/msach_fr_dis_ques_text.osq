@@ -1,0 +1,181 @@
+/*----------------------------------------------------------------------
+Displays full question text from within msacsimcheck
+----------------------------------------------------------------------*/
+
+INITIALIZE (
+
+        industry          = INTEGER4 NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        search_question   = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        lp_load_question  = PROCEDURE RETURNING INTEGER
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msach_fr_dis_ques_text';
+    msa_date = 'now';
+
+    period = :period / 100 * 100;
+
+    ret_val = CALLPROC lp_load_question ();
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}
+
+/*-----------------------------------------------------------------
+              L O C A L   P R O C E D U R E
+-----------------------------------------------------------------*/
+
+PROCEDURE lp_load_question () =
+{
+    CLEAR FIELD line1, line2, line3, line4, line5, line6, line7,
+                line8, line9, line10, units;
+
+    /*------------------------------------------------------------------
+    Check for Uncoded Entries (don't appear on the question_library)
+    ------------------------------------------------------------------*/
+
+    IF industry <> 0
+    THEN
+        IF :question >= :industry * 10000 + 9701
+        AND :question <= :industry * 10000 + 9791
+        THEN
+            line1 = 'Uncoded Entry';
+            RETURN 0;
+        ENDIF;
+    ENDIF;
+
+    IF ASCII(:question) LIKE '%2' OR ASCII(:question) LIKE '%4'
+    OR ASCII(:question) LIKE '%5' OR ASCII(:question) LIKE '%6'
+    OR ASCII(:question) LIKE '%7' OR ASCII(:question) LIKE '%8'
+    THEN
+        search_question := (:question / 10 * 10) + 1;
+    ELSE
+        search_question := :question;
+    ENDIF;
+
+    h_retry_or_not = 'RETRY';
+    h_retries = 0;
+
+    WHILE :h_retries < :h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+        h_retries = :h_retries + 1;
+
+        SELECT unit_1 AS units,
+               text_line1 AS line1,
+               text_line2 AS line2,
+               text_line3 AS line3,
+               text_line4 AS line4,
+               text_line5 AS line5,
+               text_line6 AS line6,
+               text_line7 AS line7,
+               text_line8 AS line8,
+               text_line9 AS line9,
+               text_line10 AS line10
+        FROM   question_library
+        WHERE  question = :search_question
+        AND    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question_library'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Question ' + VARCHAR(:search_question) +
+                ' was not found for ' + VARCHAR(:period)
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+   /*------------------------------------------------------------------
+     Load question units
+   ------------------------------------------------------------------*/
+
+    IF :question <> :search_question
+    THEN
+        
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            SELECT unit_1 AS units
+            FROM   question_library
+            WHERE  question = :question
+            AND    period = :period;
+    
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+    
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+    
+        ENDWHILE;
+    
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+    
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in accessing question_library'
+            WITH STYLE = POPUP;
+            RETURN 9;
+    
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'Question ' + VARCHAR(:question) +
+                    ' was not found for ' + VARCHAR(:period)
+            WITH STYLE = POPUP;
+            RETURN 9;
+        ENDIF;
+
+    ENDIF;
+
+    RETURN 0;
+}

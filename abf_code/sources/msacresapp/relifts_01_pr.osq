@@ -1,0 +1,681 @@
+/************************************************************************** 
+
+  New Relifts process designed to be run using the ProdCom Production 
+  Control program.
+  
+  No mandatory parameters
+
+  One optional parameter:
+    *  g_current_period: yyyy00 [Is the data period. Default is newest period]
+
+  e.g. Normal run called by PPC: 
+       $IMAGES/msacresapp relifts_01_pr -dprodlivedb -a 201200 
+  or   Manual run following failure 
+       $IMAGES/msacresapp relifts_01_pr -dprodlivedb
+
+  DF 2013
+
+***********************************************************************/
+
+PROCEDURE relifts_01_pr () =
+
+DECLARE h_return                = INTEGER4     NOT NULL WITH DEFAULT,
+        h_retries_allowed       = INTEGER1     NOT NULL WITH DEFAULT,
+        h_retries               = INTEGER1     NOT NULL WITH DEFAULT,
+        h_retry_or_not          = CHAR(5)      NOT NULL WITH DEFAULT,
+        h_filename              = VARCHAR(200) NOT NULL WITH DEFAULT,
+        h_param_list            = VARCHAR(200) NOT NULL WITH DEFAULT,
+        h_varchar_variable      = VARCHAR(200) NOT NULL WITH DEFAULT,
+        h_integer_variable      = INTEGER2     NOT NULL WITH DEFAULT,
+        h_period                = INTEGER4     NOT NULL WITH DEFAULT,
+        h_prev_period_1         = INTEGER4     NOT NULL WITH DEFAULT,
+        h_prev_period_2         = INTEGER4     NOT NULL WITH DEFAULT,
+        h_prev_period_3         = INTEGER4     NOT NULL WITH DEFAULT,
+        h_param1                = VARCHAR(10)  NOT NULL WITH DEFAULT,
+        h_text                  = VARCHAR(70)  NOT NULL WITH DEFAULT,
+        h_frpr_name             = VARCHAR(25)  NOT NULL WITH DEFAULT,
+        h_table_1               = VARCHAR(36)  NOT NULL WITH DEFAULT,
+        h_table_2               = VARCHAR(36)  NOT NULL WITH DEFAULT,
+        h_table_3               = VARCHAR(36)  NOT NULL WITH DEFAULT,
+ 
+        lp_full_error_check  = PROCEDURE RETURNING INTEGER NOT NULL,
+        lp_error_check       = PROCEDURE RETURNING INTEGER NOT NULL,
+        lp_drop_table        = PROCEDURE RETURNING INTEGER NOT NULL,
+
+{
+
+  h_frpr_name  = 'relifts_01_pr';
+  h_retries_allowed = 3;
+
+  h_table_1 = 'tt_relifts_01a';
+  h_table_2 = 'tt_relifts_01b';
+  h_table_3 = 'tt_relifts_01c';
+
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  /*----------------------------------------------------------------------
+       Access check. (Error messages handled by procedure.)
+  ----------------------------------------------------------------------*/
+  
+  h_return = CALLPROC check_access_procs (p_frpr_name = :h_frpr_name);
+
+  IF h_return = 1 
+  THEN
+    RETURN 0;
+  ELSEIF h_return > 1
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Log start of process.
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = '*SIGNON*');
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'STARTING: RELIFT PROCESS.');
+  
+  /*------------------------------------------------------------------
+    Select the parameters from the UNIX line
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[1/11] Getting parameters...';
+  SLEEP 1;
+  
+  h_param_list = CALLPROC COMMANDLINEPARAMETERS();
+
+  h_varchar_variable = SQUEEZE (h_param_list);
+  h_integer_variable = LOCATE (h_varchar_variable, ' ');
+  h_param1           = LEFT   (h_varchar_variable,h_integer_variable - 1);
+
+  g_current_period   = INT4(:h_param1);
+
+  /*------------------------------------------------------------------
+    Select max inquiry_period as h_period to validate passed period
+    or use as default.
+  ------------------------------------------------------------------*/
+
+  SELECT  MAX(period) AS h_period
+  FROM    inquiry_period
+  WHERE   inquiry = 14; 
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1); 
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select max period from inquiry period.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Validate parameters
+  ----------------------------------------------------------------------*/
+
+  MESSAGE '[2/11] Validating parameters...';
+  SLEEP 1;
+
+  IF  g_current_period = '' 
+  THEN
+    g_current_period = h_period;
+  ENDIF;
+
+  IF g_current_period != h_period
+  THEN
+    h_text = 'WARNING: Period parameter ' +VARCHAR(:g_current_period) + ' '
+           + 'not current survey period. Continuing...';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+  ENDIF;
+
+
+  /*---------------------------------------------------------------------
+     Set up previous periods.
+  ---------------------------------------------------------------------*/
+  MESSAGE '[3/11] Setting up previous periods...';
+  SLEEP 1;
+
+  h_prev_period_1 = g_current_period - 100; 
+  h_prev_period_2 = g_current_period - 200; 
+  h_prev_period_3 = g_current_period - 300; 
+
+  /*---------------------------------------------------------------------
+    Select counts of all relifts for 1 period and its data periods. 
+    Outputs to csv file. 
+  ---------------------------------------------------------------------*/
+
+  /*..................................................................
+      Drop and create first working table.
+  ..................................................................*/
+
+  MESSAGE '[4/11] Creating first working table for part one...';
+  SLEEP 1;
+
+  h_return = lp_drop_table (p_table_name = :h_table_1);
+
+  IF h_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+  
+    CREATE TABLE :h_table_1
+    AS
+    SELECT   run_period,
+             data_for_period AS data_period,
+             COUNT(*)        AS relifts
+    FROM     contributor_sas
+    WHERE    extracted        =  'y'
+      AND    run_period       =  :h_prev_period_1
+      AND    data_for_period IN (:h_prev_period_1, 
+                                 :h_prev_period_2, 
+                                 :h_prev_period_3) 
+    GROUP BY run_period, data_for_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create first instance of ' +:h_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :h_table_1 TO btree 
+      ON run_period, data_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return  != 0
+  THEN
+    h_text = 'ERROR: Failed to modify first instance of ' +:h_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*..................................................................
+      Drop and create second working table.
+  ..................................................................*/
+
+  MESSAGE '[5/11] Creating second working table for part one...';
+  SLEEP 1;
+
+  h_return = lp_drop_table (p_table_name = :h_table_2);
+
+  IF h_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+  
+    CREATE TABLE :h_table_2
+    AS
+    SELECT   run_period,
+             data_for_period AS data_period,
+             COUNT(DISTINCT contributor_reference) AS contributors
+    FROM     contributor_sas
+    WHERE    run_period = :h_prev_period_1
+      AND    extracted = 'y'
+      AND    data_for_period in (:h_prev_period_1, 
+                                 :h_prev_period_2, 
+                                 :h_prev_period_3) 
+    GROUP BY run_period, data_for_period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create first instance of ' +:h_table_2 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :h_table_2 TO btree 
+      ON run_period, data_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return  != 0
+  THEN
+    h_text = 'ERROR: Failed to modify first instance of ' +:h_table_2 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*..................................................................
+      Drop and create third working table.
+  ..................................................................*/
+
+  MESSAGE '[6/11] Creating third working table for part one...';
+  SLEEP 1;
+
+  h_return = lp_drop_table (p_table_name = :h_table_3);
+
+  IF h_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+  
+  CREATE TABLE :h_table_3
+  AS
+  SELECT a.run_period,
+         a.data_period,
+         a.relifts,
+         b.contributors
+  FROM   :h_table_1 a,
+         :h_table_2 b
+  WHERE   a.run_period  = b.run_period
+     AND  a.data_period = b.data_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return  != 0
+  THEN
+    h_text = 'ERROR: Failed to create first instance of ' +:h_table_3 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*..................................................................
+      Output data from third working table to csv file.
+  ..................................................................*/
+
+  MESSAGE '[7/11] Creating output file for part one...';
+  SLEEP 1;
+
+  h_filename = '/admin/scratch/relift_counts_' +VARCHAR(:h_prev_period_1);
+
+  COPY TABLE :h_table_3
+           ( run_period   = c0comma,
+             data_period  = c0comma,
+             relifts      = c0comma,
+             contributors = c0nl)
+  INTO :h_filename;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return  != 0
+  THEN
+    h_text = 'ERROR: Failed to create first output file.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ELSE 
+    h_text = 'NOTE: Successfully created output file ' +h_filename + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+  ENDIF;
+
+  /*---------------------------------------------------------------------
+     Creates a table of all relifts for an industry in a period. 
+     Outputs to csv file. 
+  ---------------------------------------------------------------------*/
+
+  /*..................................................................
+      Drop and create first working table.
+  ..................................................................*/
+
+  MESSAGE '[8/11] Creating first working table for part two...';
+  SLEEP 1;
+
+  h_return = lp_drop_table (p_table_name = :h_table_1);
+
+  IF h_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+  
+    CREATE TABLE :h_table_1
+    AS
+    SELECT   a.*, 
+             b.question_industry
+    FROM     contributor_sas a,
+             question_period b
+    WHERE    a.extracted       = 'y'
+      AND    a.run_period      = :h_prev_period_1
+      AND    a.question        = b.question
+      AND    a.data_for_period = b.period;
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return != 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to create second instance of ' +:h_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :h_table_1 TO BTREE
+      ON question_industry, run_period, data_for_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return  != 0
+  THEN
+    h_text = 'ERROR: Failed to modify second instance of ' +:h_table_1 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*..................................................................
+      Drop and create second working table.
+  ..................................................................*/
+
+  MESSAGE '[9/11] Creating second working table for part two...';
+  SLEEP 1;
+
+  h_return = lp_drop_table (p_table_name = :h_table_2);
+
+  IF h_return != 0
+  THEN
+    /* Error logging handled in LP */
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table_2
+  AS
+  SELECT   question_industry AS q_industry,
+           run_period,
+           data_for_period AS data_period,
+           COUNT(*) AS relifts
+  FROM     :h_table_1
+  WHERE    extracted = 'y'	
+    AND    run_period = :h_prev_period_1
+    AND    data_for_period IN (:h_prev_period_1,
+                               :h_prev_period_2,
+                               :h_prev_period_3)
+  GROUP BY question_industry, run_period, data_for_period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return  != 0
+  THEN
+    h_text = 'ERROR: Failed to create second instance of ' +:h_table_2 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :h_table_2 to BTREE
+  ON     q_industry, run_period, data_period;
+  
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return  != 0
+  THEN
+    h_text = 'ERROR: Failed to modify second instance of ' +:h_table_2 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*..................................................................
+      Output data from second working table to csv file.
+  ..................................................................*/
+
+  MESSAGE '[10/11] Creating output file for part two...';
+  SLEEP 1;
+
+  h_filename = '/admin/scratch/relift_industries_' +VARCHAR(:h_prev_period_1);
+
+  COPY TABLE :h_table_2
+           ( q_industry  = c0comma,
+             run_period  = c0comma,
+             data_period = c0comma,
+             relifts     = c0nl)
+  INTO :h_filename;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return  != 0
+  THEN
+    h_text = 'ERROR: Failed to create second output file.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ELSE 
+    h_text = 'NOTE: Successfully created output file ' +h_filename + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+  ENDIF;
+		
+  /*----------------------------------------------------------------------
+     Tidy up.
+  ----------------------------------------------------------------------*/
+
+  MESSAGE '[11/11] Tidying up . . .';
+  SLEEP 1;
+
+  h_return = lp_drop_table (p_table_name = :h_table_1);
+
+  IF h_return != 0
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  h_return = lp_drop_table (p_table_name = :h_table_2);
+
+  IF h_return != 0
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  h_return = lp_drop_table (p_table_name = :h_table_3);
+
+  IF h_return != 0
+  THEN
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+      Log end of process.
+  ------------------------------------------------------------------*/
+
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = 'COMPLETE: RELIFT PROCESS COMPLETED OK.');
+  
+  CALLPROC write_to_process_log
+         ( p_frpr_name = :h_frpr_name,
+           p_code      = 0,
+           p_text      = '*SIGNOFF*');
+
+}
+
+/*************************** LOCAL PROCEDURES *****************************/
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+                  h_num_row_ck = :p_num_row_ck,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+/*===========================================================================
+	      Local procedure for dropping a table if it exists.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL WITH DEFAULT) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(36) NOT NULL WITH DEFAULT
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    h_text = 'SYSTEM ERROR: Failed whilst selecting ' 
+           +  VARCHAR(:p_table_name) + ' from iitables prior to droping.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return != 0 
+  THEN 
+    h_text = 'SYSTEM ERROR: Unable to drop ' + VARCHAR(:p_table_name) + '. '
+           + 'Process cannot continue so exiting.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :lp_return,
+             p_text      = :h_text);
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+
+
+

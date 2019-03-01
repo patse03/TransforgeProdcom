@@ -1,0 +1,881 @@
+INITIALIZE (
+
+        h_table1             = VARCHAR(24) NOT NULL,
+        h_table2             = VARCHAR(24) NOT NULL,
+        perc                 = INTEGER4 NOT NULL,
+        up_or_down           = CHAR(1) NOT NULL,
+        period2              = INTEGER4 NOT NULL) =
+
+DECLARE h_retries_allowed    = INTEGER1 NOT NULL,
+        h_retries            = INTEGER1 NOT NULL,
+        h_retry_or_not       = CHAR(5) NOT NULL,
+        h_frpr_name          = VARCHAR(24) NOT NULL,
+        h_table3             = VARCHAR(24) NOT NULL,
+        h_table4             = VARCHAR(24) NOT NULL,
+        h_table5             = VARCHAR(24) NOT NULL,
+        h_field_name         = VARCHAR(24) NOT NULL,
+        h_rows               = INTEGER4 NOT NULL,
+        h_num_rows           = INTEGER4 NOT NULL,
+        h_sort_order         = VARCHAR(60) NOT NULL,
+        h_max_rows           = INTEGER2 NOT NULL,
+        h_order              = INTEGER1 NOT NULL,
+        h_difference         = INTEGER4 NOT NULL,
+        contributor_industry = INTEGER4 NOT NULL,
+        h_counter            = INTEGER4 NOT NULL,
+        current_val          = INTEGER4 NOT NULL,
+        current_vol          = INTEGER4 NOT NULL,
+        revised_val          = INTEGER4 NOT NULL,
+        revised_vol          = INTEGER4 NOT NULL,
+        h_record             = INTEGER4 NOT NULL,
+        h_show_values        = CHAR(1) NOT NULL,
+        ret_val              = INTEGER1 NOT NULL,
+        h_params             = CHAR(18) NOT NULL,
+
+        lp_load_table        = PROCEDURE RETURNING INTEGER
+
+{
+
+    h_retries_allowed = 3;
+    h_frpr_name = 'msach_fr_value_data';
+    h_table3 = 'temp_uv_table3';
+    h_table4 = 'temp_uv_table4';
+    h_table5 = 'temp_uv_table5';
+    msa_date = 'now';
+
+    h_order = 0;
+    selection_order = 'Order by Reference';
+    h_sort_order = 'contributor_reference, contributor_industry';
+    h_show_values = 'n';
+
+    SET_FORMS FIELD '' (MODE(tf) = 'READ',
+                        INVISIBLE(mismatch_msg) = 1);
+
+    SET_FORMS COLUMN '' tf (INVISIBLE(curr_val) = 1,
+                            INVISIBLE(curr_vol) = 1,
+                            INVISIBLE(mismatch) = 1,
+                            INVISIBLE(val_diff) = 0,
+                            INVISIBLE(vol_diff) = 0);
+/*
+    IF up_or_down = 'U'
+    THEN
+        msg_difference = VARCHAR(perc) + '% Increase gives = ';
+        old_agg_uv_difference = old_agguv + (old_agguv/100.0*perc);
+    ELSEIF up_or_down = 'D'
+    THEN
+        msg_difference = VARCHAR(perc) + '% Decrease gives = ';
+        old_agg_uv_difference = old_agguv - (old_agguv/100.0*perc);
+    ELSE
+        msg_difference = 'UVs are the same   = ';
+        old_agg_uv_difference = old_agguv;
+    ENDIF;
+*/
+        msg_difference = VARCHAR(perc) + '% Increase gives = ';
+        msg_difference1 = VARCHAR(perc) + '% Decrease gives = ';
+        old_agg_uv_difference = old_agguv + (old_agguv/100.0*perc);
+        decrease_uv = old_agguv - (old_agguv/100.0*perc);
+    /*------------------------------------------------------------------
+    Create tables and Calculate Aggregates
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = :h_table3);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    MESSAGE 'Creating temporary tables . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table3
+        AS SELECT    question AS question,
+                     period AS period,
+                     SUM(value) AS agg_value_per1,
+                     SUM(volume) AS agg_volume_per1,
+                     INT4(0) AS agg_value_per2,
+                     INT4(0) AS agg_volume_per2
+        FROM         :h_table1
+        WHERE        period = :period1
+        AND          question = :question
+        GROUP BY     question,period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:h_num_rows),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating ' + :h_table3
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = :h_table4);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table4
+        AS SELECT    question AS question,
+                     period AS period,
+                     SUM(value) AS agg_value_per2,
+                     SUM(volume) AS agg_volume_per2
+        FROM         :h_table1
+        WHERE        period = :period2
+        AND          question = :question
+        GROUP BY     question,period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:h_num_rows),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating ' + :h_table4
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    MESSAGE 'Updating agg_values for previous period into ' + :h_table3;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+        h_retries = :h_retries + 1;
+
+        UPDATE  :h_table3 a
+        FROM    :h_table4 b
+        SET     agg_value_per2 = b.agg_value_per2,
+                agg_volume_per2 = b.agg_volume_per2
+        WHERE   a.question = b.question;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:h_num_rows),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating ' + :h_table3
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Calculate differences
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Calculating aggregated differences . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+        h_retries = :h_retries + 1;
+
+        SELECT agg_value_per1,
+               agg_volume_per1,
+               (agg_value_per1 - agg_value_per2) AS agg_val_diff,
+               (agg_volume_per1 - agg_volume_per2) AS agg_vol_diff,
+               (agg_value_per1 - agg_value_per2) * 100.0 / agg_value_per2 AS perc_val_diff,
+               (agg_volume_per1 - agg_volume_per2) * 100.0 / agg_volume_per2 AS perc_vol_diff
+        FROM   :h_table3
+        WHERE  question = :question;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:h_num_rows),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in calculating differences on ' + :h_table3
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Create final temp table ready for tf
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = :h_table5);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+        h_retries = :h_retries + 1;
+
+        IF period1 = :g_period[1].period
+        THEN
+            CREATE TABLE :h_table5
+            AS SELECT    contributor_reference,
+                         contributor_industry,
+                         question,
+                         period1_uv AS uv,
+                         period1_cell AS cell1,
+                         (period1_uv - period2_uv) * 100.0 / period2_uv AS perc_uv_diff,
+                         period1_value - period2_value AS val_diff,
+                         period1_volume - period2_volume AS vol_diff,
+                         period1_conf AS conf1,
+                         period1_value AS curr_val,
+                         period1_volume AS curr_vol,
+                         period2_value AS prev_val,
+                         ' ' AS mismatch,
+                         '    ' AS inclexcl
+            FROM         :h_table2
+            WHERE        question = :question;
+
+        ELSEIF period1 = :g_period[2].period
+        THEN
+            CREATE TABLE :h_table5
+            AS SELECT    contributor_reference,
+                         contributor_industry,
+                         question,
+                         period2_uv AS uv,
+                         period2_cell AS cell1,
+                         (period2_uv - period3_uv) * 100.0 / period3_uv AS perc_uv_diff,
+                         period2_value - period3_value AS val_diff,
+                         period2_volume - period3_volume AS vol_diff,
+                         period2_conf AS conf1,
+                         period2_value AS curr_val,
+                         period2_volume AS curr_vol,
+                         period3_value AS prev_val,
+                         ' ' AS mismatch,
+                         '    ' AS inclexcl
+            FROM         :h_table2
+            WHERE        question = :question;
+
+        ELSEIF period1 = :g_period[3].period
+        THEN
+            CREATE TABLE :h_table5
+            AS SELECT    contributor_reference,
+                         contributor_industry,
+                         question,
+                         period3_uv AS uv,
+                         period3_cell AS cell1,
+                         (period3_uv - period4_uv) * 100.0 / period4_uv AS perc_uv_diff,
+                         period3_value - period4_value AS val_diff,
+                         period3_volume - period4_volume AS vol_diff,
+                         period3_conf AS conf1,
+                         period3_value AS curr_val,
+                         period3_volume AS curr_vol,
+                         period4_value AS prev_val,
+                         ' ' AS mismatch,
+                         '    ' AS inclexcl
+            FROM         :h_table2
+            WHERE        question = :question;
+
+        ELSEIF period1 = :g_period[4].period
+        THEN
+            CREATE TABLE :h_table5
+            AS SELECT    contributor_reference,
+                         contributor_industry,
+                         question,
+                         period4_uv AS uv,
+                         period4_cell AS cell1,
+                         (period4_uv - period5_uv) * 100.0 / period5_uv AS perc_uv_diff,
+                         period4_value - period5_value AS val_diff,
+                         period4_volume - period5_volume AS vol_diff,
+                         period4_conf AS conf1,
+                         period4_value AS curr_val,
+                         period4_volume AS curr_vol,
+                         period5_value AS prev_val,
+                         ' ' AS mismatch,
+                         '    ' AS inclexcl
+            FROM         :h_table2
+            WHERE        question = :question;
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:h_num_rows),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating ' + :h_table5
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Update perc uv difference from ZERO to >ZERO to 999999, so that
+    the display will show asterisks
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table5
+        SET    perc_uv_diff = 999999
+        WHERE  curr_val > 0
+        AND    prev_val = 0;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error updating infinite percentage changes'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Put a mismatch marker where there is a Value and No Volume,
+                                      or a Volume and No Value.
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table5
+        SET    mismatch = 'M'
+        WHERE  ((curr_val = 0 AND curr_vol <> 0)
+        OR     (curr_val <> 0 AND curr_vol = 0))
+	AND left(varchar(question),3) not in
+		      ('351','353');
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error updating mismatches'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 0
+    THEN
+        mismatch_msg = 'A VALUE/VOLUME MISMATCH EXISTS FOR AT LEAST' +
+                       ' ONE CONTRIBUTOR';
+        SET_FORMS FIELD '' (INVISIBLE(mismatch_msg) = 0);
+        SET_FORMS COLUMN '' tf (INVISIBLE(mismatch) = 0);
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+}
+
+'SortValue' =
+{
+    selection_order = 'Order by Value';
+    h_order = 1;
+
+    MESSAGE 'ReOrdering . . .';
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'SortVolume' =
+{
+    selection_order = 'Order by Volume';
+    h_order = 2;
+
+    MESSAGE 'ReOrdering . . .';
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'Sort%UVdiff' =
+{
+    selection_order = 'Order by % UV diff';
+    h_order = 3;
+
+    MESSAGE 'ReOrdering . . .';
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'QuestionText' =
+{
+    ret_val = CALLFRAME msach_fr_dis_ques_text(
+              period    = :period1,
+              industry  = :contributor_industry,
+              question  = :question);
+}
+
+'Contributor Info' =
+{
+  INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+  IF :h_field_name <> 'tf'
+  THEN
+      MESSAGE 'Please highlight the required Contributor'
+      WITH STYLE = POPUP;
+      RESUME;
+  ENDIF;
+
+  INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+  IF h_rows = 0
+  THEN
+    MESSAGE 'Please highlight a Contributor'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  h_params = VARCHAR(:period1) +' ' +VARCHAR(:tf.contributor_reference);
+
+  SELECT DBMSINFO('username') AS g_user_id;
+
+  IF g_user_id = 'produser'
+  OR g_user_id = 'prodlive'
+  THEN
+    MESSAGE 'DEBUG: period = {' +VARCHAR(:period1) +'}' +X'0D'
+          + '       conref = {' +VARCHAR(:tf.contributor_reference) +'}' +X'0D'
+          + '       params = {' +VARCHAR(:h_params) +'}' 
+    WITH STYLE = POPUP;
+  ENDIF;
+
+  CALL APPLICATION(exec='$IMAGES/despatch_app msaeb_fr_desp_contrib',
+                   param=:h_params);
+
+  msa_date = 'now';
+
+}
+
+'Exclude' =
+{
+    IF tf.inclexcl = ''
+    THEN
+        tf.inclexcl = 'Excl';
+    ELSE
+        tf.inclexcl = '';
+    ENDIF;
+
+    h_record = :tf._record;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table5
+        SET    inclexcl = :tf.inclexcl
+        WHERE  contributor_reference = :tf.contributor_reference;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating Exclude Marker on ' + :h_table5
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows updated for Exclude Marker on ' + :h_table5
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    MESSAGE 'ReCalculating . . .';
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    SCROLL tf TO h_record;
+}
+
+'ToggleValues' =
+{
+
+    IF h_show_values = 'y'
+    THEN
+        h_show_values = 'n';
+        SET_FORMS COLUMN '' tf (INVISIBLE(curr_val) = 1,
+                                INVISIBLE(curr_vol) = 1,
+                                INVISIBLE(val_diff) = 0,
+                                INVISIBLE(vol_diff) = 0);
+    ELSE
+        h_show_values = 'y';
+        SET_FORMS COLUMN '' tf (INVISIBLE(curr_val) = 0,
+                                INVISIBLE(curr_vol) = 0,
+                                INVISIBLE(val_diff) = 1,
+                                INVISIBLE(vol_diff) = 1);
+    ENDIF;
+
+}
+
+'End', KEY FRSKEY6 =
+{
+    MESSAGE 'Exiting Screen . . .';
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = :h_table3);
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = :h_table4);
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = :h_table5);
+    RETURN 0;
+}
+
+'QuickView', KEY FRSKEY7 =
+{
+    CALL APPLICATION (exec = '$IMAGES/quickview_app -numeric_overflow=ignore ');
+}
+
+/*----------------------------------------------------------------------
+                L O C A L   P R O C E D U R E    1
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_table () =
+
+{
+    CLEAR FIELD tf;
+
+    /*------------------------------------------------------------------
+    Load to screen:
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+        h_retries = :h_retries + 1;
+
+        IF h_order = 0
+        THEN
+
+            tf =
+
+            SELECT   contributor_reference,
+                     contributor_industry,
+                     uv,
+                     cell1,
+                     perc_uv_diff,
+                     val_diff,
+                     vol_diff,
+                     curr_val,
+                     curr_vol,
+                     conf1,
+                     mismatch,
+                     inclexcl
+            FROM     :h_table5
+            WHERE    question = :question
+            ORDER BY :h_sort_order;
+
+        ELSEIF h_order = 1
+        THEN
+            tf =
+
+            SELECT   contributor_reference,
+                     contributor_industry,
+                     uv,
+                     cell1,
+                     perc_uv_diff,
+                     val_diff,
+                     vol_diff,
+                     curr_val,
+                     curr_vol,
+                     conf1,
+                     ABS(val_diff) AS h_difference,
+                     mismatch,
+                     inclexcl
+            FROM     :h_table5
+            WHERE    question = :question
+            ORDER BY h_difference DESC,
+                     contributor_reference;
+
+        ELSEIF h_order = 2
+        THEN
+            tf =
+
+            SELECT   contributor_reference,
+                     contributor_industry,
+                     uv,
+                     cell1,
+                     perc_uv_diff,
+                     val_diff,
+                     vol_diff,
+                     curr_val,
+                     curr_vol,
+                     conf1,
+                     ABS(vol_diff) AS h_difference,
+                     mismatch,
+                     inclexcl
+            FROM     :h_table5
+            WHERE    question = :question
+            ORDER BY h_difference DESC,
+                     contributor_reference;
+
+        ELSEIF h_order = 3
+        THEN
+            tf =
+
+            SELECT   contributor_reference,
+                     contributor_industry,
+                     uv,
+                     cell1,
+                     perc_uv_diff,
+                     val_diff,
+                     vol_diff,
+                     curr_val,
+                     curr_vol,
+                     conf1,
+                     ABS(perc_uv_diff) AS h_difference,
+                     mismatch,
+                     inclexcl
+            FROM     :h_table5
+            WHERE    question = :question
+            ORDER BY h_difference DESC,
+                     contributor_reference;
+
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:h_num_rows),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading screen table'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No UV data is held for Question ' + VARCHAR(:question)
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+    current_val = 0;
+    current_vol = 0;
+    revised_val = 0;
+    revised_vol = 0;
+    current_uv = 0;
+    revised_uv = 0;
+
+    UNLOADTABLE tf
+    {
+            current_val = current_val + :tf.curr_val;
+            current_vol = current_vol + :tf.curr_vol;
+            revised_val = revised_val + :tf.curr_val;
+            revised_vol = revised_vol + :tf.curr_vol;
+
+        IF tf.inclexcl = 'Excl'
+        THEN
+            revised_val = revised_val - :tf.val_diff;
+            revised_vol = revised_vol - :tf.vol_diff;
+        ENDIF;
+
+    };
+
+    IF current_vol <> 0
+    THEN
+        current_uv = current_val * 1000.0 / current_vol;
+    ENDIF;
+
+    IF revised_vol <> 0
+    THEN
+        revised_uv = revised_val * 1000.0 / revised_vol;
+    ENDIF;
+
+    RETURN 0;
+}

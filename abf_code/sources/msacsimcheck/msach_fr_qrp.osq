@@ -1,0 +1,1106 @@
+INITIALIZE (
+        cutoff            = INTEGER4 NOT NULL,
+        h_counter         = INTEGER4 NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_table1          = VARCHAR(24) NOT NULL,
+        h_table2          = VARCHAR(24) NOT NULL,
+        h_table3          = VARCHAR(24) NOT NULL,
+        t_cqpv            = VARCHAR(24) NOT NULL,
+        h_search          = CHAR(11) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        h_max_rows        = INTEGER4 NOT NULL,
+        p1                = INTEGER4 NOT NULL,
+        p2                = INTEGER4 NOT NULL,
+        p3                = INTEGER4 NOT NULL,
+        p4                = INTEGER4 NOT NULL,
+        p5                = INTEGER4 NOT NULL,
+        h_record          = INTEGER4 NOT NULL,
+        h_field_name      = VARCHAR(24) NOT NULL,
+        h_periods         = INTEGER1 NOT NULL,
+        h_rows            = INTEGER4 NOT NULL,
+	h_reference       = CHAR(11) NOT NULL,
+        text_question     = INTEGER4 NOT NULL,
+	h_params          = CHAR(18) NOT NULL,
+
+        lp_create_tables  = PROCEDURE RETURNING INTEGER,
+        lp_load_table     = PROCEDURE RETURNING INTEGER
+
+{
+
+    h_retries_allowed = 3;
+    h_frpr_name = 'msach_fr_qrp';
+    industry = :g_industry;
+
+    h_table1 = 'temp_' + VARCHAR(:g_industry) + '_qrp1';
+    h_table2 = 'temp_' + VARCHAR(:g_industry) + '_qrp2';
+    h_table3 = 'temp_aster';
+    t_cqpv = 'sim_' + VARCHAR(:g_industry) + '_' +
+              VARCHAR(:g_period[1].period) + '_cqpv';
+
+    h_max_rows = CALLPROC ARRAYALLROWS(g_question_array);
+    msa_date = 'now';
+
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+    /*------------------------------------------------------------------
+    Periods are 1 (latest) to 5 (earliest) and are permanently stored in
+    p1-p5.
+
+    Periods displayed to the screen are period1, period2 & period3
+    (where period1 is the latest, and period3 is the earliest).
+    The contents of period1-period3 vary depending upon whether we're
+    displaying the Latest or the Earliest Periods (quarterly only).
+    ------------------------------------------------------------------*/
+
+    p1 = :g_period[1].period;
+    p2 = 0;
+    p3 = 0;
+    p4 = 0;
+    p5 = 0;
+
+    IF g_periods >= 2
+    THEN
+        p2 = :g_period[2].period;
+    ENDIF;
+
+    IF g_periods >= 3
+    THEN
+        p3 = :g_period[3].period;
+    ENDIF;
+
+    IF g_periods >= 4
+    THEN
+        p4 = :g_period[4].period;
+    ENDIF;
+
+    IF g_periods >= 5
+    THEN
+        p5 = :g_period[5].period;
+    ENDIF;
+
+    h_periods = 0;
+    select_period = 'Latest Periods';
+
+    period1 = p1;
+    period2 = p2;
+    period3 = p3;
+
+
+
+    ret_val = CALLPROC lp_create_tables ();
+    IF ret_val = 1
+    THEN
+        RESUME;
+    ELSEIF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    RESUME FIELD tf;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+}
+
+'PreviousQuestion' =
+{
+    IF :h_counter = 1
+    THEN
+        MESSAGE 'No more Questions'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_counter = :h_counter - 1;
+
+    ret_val = CALLPROC lp_create_tables ();
+    IF ret_val = 1
+    THEN
+        RESUME;
+    ELSEIF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'NextQuestion' =
+{
+    IF :h_counter = :h_max_rows
+    THEN
+        MESSAGE 'No more Questions'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_counter = :h_counter + 1;
+
+    ret_val = CALLPROC lp_create_tables ();
+    IF ret_val = 1
+    THEN
+        RESUME;
+    ELSEIF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'Codes' =
+{
+    ret_val = CALLFRAME msach_fr_cell_codes();
+    msa_date = 'now';
+}
+
+'Contributor Info' =
+{
+  INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+  IF h_rows = 0
+  THEN
+    MESSAGE 'Please highlight a Contributor.'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  h_params = VARCHAR(:p1) +' ' +VARCHAR(:tf.contributor_reference);
+
+  SELECT DBMSINFO('username') AS g_user_id;
+
+  IF g_user_id = 'produser'
+  OR g_user_id = 'prodlive'
+  THEN
+    MESSAGE 'DEBUG: period = {' +VARCHAR(:p1) +'}' +X'0D'
+          + '       conref = {' +VARCHAR(:tf.contributor_reference) +'}' +X'0D'
+          + '       params = {' +VARCHAR(:h_params) +'}' 
+    WITH STYLE = POPUP;
+  ENDIF;
+
+  CALL APPLICATION(exec='$IMAGES/despatch_app msaeb_fr_desp_contrib',
+                   param=:h_params);
+
+  msa_date = 'now';
+
+}
+
+'ActualChange' =
+{
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'There are no Contributors to this Question'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    ret_val = CALLFRAME msach_fr_difference (
+              h_table     = :h_table2,
+              cutoff     = :cutoff,
+              question    = :question,
+              period      = :period1,
+              prev_period = :period2);
+    msa_date = 'now';
+    ret_val = CALLPROC msa_fp_drop_table (
+	      h_table = :h_table3);
+}
+
+'Update' =
+{
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+    IF h_rows = 0
+    THEN
+        MESSAGE 'There are no Contributors to Update'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    IF :g_access_level <> 78 AND :g_access_level <> 79
+    THEN
+        MESSAGE 'Sorry, but this option is only for the RAP team'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    IF :g_database <> 'harrydb' AND g_database <> 'produserdb'
+    THEN
+        MESSAGE 'This option is ONLY for use on harrydb'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_search = :tf.contributor_reference;
+
+    ret_val = CALLFRAME msach_fr_up_qrp (
+              contributor_reference = IFNULL(:tf.contributor_reference,''),
+              contributor_industry = IFNULL(:tf.contributor_industry,0),
+              t_cqpv   = :t_cqpv,
+              question = :question);
+
+    IF ret_val <> 0
+    THEN
+        MESSAGE 'Error - at least one update to the QRP failed'
+        WITH STYLE = POPUP;
+    ENDIF;
+
+    ret_val = CALLPROC lp_create_tables ();
+    IF ret_val = 1
+    THEN
+        RESUME;
+    ELSEIF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CLEAR FIELD tf;
+    ret_val = CALLPROC lp_load_table();
+
+    UNLOADTABLE tf (h_record = _RECORD)
+    {
+         IF :tf.contributor_reference = :h_search
+         THEN
+             SCROLL tf TO :h_record;
+             RESUME FIELD tf;
+         ENDIF;
+    };
+    msa_date = 'now';
+}
+
+'Insert' =
+{
+    IF :g_access_level <> 78 AND :g_access_level <> 79
+    THEN
+        MESSAGE 'Sorry, but this option is only for the RAP team'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    IF :g_database <> 'harrydb' AND g_database <> 'produserdb'
+    THEN
+        MESSAGE 'This option is ONLY for use on harrydb'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    ret_val = CALLFRAME msach_fr_ins_qrp (
+              h_search = BYREF(:h_search),
+              question = :g_question_array[:h_counter].question,
+              t_cqpv   = :t_cqpv);
+
+    IF ret_val <> 0
+    THEN
+        MESSAGE 'Sorry, the insert failed'
+        WITH STYLE = POPUP;
+    ENDIF;
+
+    ret_val = CALLPROC lp_create_tables ();
+    IF ret_val = 1
+    THEN
+        RESUME;
+    ELSEIF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    CLEAR FIELD tf;
+
+    ret_val = CALLPROC lp_load_table ();
+
+    UNLOADTABLE tf (h_record = _RECORD)
+    {
+         IF :tf.contributor_reference = :h_search
+         THEN
+             SCROLL tf TO :h_record;
+             RESUME FIELD tf;
+         ENDIF;
+    };
+    msa_date = 'now';
+}
+
+'OtherPeriods', KEY FRSKEY4 =
+{
+
+    IF h_periods = 0
+    THEN
+        period1 = p3;
+        period2 = p4;
+	period3 = p5;
+        select_period = 'Previous Periods';
+        h_periods = 1;
+    ELSE
+        period1 = p1;
+        period2 = p2;
+        period3 = p3;
+        select_period = 'Latest Periods';
+        h_periods = 0;
+    ENDIF;
+
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+    IF :h_rows > 0
+    THEN
+        h_reference = :tf.contributor_reference;
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    IF :h_rows > 0
+    THEN
+        UNLOADTABLE tf (h_record = _RECORD)
+        {
+             IF :tf.contributor_reference = :h_reference
+             THEN
+                 SCROLL tf TO :h_record;
+                 RESUME FIELD tf;
+             ENDIF;
+        };
+    ENDIF;
+}
+
+'End', KEY FRSKEY6 =
+{
+    MESSAGE 'Exiting QRP Screen . . .';
+    ret_val = CALLPROC msa_fp_drop_table (
+	      h_table = :h_table1);
+    ret_val = CALLPROC msa_fp_drop_table (
+	      h_table = :h_table2);
+    ret_val = CALLPROC msa_fp_drop_table (
+	      h_table = :h_table3);
+
+    RETURN 0;
+}
+
+'QuickView', KEY FRSKEY7 =
+{
+    CALL APPLICATION (exec = '$IMAGES/quickview_app -numeric_overflow=ignore ');
+}
+
+/*----------------------------------------------------------------------
+                   L O C A L   P R O C E D U R E   1
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_create_tables () =
+{
+    question = :g_question_array[:h_counter].question;
+    quest_message = 'Question ' + VARCHAR(:h_counter) +
+		    ' of ' + VARCHAR(:h_max_rows);
+
+    CLEAR FIELD tf, text_line1, text_line2, text_line3, question_units;
+    REDISPLAY;
+
+    MESSAGE 'Selecting Contributors for Question ' +
+            VARCHAR(:question) + ' . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table (
+	      h_table = :h_table1);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC msa_fp_drop_table (
+	      h_table = :h_table2);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC msa_fp_drop_table (
+	      h_table = :h_table3);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table1
+        AS SELECT    contributor_reference,
+                     contributor_industry,
+                     qperiod AS period,
+                     avalue,
+                     acell,
+		     confirmation_code
+        FROM         :t_cqpv
+        WHERE        qperiod IN (:p1,:p2,:p3,:p4,:p5)
+        AND          question = :question
+        UNION
+        SELECT       a.contributor_reference,
+                     a.contributor_industry,
+                     a.qperiod AS period,
+                     a.avalue,
+                     a.acell,
+		     a.confirmation_code
+        FROM         :t_cqpv a,
+                     question_history b
+        WHERE        a.qperiod IN (:p1,:p2,:p3,:p4,:p5)
+        AND          a.question = b.old_question
+        AND          b.new_question = :question
+        AND          b.rep_type = 1;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error creating ' + :h_table1
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No Contributor Data found for Question ' +
+                VARCHAR(:question)
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Update IDBR References
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'IDBRing Data . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table1 a
+        FROM   idbr_lookup b
+        SET    contributor_reference = b.new_reference
+        WHERE  a.contributor_reference = b.dummy_reference
+        AND    a.contributor_reference LIKE '8888%';
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error IDBRing ' + :h_table1
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Create 2nd table for all periods
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Selecting Data for All Periods . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table2
+        AS SELECT    DISTINCT(contributor_reference),
+                     INT4(0) AS contributor_industry,
+                     INT4(0) AS value5,
+                     'D' AS cell5,
+		      ' ' AS period5_conf,
+                     INT4(0) AS value4,
+                     'D' AS cell4,
+		      ' ' AS period4_conf,
+                     INT4(0) AS period3_value,
+                     'D' AS period3_cell,
+		      ' ' AS period3_conf,
+                     INT4(0) AS value2,
+                     'D' AS cell2,
+		      ' ' AS period2_conf,
+                     INT4(0) AS value1,
+                     'D' AS cell1,
+		      ' ' AS period1_conf
+        FROM         :h_table1;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating ' + :h_table2
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No Contributor Data found to create ' + :h_table2
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Update for individual periods, oldest first. Update the contributor_
+    industry each time, so that the latest contributor_industry is
+    stored alongside each contributor.
+
+    Update for period5
+    ------------------------------------------------------------------*/
+
+    IF :g_inquiry <> 14
+    THEN
+
+        MESSAGE 'Updating for ' + VARCHAR(:p5) + ' . . .';
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            UPDATE :h_table2 a
+            FROM   :h_table1 b
+            SET    value5 = b.avalue,
+                   cell5 = b.acell,
+		   period5_conf = b.confirmation_code,
+                   contributor_industry = b.contributor_industry
+            WHERE  a.contributor_reference = b.contributor_reference
+            AND    b.period = :p5;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in updating ' + :h_table2 +
+                    ' for ' + VARCHAR(:p5)
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Update for period4
+    ------------------------------------------------------------------*/
+
+   /* IF :g_inquiry <> 14
+    THEN
+*/
+        MESSAGE 'Updating for ' + VARCHAR(:p4) + ' . . .';
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            UPDATE :h_table2 a
+            FROM   :h_table1 b
+            SET    value4 = b.avalue,
+                   cell4 = b.acell,
+		   period4_conf = b.confirmation_code,
+                   contributor_industry = b.contributor_industry
+            WHERE  a.contributor_reference = b.contributor_reference
+            AND    b.period = :p4;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in updating ' + :h_table2 +
+                    ' for ' + VARCHAR(:p4)
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ENDIF;
+    /*ENDIF;*/
+
+    /*------------------------------------------------------------------
+    Update for period3
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Updating for ' + VARCHAR(:p3) + ' . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table2 a
+        FROM   :h_table1 b
+        SET    period3_value = b.avalue,
+               period3_cell = b.acell,
+	       period3_conf = b.confirmation_code,
+               contributor_industry = b.contributor_industry
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    b.period = :p3;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating ' + :h_table2 +
+                ' for ' + VARCHAR(:p3)
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Update for period2
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Updating for ' + VARCHAR(:p2) + ' . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table2 a
+        FROM   :h_table1 b
+        SET    value2 = b.avalue,
+               cell2 = b.acell,
+	       period2_conf = b.confirmation_code,
+               contributor_industry = b.contributor_industry
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    b.period = :p2;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating ' + :h_table2 +
+                ' for ' + VARCHAR(:p2)
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Update for period1
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Updating for ' + VARCHAR(:p1) + ' . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table2 a
+        FROM   :h_table1 b
+        SET    value1 = b.avalue,
+               cell1 = b.acell,
+	       period1_conf = b.confirmation_code,
+               contributor_industry = b.contributor_industry
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    b.period = :p1;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating ' + :h_table2 +
+                ' for ' + VARCHAR(:p1)
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                   L O C A L   P R O C E D U R E   2
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_table () =
+{
+    msa_date = 'now';
+
+    /*------------------------------------------------------------------
+    Load to screen:
+    If h_periods = 0, load the new periods (periods 1-3)
+    If h_periods = 1, load the old periods (periods 3-5)
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+/*
+        IF :g_inquiry = 14
+        THEN
+            tf =
+
+            SELECT   contributor_reference,
+                     contributor_industry,
+                     period3_value AS value3,
+                     period3_cell AS cell3,
+		     period3_conf AS conf3,
+                     value2,
+                     cell2,
+		     period2_conf AS conf2,
+                     value1,
+                     cell1,
+		     period1_conf AS conf1
+            FROM     :h_table2
+            ORDER BY contributor_reference;
+        ELSE
+	    */
+if :g_inquiry = 15
+then
+	    IF h_periods = 0
+	    THEN
+                tf =
+
+                SELECT   contributor_reference,
+                         contributor_industry,
+                         period3_value AS value3,
+                         period3_cell AS cell3,
+		         period3_conf AS conf3,
+                         value2,
+                         cell2,
+		         period2_conf AS conf2,
+                         value1,
+                         cell1,
+		         period1_conf AS conf1
+                FROM     :h_table2
+                ORDER BY contributor_reference;
+            ELSE
+                tf =
+                SELECT   contributor_reference,
+                         contributor_industry,
+                         value5 AS value3,
+                         cell5 AS cell3,
+		         period5_conf AS conf3,
+                         value4 AS value2,
+                         cell4 AS cell2,
+		         period4_conf AS conf2,
+                         period3_value AS value1,
+                         period3_cell AS cell1,
+		         period3_conf AS conf1
+                FROM     :h_table2
+                ORDER BY contributor_reference;
+            ENDIF;
+        /*ENDIF;*/
+else
+	    IF h_periods = 0
+	    THEN
+                tf =
+
+                SELECT   contributor_reference,
+                         contributor_industry,
+                         period3_value AS value3,
+                         period3_cell AS cell3,
+		         period3_conf AS conf3,
+                         value2,
+                         cell2,
+		         period2_conf AS conf2,
+                         value1,
+                         cell1,
+		         period1_conf AS conf1
+                FROM     :h_table2
+                ORDER BY contributor_reference;
+            ELSE
+                tf =
+                SELECT   contributor_reference,
+                         contributor_industry,
+                         value5 AS value3,
+                         '' AS cell3,
+		         '' AS conf3,
+                         value4 AS value2,
+                         cell4 AS cell2,
+		         period4_conf AS conf2,
+                         period3_value AS value1,
+                         period3_cell AS cell1,
+		         period3_conf AS conf1
+                FROM     :h_table2
+                ORDER BY contributor_reference;
+            ENDIF;
+endif;
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading from ' + :h_table2
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No rows loaded from ' + :h_table2
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Select question text
+    ------------------------------------------------------------------*/
+
+    IF MOD(question,10) <> 0
+    THEN
+        text_question = :question / 10 * 10 + 1;
+    ELSE
+        text_question = :question;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT a.text_line1 AS text_line1,
+               a.text_line2 AS text_line2,
+               a.text_line3 AS text_line3,
+               b.unit_1 AS question_units
+        FROM   question_library a,
+               question_library b
+        WHERE  a.question = :text_question
+        AND    b.question = :question
+        AND    a.period = b.period
+        AND    a.period = :period1 / 100 * 100
+        AND    a.lag NOT IN (4,9);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        text_line1 = 'This Question is not live in ' + VARCHAR(:period1);
+        text_line2 = '';
+        text_line3 = '';
+        question_units = '';
+    ENDIF;
+
+    IF :question_units <> ''
+    THEN
+        question_units := 'Units = ' + :question_units;
+    ENDIF;
+
+    RETURN 0;
+}

@@ -1,0 +1,197 @@
+/*----------------------------------------------------------------------
+Median Constructions - one period at a time (going forwards)
+----------------------------------------------------------------------*/
+
+PROCEDURE msacm_fp_con_median (
+
+          h_median_table      = VARCHAR(24) NOT NULL,
+          curr_period         = INTEGER4 NOT NULL) =
+
+DECLARE   ret_val             = INTEGER1 NOT NULL,
+          h_frpr_name         = VARCHAR(24) NOT NULL,
+          h_table             = VARCHAR(24) NOT NULL,
+          prev_period         = INTEGER4 NOT NULL,
+          h_question          = INTEGER4 NOT NULL,
+          h_question_industry = INTEGER4 NOT NULL,
+          h_mid_row           = INTEGER4 NOT NULL,
+          median_uv           = FLOAT8 NOT NULL,
+          h_rows              = INTEGER4 NOT NULL
+{
+
+    h_frpr_name = 'msacm_fp_con_median';
+    h_table = 'temp_median_uv';
+
+    ret_val = CALLPROC msacm_fp_drop_table (
+                       h_table = :h_table);
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Create table of all UVs for all questions where both the Val & Vol
+    have cell codes of V C I or P
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Creating Median Table for ' +
+            VARCHAR(curr_period) + ' . . .';
+
+    CREATE TABLE :h_table
+    AS SELECT    b.question,
+                 b.question_industry,
+                 (a.avalue * 1000.0 / b.avalue) AS unit_value
+    FROM         cqpv a,
+                 cqpv b
+    WHERE        a.contributor_reference = b.contributor_reference
+    AND          a.contributor_inquiry = b.contributor_inquiry
+    AND          a.contributor_inquiry = :g_inquiry
+    AND          a.period = :curr_period
+    AND          a.period = b.period
+    AND          MOD(b.question,10) IN (2,4)
+    AND          a.question = b.question / 10 * 10 + 1
+    AND          a.question_industry IN (
+                 SELECT industry FROM :g_results_industry)
+    AND          a.acell IN ('V','I','C','P')
+    AND          b.acell IN ('V','I','C','P');
+
+    /************************************************************
+    This code is to be used if the users (Cecil, Linda Rolls etc)
+    want unit values constructed on returned data only.
+    *************************************************************
+
+    AND          a.acell IN ('V')
+    AND          b.acell IN ('V');
+    ************************************************************/
+
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error creating ' + :h_table + ' for ' +
+                           VARCHAR(curr_period),
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ELSEIF ret_val = 1
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'No UVs found to make median UV for ' +
+                           VARCHAR(curr_period),
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Take each question one at a time, and load all values into an array
+    ------------------------------------------------------------------*/
+
+    SELECT DISTINCT (question) AS h_question,
+           question_industry AS h_question_industry
+    FROM   :h_table
+    {
+        MESSAGE 'Calculating Median for ' + VARCHAR(curr_period) +
+                ' Question ' + VARCHAR(h_question) + ' . . .';
+
+        ret_val = CALLPROC ARRAYCLEAR(g_uv_array);
+
+        g_uv_array =
+
+        SELECT   question,
+                 unit_value
+        FROM     :h_table
+        WHERE    question = :h_question
+        AND      unit_value > 0
+        ORDER BY unit_value ASC;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row    = BYREF(:h_rows),
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error loading UV array for ' +
+                               VARCHAR(curr_period),
+                      h_frpr_name  = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        Median Rules:
+    
+        1. If there is an even number of UVs, the median is the
+           average of the middle 2.
+        2. If there is an odd number of UVs, the median is the middle
+           one.
+
+        e.g. 20 UVs: as 20/2=10, sum the 10th & the 11th and divide by 2
+             21 UVs: as 21/2=10.5, use the 11th
+        --------------------------------------------------------------*/
+
+        IF h_rows > 0
+        THEN
+
+            h_mid_row = h_rows / 2;
+    
+            IF MOD(h_rows,2) = 0
+            THEN
+                median_uv = (:g_uv_array[:h_mid_row].unit_value +
+                            :g_uv_array[:h_mid_row + 1].unit_value) / 2;
+            ELSE
+                median_uv = :g_uv_array[:h_mid_row + 1].unit_value;
+            ENDIF;
+    
+            INSERT INTO :h_median_table (
+                        question_industry,
+                        question,
+                        period,
+                        unit_value)
+            VALUES (    :h_question_industry,
+                        :h_question,
+                        :curr_period,
+                        :median_uv);
+    
+            ret_val = CALLPROC msacm_fp_check_inq_ing(
+                      h_num_row_ck = 1,
+                      h_rollback   = 'N',
+                      h_commit     = 'Y',
+                      h_frpr_name  = :h_frpr_name);
+    
+            IF ret_val <> 0
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                          h_text = 'Error inserting median UV for ' +
+                                   VARCHAR(:h_question) + ' ' +
+                                   VARCHAR(curr_period),
+                          h_frpr_name  = :h_frpr_name);
+                RETURN 9;
+            ENDIF;
+        ENDIF;
+    };
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error in UV select loop for ' +
+                           VARCHAR(curr_period),
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+
+}

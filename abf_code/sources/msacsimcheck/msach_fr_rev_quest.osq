@@ -1,0 +1,834 @@
+INITIALIZE (
+
+        inquiry           = INTEGER1 NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_table           = VARCHAR(24) NOT NULL,
+        h_print_table     = VARCHAR(24) NOT NULL,
+        h_period          = INTEGER4 NOT NULL,
+        h_num_rows        = INTEGER4 NOT NULL,
+        h_rows            = INTEGER4 NOT NULL,
+        h_position        = INTEGER4 NOT NULL,
+        h_counter         = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        h_value           = INTEGER4 NOT NULL,
+        h_question        = INTEGER4 NOT NULL,
+        h_ok_to_load      = CHAR(1) NOT NULL,
+        h_check_table     = CHAR(21) NOT NULL,
+        h_field_name      = VARCHAR(24) NOT NULL,
+        prev_period1      = INTEGER4 NOT NULL,
+        prev_period2      = INTEGER4 NOT NULL,
+        prev_period3      = INTEGER4 NOT NULL,
+        prev_period4      = INTEGER4 NOT NULL,
+        difference        = INTEGER4 NOT NULL,
+        perc_diff         = FLOAT4 NOT NULL,
+        lp_load_table     = PROCEDURE RETURNING INTEGER,
+        lp_setup_tables   = PROCEDURE RETURNING INTEGER
+
+{
+    msa_date = 'now';
+    h_frpr_name = 'msach_fr_rev_quest';
+    h_retries_allowed = 3;
+    h_table = 'revisions';
+    h_print_table = 'cref_revisions';
+
+    MESSAGE 'Checking Tables . . .';
+
+    h_new_simtable = 'sim_' + VARCHAR(:industry) + '_' +
+                      VARCHAR(:period) + '_cqpv';
+
+    ret_val = CALLPROC msa_fp_prev_periods (
+              inquiry      = :inquiry,
+              period       = :period,
+              prev_period1 = BYREF(:prev_period1),
+              prev_period2 = BYREF(:prev_period2),
+              prev_period3 = BYREF(:prev_period3),
+              prev_period4 = BYREF(:prev_period4));
+
+    h_old_simtable = 'sim_' + VARCHAR(:industry) + '_' +
+                      VARCHAR(:prev_period1) + '_cqpv';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT table_name AS h_check_table
+        FROM   iitables
+        WHERE  table_name = :h_new_simtable;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in finding new table'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE :h_new_simtable + ' does not exist'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT table_name AS h_check_table
+        FROM   iitables
+        WHERE  table_name = :h_old_simtable;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in finding old table'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE :h_old_simtable + ' does not exist'
+        WITH STYLE = POPUP;
+        RETURN 0;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(cutoff) = 1,
+                        REVERSE(cutoff) = 1,
+                        UNDERLINE(cutoff) = 0,
+                        DISPLAYONLY(rev_period) = 0,
+                        REVERSE(rev_period) = 0,
+                        UNDERLINE(rev_period) = 1,
+                        MODE(tf_display) = 'READ');
+
+    cutoff = 0;
+    h_ok_to_load = 'n';
+
+    ret_val = CALLPROC lp_setup_tables ();
+
+    RESUME FIELD rev_period;
+}
+
+FIELD rev_period =
+{
+    msa_date = 'now';
+    IF :inquiry = 14 AND
+       (:rev_period <> :prev_period1 AND :rev_period <> :prev_period2
+	AND :rev_period <> :prev_period3)
+    THEN
+        MESSAGE 'Revision period may only be ' +
+                VARCHAR(:prev_period1) + ' or ' +
+                VARCHAR(:prev_period2)
+        WITH STYLE = POPUP;
+        RESUME FIELD rev_period;
+
+    ELSEIF :inquiry = 15 AND
+       (:rev_period <> :prev_period1 AND :rev_period <> :prev_period2
+       AND :rev_period <> :prev_period3 AND :rev_period <> :prev_period4)
+    THEN
+        MESSAGE 'Revision period may only be ' +
+                VARCHAR(:prev_period1) + ', ' +
+                VARCHAR(:prev_period2) + ', ' +
+                VARCHAR(:prev_period3) + ' or ' +
+                VARCHAR(:prev_period4)
+        WITH STYLE = POPUP;
+        RESUME FIELD rev_period;
+
+    ENDIF;
+
+    h_ok_to_load = 'y';
+
+    SET_FORMS FIELD '' (DISPLAYONLY(rev_period) = 1,
+                        REVERSE(rev_period) = 1,
+                        UNDERLINE(rev_period) = 0);
+
+    ret_val = CALLPROC lp_load_table ();
+    RESUME FIELD tf_display;
+}
+
+FIELD cutoff =
+{
+    msa_date = 'now';
+    SET_FORMS FIELD '' (DISPLAYONLY(cutoff) = 1,
+                        REVERSE(cutoff) = 1,
+                        UNDERLINE(cutoff) = 0);
+
+    IF :h_ok_to_load = 'n'
+    THEN
+        RESUME;
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_table ();
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    RESUME FIELD tf_display;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'AlterLimit' =
+{
+    msa_date = 'now';
+    CLEAR FIELD tf_display;
+    SET_FORMS FIELD '' (DISPLAYONLY(cutoff) = 0,
+                        REVERSE(cutoff) = 0,
+                        UNDERLINE(cutoff) = 1);
+    RESUME FIELD cutoff;
+}
+
+'NewPeriod' =
+{
+    msa_date = 'now';
+    CLEAR FIELD tf_display;
+    SET_FORMS FIELD '' (DISPLAYONLY(rev_period) = 0,
+                        REVERSE(rev_period) = 0,
+                        UNDERLINE(rev_period) = 1);
+
+    h_ok_to_load = 'n';
+    RESUME FIELD rev_period;
+}
+
+'ContributorData' =
+{
+
+    INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+    IF :h_field_name <> 'tf_display'
+    THEN
+        MESSAGE 'Please highlight the required question'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf_display));
+
+    IF :h_rows = 0
+    THEN
+        MESSAGE 'Please highlight the required question' +
+                ' before pressing ''Contributor Data '''
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    /* match the highlighted question with the one in the array */
+
+    h_num_rows = CALLPROC ARRAYALLROWS ( g_question_array);
+    h_position = 0;
+    h_counter  = 0;
+    UNLOADTABLE g_question_array
+    {
+        h_counter = :h_counter + 1;
+        IF :g_question_array.question = :tf_display.question
+        THEN
+            h_position = :h_counter;
+        ENDIF;
+    };
+
+    IF :h_num_rows = 0
+    THEN
+        RESUME;
+    ENDIF;
+
+    ret_val = CALLFRAME msach_fr_rev_cont (
+              h_old_simtable = :h_old_simtable,
+              h_new_simtable = :h_new_simtable,
+              question       = :tf_display.question,
+              h_num_rows     = :h_num_rows,
+              period         = :rev_period,
+              inquiry        = :inquiry,
+              h_position     = :h_position);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+}
+
+'Print' =
+{
+
+    h_num_rows = CALLPROC ARRAYALLROWS ( g_question_array);
+    IF :h_num_rows = 0
+    THEN
+        RESUME;
+    ENDIF;
+
+    ret_val = CALLPROC msach_fp_rev_cont (
+              inquiry        = :inquiry,
+              period         = :rev_period,
+              h_table        = :h_print_table,
+              h_question     = :tf_display.question,
+              difference     = BYREF(:difference),
+              perc_diff      = BYREF(:perc_diff),
+              h_new_simtable = :h_new_simtable,
+              h_old_simtable = :h_old_simtable);
+   
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+ 
+    MESSAGE 'Preparing Report . . .';
+
+    ret_val = CALLPROC msa_cp_callsys (
+              'report ' +
+              :g_database +
+              ' ''(user_name = "' + :g_user_name + '"' +
+              ',h_table = "' + :h_print_table + '"' +
+              ',difference = ' + VARCHAR(:difference) +
+              ',question = ' + VARCHAR(:tf_display.question) +
+              ',perc_diff = ' + VARCHAR(:perc_diff) +
+              ',period = ' + VARCHAR(:rev_period) +
+              ')'' -i$REPORTS/msach_rw_rev_cont.rw' +
+              ' > report.output 2> report.output');
+
+    IF ret_val <> 0
+    THEN
+        MESSAGE 'Error producing report'
+        WITH STYLE = POPUP;
+    ELSE
+        /*--------------------------------------------------------------
+         Remove last line - so a blank end page is not printed
+        --------------------------------------------------------------*/
+
+        ret_val = CALLPROC msa_cp_callsys (
+              'lines=`wc -l < msach_rw_rev_cont.rpt`;' +
+              'lines=`expr ${lines} - 1`;' +
+              'head -${lines} msach_rw_rev_cont.rpt | ' +
+              'lp -o12p -d' + :g_printer +
+              ' >> report.output 2>> report.output');
+
+        IF ret_val <> 0
+        THEN
+            MESSAGE 'Error sending report to printer ' +
+                    :g_printer
+            WITH STYLE = POPUP;
+        ELSE
+            MESSAGE 'Report sent to printer ' + :g_printer + ' OK'
+            WITH STYLE = POPUP;
+        ENDIF;
+    ENDIF;
+
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = :h_print_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+}
+
+'End', KEY FRSKEY6 =
+{
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                L O C A L    P R O C E D U R E    1
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_setup_tables () =
+{
+
+    MESSAGE 'Setting-up Questions . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*----------------------------------------------------------------
+      Create table
+    ----------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table (
+                     question  INTEGER4 NOT NULL,
+                     period    INTEGER4 NOT NULL,
+                     old_value INTEGER4 NOT NULL,
+                     new_value INTEGER4 NOT NULL,
+                     diff      FLOAT4 NOT NULL,
+                     compared  CHAR(1) NOT NULL);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*----------------------------------------------------------------
+     Old simtable
+    ----------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        IF :inquiry = 14
+        THEN
+            INSERT INTO  :h_table
+            SELECT       DISTINCT(question),
+                         aperiod AS period,
+                         INT4(-1) AS old_value,
+                         INT4(-1) AS new_value,
+                         FLOAT4(0) AS diff,
+                         'N' AS compared
+            FROM         :h_old_simtable;
+        ELSE
+            INSERT INTO  :h_table
+            SELECT       DISTINCT(question),
+                         qperiod AS period,
+                         INT4(-1) AS old_value,
+                         INT4(-1) AS new_value,
+                         FLOAT4(0) AS diff,
+                         'N' AS compared
+            FROM         :h_old_simtable;
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in inserting from old_table'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*----------------------------------------------------------------
+     New simtable
+    ----------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        IF :inquiry = 14
+        THEN
+            INSERT INTO  :h_table
+            SELECT       DISTINCT(question),
+                         aperiod AS period,
+                         INT4(-1) AS old_value,
+                         INT4(-1) AS new_value,
+                         FLOAT4(0) AS diff,
+                         'N' AS compared
+            FROM         :h_new_simtable
+            WHERE        question NOT IN
+                         (SELECT question FROM :h_old_simtable);
+        ELSE
+            INSERT INTO  :h_table
+            SELECT       DISTINCT(question),
+                         qperiod AS period,
+                         INT4(-1) AS old_value,
+                         INT4(-1) AS new_value,
+                         FLOAT4(0) AS diff,
+                         'N' AS compared
+            FROM         :h_new_simtable
+            WHERE        question NOT IN
+                         (SELECT question FROM :h_old_simtable);
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in inserting from new_table'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------
+      Load with values
+    ------------------------------------------------------------*/
+
+    MESSAGE 'Inserting Previous Values . . .';
+
+    IF :inquiry = 14
+    THEN
+        SELECT   SUM(avalue) AS h_value,
+                 question AS h_question,
+                 aperiod AS h_period
+        FROM     :h_old_simtable
+        GROUP BY question,
+                 aperiod
+        {
+            UPDATE :h_table
+            SET    old_value = :h_value
+            WHERE  question  = :h_question
+            AND    period    = :h_period;
+        };
+    ELSE
+        SELECT   SUM(avalue) AS h_value,
+                 question AS h_question,
+                 qperiod AS h_period
+        FROM     :h_old_simtable
+        GROUP BY question,
+                 qperiod
+        {
+            UPDATE :h_table
+            SET    old_value = :h_value
+            WHERE  question  = :h_question
+            AND    period    = :h_period;
+        };
+    ENDIF;
+
+    ret_val = CALLPROC check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val > 1
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    MESSAGE 'Inserting Current Values . . .';
+
+    IF :inquiry = 14
+    THEN
+        SELECT   SUM(avalue) AS h_value,
+                 question AS h_question,
+                 aperiod AS h_period
+        FROM     :h_new_simtable
+        GROUP BY question,
+                 aperiod
+        {
+            UPDATE :h_table
+            SET    new_value = :h_value
+            WHERE  question  = :h_question
+            AND    period    = :h_period;
+        };
+    ELSE
+        SELECT   SUM(avalue) AS h_value,
+                 question AS h_question,
+                 qperiod AS h_period
+        FROM     :h_new_simtable
+        GROUP BY question,
+                 qperiod
+        {
+            UPDATE :h_table
+            SET    new_value = :h_value
+            WHERE  question  = :h_question
+            AND    period    = :h_period;
+        };
+    ENDIF;
+
+    ret_val = CALLPROC check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val > 1
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------
+      Comparing
+    ------------------------------------------------------------*/
+
+    MESSAGE 'Comparing Values . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table
+        SET    diff = (new_value - old_value) * 100.0 / FLOAT4(old_value),
+               compared = 'Y'
+        WHERE  old_value <> -1
+        AND    new_value <> -1;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating with comparisons'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                 L O C A L   P R O C E D U R E   2
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_table () =
+{
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf_display =
+
+        SELECT   question,
+                 diff,
+                 compared
+        FROM     :h_table
+        WHERE    period = :rev_period
+        AND      ABS(diff) >= :cutoff
+        ORDER BY question;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error loading from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*----------------------------------------------------------------
+      Do the same select to load the questions into the array
+    ----------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        g_question_array =
+
+        SELECT   question
+        FROM     :h_table
+        WHERE    period = :rev_period
+        AND      ABS(diff) >= :cutoff
+        ORDER BY question;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error loading from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*----------------------------------------------------------------
+      Dims those with no previous data
+    ----------------------------------------------------------------*/
+
+    UNLOADTABLE tf_display
+    {
+        IF :tf_display.compared = 'Y'
+        THEN
+            SET_FORMS ROW '' tf_display (INTENSITY(question) = 0,
+                                         INTENSITY(diff) = 0);
+        ELSE
+            SET_FORMS ROW '' tf_display (INTENSITY(question) = 1,
+                                         INTENSITY(diff) = 1);
+        ENDIF;
+
+    };
+
+    RETURN 0;
+}

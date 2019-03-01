@@ -1,0 +1,196 @@
+/*--------------------------------------------------------------
+                 MSACM_FP_PERIOD_SELECT
+
+  Sets the periods used in the results run, based on the values
+  in h_input_period and g_results_span.
+--------------------------------------------------------------*/
+
+PROCEDURE msacm_fp_period_select (
+
+          h_input_period      = INTEGER4 NOT NULL) =
+
+DECLARE   ret_val             = INTEGER4 NOT NULL,
+          h_span              = INTEGER1 NOT NULL,
+          h_calc_carryin_stop = INTEGER1 NOT NULL,
+          h_period            = INTEGER4 NOT NULL,
+          h_frpr_name         = VARCHAR(25) NOT NULL
+{
+    h_frpr_name = 'msacm_fp_period_select';
+
+    ret_val = CALLPROC ARRAYCLEAR(g_period);
+    g_periods = 0;
+
+    /*--------------------------------------------------------------
+          obtain spanno of input period
+    --------------------------------------------------------------*/
+
+    SELECT  span_no AS g_input_per_spanno
+    FROM    inquiry_period
+    WHERE   period =  :h_input_period;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback = 'N',
+              h_commit = 'Y',
+              h_frpr_name = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error Selecting span_no from inquiry_period',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ELSEIF ret_val = 1
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'No rows selected for input_per_spanno',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+          load array with periods in results span
+    --------------------------------------------------------------*/
+
+    SELECT    period AS h_period,
+              span_no AS h_span
+    FROM      inquiry_period
+    WHERE     inquiry = :g_inquiry
+    AND       span_no <= :g_input_per_spanno
+    AND       span_no > (:g_input_per_spanno - :g_results_span)
+    ORDER BY  h_span DESC
+    {
+
+        g_periods = g_periods + 1;
+        ret_val = CALLPROC ARRAYINSERTROW(g_period, rownumber = g_periods);
+        g_period[:g_periods].period = :h_period;
+
+        IF :g_periods <= g_results_span
+        THEN
+            ret_val = CALLPROC msacm_fp_carryin_periods(
+                               period_num = g_periods);
+        ENDIF;
+
+    };
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback = 'N',
+              h_commit = 'Y',
+              h_frpr_name = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error loading period_array from inquiry_period',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    IF :g_periods = 0
+    THEN
+         RETURN 9;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+          obtain spanno of earliest results period
+    --------------------------------------------------------------*/
+
+    g_earliest_per_spanno = :h_span;
+
+    /*--------------------------------------------------------------
+          obtain spanno of earliest carryin period
+    --------------------------------------------------------------*/
+
+    SELECT span_no AS :g_earliest_carry_spanno
+    FROM   inquiry_period
+    WHERE  period = :g_period[:g_results_span].carryin[1].period;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback = 'N',
+              h_commit = 'Y',
+              h_frpr_name = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error selecting earliest carryin period from inq_per',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ELSEIF ret_val = 1
+    THEN
+        /*--------------------------------------------------------------
+              set to 'dummy' value - used in 'between' in 'select's
+        --------------------------------------------------------------*/
+
+        IF :g_inquiry = :gc_asi
+        THEN
+            g_earliest_carry_spanno = 39;
+        ELSE
+            g_earliest_carry_spanno = 19;
+        ENDIF;
+    ENDIF;
+
+    /*--------------------------------------------------------------
+          obtain spanno of first carryin period to be frozen
+    --------------------------------------------------------------*/
+
+    h_period = :g_period[:g_results_span].carryin[1].period;
+
+    IF :g_inquiry = :gc_asi
+    THEN
+        IF RIGHT(VARCHAR(:h_period),2) = '12'
+        THEN
+            h_calc_carryin_stop = 4;
+        ELSEIF RIGHT(VARCHAR(:h_period),1) = '9'
+        THEN
+            h_calc_carryin_stop = 3;
+        ELSEIF RIGHT(VARCHAR(:h_period),1) = '6'
+        THEN
+            h_calc_carryin_stop = 2;
+        ENDIF;
+    ELSE
+        h_calc_carryin_stop = 1;
+    ENDIF;
+
+    g_1st_carry_spanno_stop =
+        (:g_earliest_carry_spanno - :h_calc_carryin_stop);
+
+    /*--------------------------------------------------------------
+          obtain spanno of latest carryin period
+    --------------------------------------------------------------*/
+
+    SELECT span_no AS :g_latest_carry_spanno
+    FROM   inquiry_period
+    WHERE  period = :g_period[1].carryin[1].period;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback = 'N',
+              h_commit = 'Y',
+              h_frpr_name = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error selecting latest carryin period from inq_per',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ELSEIF ret_val = 1
+    THEN
+        /*--------------------------------------------------------------
+              set to 'dummy' value - used in 'between' in 'select's
+        --------------------------------------------------------------*/
+
+        IF :g_inquiry = :gc_asi
+        THEN
+            g_latest_carry_spanno = 40;
+        ELSE
+            g_latest_carry_spanno = 20;
+        ENDIF;
+    ENDIF;
+
+    RETURN 0;
+
+}

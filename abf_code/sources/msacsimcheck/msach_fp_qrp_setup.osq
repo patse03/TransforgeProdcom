@@ -1,0 +1,646 @@
+/*----------------------------------------------------------------------
+  Sets up a QRP data one question at a time.
+
+  The table t_ppers (which holds the QRP data) is used by the calling
+  procedure. The table t_pqrp is a temporary table used just by this
+  process and is deleted at the end.
+
+  This program runs for both annual & quarterly (aperiod and qperiod)
+----------------------------------------------------------------------*/
+
+PROCEDURE msach_fp_qrp_setup (
+
+        question          = INTEGER4 NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        t_pqrp            = CHAR(15) NOT NULL,
+        t_ppers           = CHAR(16) NOT NULL,
+        t_cqpv            = CHAR(21) NOT NULL,
+        xper              = INTEGER1 NOT NULL
+
+{
+    h_retries_allowed = 3;
+    h_frpr_name = 'msach_fp_qrp_setup';
+
+    MESSAGE 'Processing Question ' + VARCHAR(:question) + ' . . .';
+
+    t_pqrp  = 'temp_' + VARCHAR(:g_industry) + '_pqrp';
+
+    t_cqpv = 'sim_' + VARCHAR(:g_industry) + '_' +
+                       VARCHAR(:g_period[1].period) + '_cqpv';
+
+    t_ppers = 'temp_' + VARCHAR(:g_industry) + '_ppers';
+
+    /*------------------------------------------------------------------
+      Create temporary table (t_pqrp)
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = :t_pqrp);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :t_pqrp (
+               inquiry_code             INTEGER1 NOT NULL,
+               contributor_reference    CHAR(11) NOT NULL,
+               question                 INTEGER4 NOT NULL,
+               aperiod                  INTEGER4 NOT NULL,
+               qperiod                  INTEGER4 NOT NULL,
+               contributor_industry     INTEGER4 NOT NULL,
+               question_industry        INTEGER4 NOT NULL,
+               acell                    CHAR(2)  NOT NULL,
+               avalue                   INTEGER4 NOT NULL,
+               enterprise               CHAR(10) NOT NULL,
+               confirmation_code        CHAR(2)  NOT NULL);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating ' + :t_pqrp
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Insert data from sim table
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        INSERT INTO :t_pqrp (
+                        inquiry_code,
+                        question,
+                        contributor_reference,
+                        contributor_industry,
+                        question_industry,
+                        enterprise,
+                        aperiod,
+                        qperiod,
+                        confirmation_code,
+                        acell,
+                        avalue)
+        SELECT DISTINCT inquiry,
+                        :question,
+                        contributor_reference,
+                        contributor_industry,
+                        question_industry,
+                        enterprise,
+                        aperiod,
+                        qperiod,
+                        confirmation_code,
+                        acell,
+                        avalue
+        FROM            :t_cqpv
+        WHERE           question_industry = :g_industry
+        AND             question = :question;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in inserting from ' + :t_cqpv
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Insert data from sim table - old questions
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        INSERT INTO :t_pqrp (
+                        inquiry_code,
+                        question,
+                        contributor_reference,
+                        contributor_industry,
+                        question_industry,
+                        enterprise,
+                        aperiod,
+                        qperiod,
+                        confirmation_code,
+                        acell,
+                        avalue)
+        SELECT DISTINCT a.inquiry,
+                        :question,
+                        a.contributor_reference,
+                        a.contributor_industry,
+                        a.question_industry,
+                        a.enterprise,
+                        a.aperiod,
+                        a.qperiod,
+                        a.confirmation_code,
+                        a.acell,
+                        a.avalue
+        FROM            :t_cqpv a,
+                        question_history b
+        WHERE           a.question_industry = :g_industry
+        AND             a.question = b.old_question
+        AND             b.new_question = :question
+        AND             b.rep_type = 1;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in inserting old questions from ' + :t_cqpv
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE    :t_pqrp a
+        FROM      idbr_lookup b
+        SET       contributor_reference = b.new_reference
+        WHERE     a.contributor_reference = b.dummy_reference
+        AND       a.contributor_reference LIKE '8888%';
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating IDBR References'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Modify
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        MODIFY    :t_pqrp TO BTREE
+        UNIQUE ON question,
+                  contributor_reference,
+                  qperiod,
+                  contributor_industry,
+                  question_industry,
+                  acell;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in modifying ' + :t_pqrp
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Create table (t_ppers) - depending on inquiry
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = :t_ppers);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        IF :g_inquiry = :gc_asi
+        THEN
+            CREATE TABLE :t_ppers (
+                  contributor_reference CHAR(11) NOT NULL,
+                  inquiry               INTEGER1 NOT NULL,
+                  enterprise            CHAR(10) NOT NULL,
+                  question              INTEGER4 NOT NULL,
+                  question_industry     INTEGER4 NOT NULL,
+                  contributor_industry  INTEGER4 NOT NULL,
+                  aperiod               INTEGER4 NOT NULL,
+                  confirmation_code     CHAR(2)  NOT NULL,
+                  acell                 CHAR(2)  NOT NULL,
+                  avalue                INTEGER4 NOT NULL);
+        ELSE
+            CREATE TABLE :t_ppers (
+                  contributor_reference CHAR(11) NOT NULL,
+                  inquiry               INTEGER1 NOT NULL,
+                  enterprise            CHAR(10) NOT NULL,
+                  question              INTEGER4 NOT NULL,
+                  question_industry     INTEGER4 NOT NULL,
+                  contributor_industry  INTEGER4 NOT NULL,
+                  qperiod               INTEGER4 NOT NULL,
+                  confirmation_code     CHAR(2)  NOT NULL,
+                  acell                 CHAR(2)  NOT NULL,
+                  avalue                INTEGER4 NOT NULL);
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating ' + :t_ppers
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      For each contributor, insert a row into t_ppers table.
+      This means one row per period for each contributor.
+    ------------------------------------------------------------------*/
+
+    IF :g_inquiry = :gc_asi
+    THEN
+        IF g_periods > 2
+        THEN
+            xper = 3;
+        ELSE
+            xper = g_periods;
+        ENDIF;
+    ELSE
+        IF g_periods > 4
+        THEN
+            xper = 5;
+        ELSE
+            xper = g_periods;
+        ENDIF;
+    ENDIF;
+
+    WHILE xper > 0
+    DO
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            IF :g_inquiry = :gc_asi
+            THEN
+                INSERT INTO :t_ppers (
+                                contributor_reference,
+                                question,
+                                inquiry,
+                                enterprise,
+                                question_industry,
+                                contributor_industry,
+                                aperiod,
+                                confirmation_code,
+                                acell,
+                                avalue)
+                SELECT DISTINCT a.contributor_reference,
+                                :question,
+                                inquiry_code,
+                                enterprise,
+                                a.question_industry,
+                                a.contributor_industry,
+                                :g_period[:xper].period,
+                                ' ',
+                                'D',
+                                0
+                FROM            :t_pqrp a
+                WHERE           a.question_industry = :g_industry
+                AND             a.question = :question;
+            ELSE
+                INSERT INTO :t_ppers (
+                                contributor_reference,
+                                question,
+                                inquiry,
+                                enterprise,
+                                question_industry,
+                                contributor_industry,
+                                qperiod,
+                                confirmation_code,
+                                acell,
+                                avalue)
+                SELECT DISTINCT a.contributor_reference,
+                                :question,
+                                inquiry_code,
+                                enterprise,
+                                a.question_industry,
+                                a.contributor_industry,
+                                :g_period[:xper].period,
+                                ' ',
+                                'D',
+                                0
+                FROM            :t_pqrp a
+                WHERE           a.question_industry = :g_industry
+                AND             a.question = :question;
+            ENDIF;
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error inserting into ' + :t_ppers
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ENDIF;
+
+        xper = xper - 1;
+
+    ENDWHILE;
+
+    /*------------------------------------------------------------------
+      Update t_ppers table from t_pqrp table
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        IF :g_inquiry = :gc_asi
+        THEN
+            UPDATE :t_ppers a
+            FROM   :t_pqrp b
+            SET    confirmation_code = b.confirmation_code,
+                   avalue = b.avalue,
+                   acell  = b.acell
+            WHERE  a.question              = b.question
+            AND    a.question_industry     = :g_industry
+            AND    a.question              = :question
+            AND    a.question_industry     = :g_industry
+            AND    a.contributor_reference = b.contributor_reference
+            AND    a.aperiod               = b.aperiod
+            AND    a.acell                 <> b.acell;
+        ELSE
+            UPDATE :t_ppers a
+            FROM   :t_pqrp b
+            SET    confirmation_code = b.confirmation_code,
+                   avalue = b.avalue,
+                   acell  = b.acell
+            WHERE  a.question              = b.question
+            AND    a.question_industry     = :g_industry
+            AND    a.question              = :question
+            AND    a.question_industry     = :g_industry
+            AND    a.contributor_reference = b.contributor_reference
+            AND    a.qperiod               = b.qperiod
+            AND    a.acell                 <> b.acell;
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating ' + :t_ppers
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Finally update the contributor_industry on :t_ppers to the most
+    recent contributor_industry.
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        IF :g_inquiry = :gc_asi
+        THEN
+            UPDATE :t_ppers a
+            FROM   :t_pqrp b
+            SET    contributor_industry = b.contributor_industry
+            WHERE  a.contributor_reference = b.contributor_reference
+            AND    b.aperiod =
+                   (SELECT MAX(aperiod)
+                    FROM   :t_pqrp c
+                    WHERE  b.contributor_reference = c.contributor_reference);
+        ELSE
+            UPDATE :t_ppers a
+            FROM   :t_pqrp b
+            SET    contributor_industry = b.contributor_industry
+            WHERE  a.contributor_reference = b.contributor_reference
+            AND    b.qperiod =
+                   (SELECT MAX(qperiod)
+                    FROM   :t_pqrp c
+                    WHERE  b.contributor_reference = c.contributor_reference);
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in updating contributor_industry on ' + :t_ppers
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = :t_pqrp);
+
+    RETURN 0;
+
+}

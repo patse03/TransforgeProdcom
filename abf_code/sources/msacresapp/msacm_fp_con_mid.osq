@@ -1,0 +1,176 @@
+/*----------------------------------------------------------------------
+Controls the running of the Construction based on Contributor Returned
+Data for QUARTERLY CONTRIBUTORS TO ANNUAL RESULTS (midcarryout)
+----------------------------------------------------------------------*/
+
+PROCEDURE msacm_fp_con_mid () =
+
+DECLARE   ret_val             = INTEGER1 NOT NULL,
+          h_save_table        = VARCHAR(24) NOT NULL,
+          h_counter           = INTEGER4 NOT NULL,
+          h_quarter           = INTEGER1 NOT NULL,
+          curr_period         = INTEGER4 NOT NULL,
+          earliest_period     = INTEGER4 NOT NULL,
+          off_the_span_period = INTEGER4 NOT NULL,
+          start_of_span       = INTEGER4 NOT NULL,
+          h_frpr_name         = VARCHAR(24) NOT NULL
+{
+
+    h_frpr_name = 'msacm_fp_con_mid';
+    h_save_table = 'temp_cqpv_cons_mid';
+
+    ret_val = CALLPROC msacm_fp_log_message (
+	h_text = 'After quarterlies discontinued no action expected here.',
+	h_frpr_name = :h_frpr_name);
+
+    /*------------------------------------------------------------------
+    Create a table to store all constructions from cqpv for all
+    quarterly periods: if we're running 1997 annual results, we want
+    199503 up to 199712 (all 4 quarters for all 3 years)
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Creating cqpv-copy of MidCarryout Constructions . . .';
+
+    ret_val = CALLPROC msacm_fp_drop_table (
+                       h_table = :h_save_table);
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    CREATE TABLE :h_save_table
+    AS SELECT    contributor_reference,
+                 period,
+                 question,
+                 avalue,
+                 acell
+    FROM         cqpv
+    WHERE        question_industry IN (
+                 SELECT industry FROM :g_results_industry)
+
+    AND          period BETWEEN (:g_period[:g_periods].period + 3)
+                            AND (:g_period[1].period + 12)
+
+    AND          MOD(question,10) IN (2,4)
+    AND          contributor_inquiry = :gc_qsi
+    AND          acell IN ('C','A','B');
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error creating ' + :h_save_table,
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'No Midcarryout Construction to be carried out',
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 0;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Do not overwrite the first period in the span's constructed value 
+    or acell
+    ------------------------------------------------------------------*/
+
+    DELETE FROM :h_save_table
+    WHERE       period = (:g_period[:g_periods].period + 3)
+    AND         acell = 'C';
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error deleting from ' + :h_save_table,
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Replace all C A Bs on cqpv with B and zero (except first period in
+                                                span for 'C's
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Zeroising MidCarryout Constructions on cqpv . . .';
+
+    UPDATE       cqpv a
+    FROM         :h_save_table b
+    SET          avalue = 0,
+                 acell = 'B'
+    WHERE        a.question_industry IN (
+                 SELECT industry FROM :g_results_industry)
+    AND          a.period  = b.period
+    AND          a.contributor_reference = b.contributor_reference
+    AND          a.question = b.question
+    AND          a.contributor_inquiry = :gc_qsi;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error zeroising MidC constructions on cqpv',
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Constructing from Contributor Previous Values:
+
+    Construct for each period in the span (oldest to newest) and
+    re-insert into cqpv.
+    ------------------------------------------------------------------*/
+
+    h_counter = g_periods;
+
+    WHILE h_counter >= 1
+    DO
+
+        curr_period = :g_period[:h_counter].period;
+        h_quarter = 1;
+
+        WHILE h_quarter <= 4
+        DO
+            curr_period = curr_period + 3;
+
+            ret_val = CALLPROC msacm_fp_con_cont (
+                      h_inquiry           = :gc_qsi,
+                      curr_period         = :curr_period);
+
+            IF ret_val <> 0
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                          h_text = 'Error in calling con_cont for ' +
+                                   VARCHAR(curr_period),
+                          h_frpr_name  = :h_frpr_name);
+                RETURN 9;
+            ENDIF;
+
+            h_quarter = h_quarter + 1;
+
+        ENDWHILE;
+
+        h_counter = h_counter - 1;
+
+    ENDWHILE;
+
+    RETURN 0;
+}

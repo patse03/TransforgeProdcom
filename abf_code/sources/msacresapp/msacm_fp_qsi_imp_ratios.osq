@@ -1,0 +1,346 @@
+/*-------------------------------------------------------------
+
+                  MSACM_FP_QSI_IMP_RATIOS
+
+--------------------------------------------------------------*/
+
+PROCEDURE msacm_fp_qsi_imp_ratios () =
+
+DECLARE   ratless_date       = INTEGER4 NOT NULL,
+          start_date         = INTEGER4 NOT NULL,
+          end_date           = INTEGER4 NOT NULL,
+          prev_period1       = INTEGER4 NOT NULL,
+          prev_period2       = INTEGER4 NOT NULL,
+          prev_period3       = INTEGER4 NOT NULL,
+          prev_period4       = INTEGER4 NOT NULL,
+          ret_val            = INTEGER4 NOT NULL,
+          scr_avg            = FLOAT4   NOT NULL,
+          t_ratio            = VARCHAR(25) NOT NULL,
+          h_table_name       = VARCHAR(25) NOT NULL,
+          array_count        = INTEGER4 NOT NULL,
+          row_count          = INTEGER4 NOT NULL,
+          question_count     = INTEGER4 NOT NULL,
+          avg_count          = INTEGER4 NOT NULL,
+          ratio_total        = FLOAT8   NOT NULL,
+          rat_date           = INTEGER4 NOT NULL,
+          ratio_exclusion_pc = INTEGER4 NOT NULL,
+          ratio_no_contribs  = INTEGER4 NOT NULL,
+          h_frpr_name        = VARCHAR(25) NOT NULL,
+          q_array            = ARRAY OF g_question
+
+{
+    h_frpr_name = 'msacm_fp_qsi_imp_ratios';
+
+    IF g_periods > 5
+    THEN
+        g_row = 5;
+    ELSE
+        g_row = g_periods - 1;
+    ENDIF;
+
+    start_date = :g_period[1].period;
+    end_date = :g_period[:g_row + 1].period;
+
+    q_array = SELECT DISTINCT question
+              FROM   question_period
+              WHERE  inquiry = :g_inquiry
+              AND    question_industry = :g_industry
+              AND    MOD(question,10) IN (1,5,6,8,9)
+              AND    period BETWEEN :end_date AND :start_date;
+/*
+              AND    (MOD(question,10) IN (1,5,6,8,9)
+                      OR MOD(question,10000) = 9100)
+              AND    period BETWEEN :end_date AND :start_date;
+*/
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error selecting from question_period for ' +
+                           VARCHAR(:g_industry),
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ELSEIF ret_val = 1
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'No questions for ' + VARCHAR(:g_industry),
+                  h_frpr_name = :h_frpr_name);
+        RETURN 0;
+    ENDIF;
+
+    SELECT  ratio_exclusion_pc,
+            ratio_no_contribs
+    FROM    industry
+    WHERE   industry = :g_industry;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error selecting from industry for ' +
+                           VARCHAR(:g_industry),
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ELSEIF ret_val = 1
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Industry not found ' + VARCHAR(:g_industry),
+                  h_frpr_name = :h_frpr_name);
+        RETURN 1;
+    ENDIF;
+
+    WHILE g_row > 0
+    DO
+
+        rat_date = g_period[:g_row].period;
+        ratless_date = g_period[:g_row + 1].period;
+
+        t_ratio = 'sim_' + VARCHAR(:g_industry) + '_' +
+                  VARCHAR(:rat_date) + '_rtio';
+
+        ret_val = CALLPROC msacm_fp_cr_qsi_ratios(
+                  rat_date     = :rat_date,
+                  ratless_date = :ratless_date);
+
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Failure creating ratios array ' +
+                               VARCHAR(:g_industry),
+                      h_frpr_name = :h_frpr_name);
+            RETURN :ret_val;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+            The following code unloads the question array and processes
+            each question in turn
+        --------------------------------------------------------------*/
+
+        array_count = CALLPROC ARRAYALLROWS ( t_rtio );
+
+        UNLOADTABLE q_array
+        {
+            row_count = array_count;
+            question_count = 0;
+            ratio_total = 0;
+            avg_count = 0;
+
+            /*----------------------------------------------------------
+            Count number of rows inserted into the array for the current
+            Question. If no rows inserted, imputation ratio is set = 1
+            ----------------------------------------------------------*/
+
+            WHILE row_count > 0
+            DO
+                IF t_rtio[row_count].question = q_array.question
+                THEN
+                    question_count = question_count + 1;
+                ENDIF;
+
+                IF t_rtio[row_count].question < q_array.question
+                THEN
+                    ENDLOOP;
+                ENDIF;
+
+                row_count = row_count - 1;
+
+            ENDWHILE;
+
+            /*----------------------------------------------------------
+            If number of rows > industry cut-off then top and tail array
+            ----------------------------------------------------------*/
+
+            IF :question_count >= :ratio_no_contribs
+            THEN
+                ret_val = CALLPROC msacm_fp_de_min_max(
+                          xcount     = :question_count,
+                          percentage = :ratio_exclusion_pc,
+                          question   = :q_array.question);
+
+                IF ret_val <> 0
+                THEN
+                    ret_val = CALLPROC msacm_fp_log_message (
+                              h_text = 'Failure on min-max program ' +
+                                       VARCHAR(:q_array.question),
+                              h_frpr_name = :h_frpr_name);
+                    RETURN ret_val ;
+                ENDIF;
+            ENDIF;
+
+            /*----------------------------------------------------------
+              If array rows exist, check for all rows where top and tail
+              has not set status = 'N'. Count rows and sum ratios for
+              calculating average.
+            ----------------------------------------------------------*/
+
+            IF question_count <> 0
+            THEN
+                row_count = array_count;
+                WHILE row_count > 0
+                DO
+                    IF t_rtio[row_count].question = :q_array.question
+                    AND t_rtio[row_count].status <> 'N'
+                    THEN
+                        ratio_total = ratio_total + t_rtio[row_count].ratio;
+                        avg_count = avg_count + 1;
+                    ENDIF;
+
+                    IF t_rtio[row_count].question < :q_array.question
+                    THEN
+                        ENDLOOP;
+                    ENDIF;
+
+                    row_count = row_count - 1;
+
+                ENDWHILE;
+
+                scr_avg = ratio_total / avg_count;
+            ELSE
+                scr_avg = 1;
+            ENDIF;
+
+            IF :scr_avg >= 3 OR :scr_avg <= 0.3
+            THEN
+                scr_avg = 1;
+            ENDIF;
+
+            UPDATE question_period
+            SET    imputation_ratio  = :scr_avg,
+                   manual_ratio      = 'N'
+            WHERE  question_industry = :g_industry
+            AND    question          = :q_array.question
+            AND    period            = :rat_date
+            AND    manual_ratio      NOT IN ('p','P');
+
+            ret_val = CALLPROC msacm_fp_check_inq_ing(
+                      h_num_row_ck = 1,
+                      h_rollback   = 'N',
+                      h_commit     = 'Y',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                          h_text = 'Failure to update question_period '+
+                                   VARCHAR(:g_industry),
+                          h_frpr_name = :h_frpr_name);
+                RETURN 9;
+            ENDIF;
+        };
+
+        g_row = g_row - 1;
+
+        /*--------------------------------------------------------------
+                  O N L Y    F O R   Q U A R T E R L Y
+
+         Re-create all the rtio tables for each period and
+         each industry (one at a time)
+        --------------------------------------------------------------*/
+
+        ret_val = CALLPROC msacm_fp_drop_table (
+                  h_table = :t_ratio);
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        CREATE TABLE :t_ratio(
+                     question              INTEGER4 NOT NULL,
+                     contributor_reference CHAR(11) NOT NULL,
+                     ratio                 FLOAT4   NOT NULL,
+                     status                CHAR(1)  NOT NULL)
+                     WITH LOCATION = (prod2);
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Failure to create table ' + :t_ratio,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        MODIFY      :t_ratio TO BTREE
+        UNIQUE ON   question,
+                    contributor_reference,
+                    ratio;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Failure to modify table ' + :t_ratio,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        GRANT ALL ON :t_ratio TO GROUP 'prodcom_users';
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Failure to permit ' + :t_ratio,
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        UNLOADTABLE t_rtio
+        {
+            INSERT
+            INTO           :t_ratio
+                           (    question,
+                                contributor_reference,
+                                ratio,
+                                status)
+            VALUES         (    t_rtio.question,
+                                t_rtio.contributor_reference,
+                                t_rtio.ratio,
+                                t_rtio.status);
+
+            ret_val = CALLPROC msacm_fp_check_inq_ing(
+                      h_num_row_ck = 1,
+                      h_rollback   = 'N',
+                      h_commit     = 'Y',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val = 9
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                          h_text = 'Failure to insert into ' + :t_ratio,
+                          h_frpr_name = :h_frpr_name);
+                RETURN 9;
+            ENDIF;
+        }
+
+    ENDWHILE;
+
+    RETURN 0;
+
+}

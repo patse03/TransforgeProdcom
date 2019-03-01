@@ -1,0 +1,333 @@
+/*---------------------------------------------------------------------
+   1.  Selects from both sim_tables, merging data into an array.
+   2.  Load the data from the array into a table.
+---------------------------------------------------------------------*/
+
+PROCEDURE msach_fp_rev_cont (
+
+        inquiry                 = INTEGER1 NOT NULL,
+        period                  = INTEGER4 NOT NULL,
+        h_table                 = VARCHAR(21) NOT NULL,
+        h_question              = INTEGER4 NOT NULL,
+        difference              = INTEGER4 NOT NULL,
+        perc_diff               = FLOAT4 NOT NULL,
+        h_new_simtable          = CHAR(21) NOT NULL,
+        h_old_simtable          = CHAR(21) NOT NULL) =
+
+DECLARE h_retries_allowed       = INTEGER1 NOT NULL,
+        h_retries               = INTEGER1 NOT NULL,
+        h_retry_or_not          = CHAR(5) NOT NULL,
+        h_frpr_name             = VARCHAR(24) NOT NULL,
+        ret_val                 = INTEGER1 NOT NULL,
+        h_contributor_reference = CHAR(11) NOT NULL,
+        h_contrib               = CHAR(11) NOT NULL,
+        h_contributor_industry  = INTEGER4 NOT NULL,
+        h_avalue                = INTEGER4 NOT NULL,
+        h_old_new               = VARCHAR(4) NOT NULL,
+        h_acell                 = CHAR(2) NOT NULL,
+        h_old_total             = INTEGER4 NOT NULL,
+        h_new_total             = INTEGER4 NOT NULL,
+        h_counter               = INTEGER4 NOT NULL,
+        ar                      = ARRAY OF g_revisions_type
+{
+    h_frpr_name = 'msach_fp_rev_cont';
+    h_retries_allowed = 3;
+
+    difference = 0;
+    perc_diff = 0;
+
+    MESSAGE 'Loading Contributor Data for ' + VARCHAR(:h_question) + ' . . .';
+
+    /*-------------------------------------------------------------
+      Create table to hold the contributor data
+    --------------------------------------------------------------*/
+
+    ret_val = CALLPROC msa_fp_drop_table (h_table = :h_table);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table (
+                     contributor_reference CHAR(11) NOT NULL,
+                     contributor_industry  INTEGER4 NOT NULL,
+                     previous_value        INTEGER4 NOT NULL,
+                     previous_acell        CHAR(2) NOT NULL,
+                     current_value         INTEGER4 NOT NULL,
+                     current_acell         CHAR(2) NOT NULL,
+                     difference            INTEGER4 NOT NULL);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in creating ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    ret_val = CALLPROC ARRAYCLEAR(ar);
+
+    h_contrib = '0';
+    h_old_total = 0;
+    h_new_total = 0;
+    h_counter   = 0;
+
+    IF :inquiry = 14
+    THEN
+
+        /*-------------------------------------------------------------
+          Annual
+        --------------------------------------------------------------*/
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            SELECT    contributor_reference AS h_contributor_reference,
+                      contributor_industry  AS h_contributor_industry,
+                      avalue                AS h_avalue,
+                      acell                 AS h_acell,
+                      'old'                 AS h_old_new
+            FROM      :h_old_simtable
+            WHERE     question = :h_question
+            AND       aperiod  = :period
+            UNION
+            SELECT    contributor_reference AS h_contributor_reference,
+                      contributor_industry  AS h_contributor_industry,
+                      avalue                AS h_avalue,
+                      acell                 AS h_acell,
+                      'new'                 AS h_old_new
+            FROM      :h_new_simtable
+            WHERE     question = :h_question
+            AND       aperiod  = :period
+            ORDER BY  h_contributor_reference DESC,
+                      h_old_new
+            {
+                IF :h_contributor_reference <> :h_contrib
+                THEN
+                    h_contrib = :h_contributor_reference;
+
+                    INSERTROW ar[:h_counter] (
+                          contributor_reference = :h_contributor_reference,
+                          contributor_industry  = :h_contributor_industry,
+                          previous_value        = 0,
+                          previous_acell        = 'D',
+                          current_value         = 0,
+                          current_acell         = 'D',
+                          difference            = 0);
+
+                    h_counter = :h_counter + 1;
+                ENDIF;
+
+                IF :h_old_new = 'new'
+                THEN
+                    ar[:h_counter].current_value = :h_avalue;
+                    ar[:h_counter].current_acell = :h_acell;
+                    h_new_total = :h_new_total + :h_avalue;
+                ELSE
+                    ar[:h_counter].previous_value = :h_avalue;
+                    ar[:h_counter].previous_acell = :h_acell;
+                    h_old_total = :h_old_total + :h_avalue;
+                ENDIF;
+            };
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in loading contributor data'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No contributors found for this question'
+            WITH STYLE = POPUP;
+            RETURN 0;
+        ENDIF;
+
+    ELSE
+
+        /*-------------------------------------------------------------
+          Quarterly
+        -------------------------------------------------------------*/
+
+        h_retry_or_not      = 'RETRY';
+        h_retries           = 0;
+
+        WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+        DO
+
+            h_retries = :h_retries + 1;
+
+            SELECT    contributor_reference AS h_contributor_reference,
+                      contributor_industry  AS h_contributor_industry,
+                      avalue                AS h_avalue,
+                      acell                 AS h_acell,
+                      'old'                 AS h_old_new
+            FROM      :h_old_simtable
+            WHERE     question = :h_question
+            AND       qperiod  = :period
+            UNION
+            SELECT    contributor_reference AS h_contributor_reference,
+                      contributor_industry  AS h_contributor_industry,
+                      avalue                AS h_avalue,
+                      acell                 AS h_acell,
+                      'new'                 AS h_old_new
+            FROM      :h_new_simtable
+            WHERE     question = :h_question
+            AND       qperiod  = :period
+            ORDER BY  h_contributor_reference DESC,
+                      h_old_new
+            {
+                IF :h_contributor_reference <> :h_contrib
+                THEN
+                    h_contrib = :h_contributor_reference;
+
+                    INSERTROW ar [:h_counter] (
+                          contributor_reference = :h_contributor_reference,
+                          contributor_industry  = :h_contributor_industry,
+                          previous_value        = 0,
+                          previous_acell        = 'D',
+                          current_value         = 0,
+                          current_acell         = 'D',
+                          difference            = 0);
+                    h_counter = :h_counter + 1;
+                ENDIF;
+
+                IF :h_old_new = 'new'
+                THEN
+                    ar[:h_counter].current_value = :h_avalue;
+                    ar[:h_counter].current_acell = :h_acell;
+                    h_new_total = :h_new_total + :h_avalue;
+                ELSE
+                    ar[:h_counter].previous_value = :h_avalue;
+                    ar[:h_counter].previous_acell = :h_acell;
+                    h_old_total = :h_old_total + :h_avalue;
+                ENDIF;
+            };
+
+            ret_val = CALLPROC check_inq_ing (
+                      h_num_row_ck      = 1,
+                      h_commit          = 'Y',
+                      h_rollback        = 'N',
+                      h_retries         = :h_retries,
+                      h_retries_allowed = :h_retries_allowed,
+                      h_frpr_name       = :h_frpr_name);
+
+            IF ret_val <> 7
+            THEN
+                h_retry_or_not = '';
+            ENDIF;
+
+        ENDWHILE;
+
+        IF ret_val = 7
+        THEN
+            RETURN 7;
+
+        ELSEIF ret_val = 9
+        THEN
+            MESSAGE 'System error in loading contributor data'
+            WITH STYLE = POPUP;
+            RETURN 9;
+
+        ELSEIF ret_val = 1
+        THEN
+            MESSAGE 'No contributors found for this question'
+            WITH STYLE = POPUP;
+            RETURN 0;
+        ENDIF;
+
+    ENDIF;
+
+    difference = :h_new_total - :h_old_total;
+
+    IF :h_old_total <> 0
+    THEN
+        perc_diff = 100.0 * (:h_new_total - :h_old_total) /
+                    FLOAT4(:h_old_total);
+    ELSE
+        perc_diff = 0;
+    ENDIF;
+
+    /*-------------------------------------------------------------
+      Work out differences between per contributor and load
+      into temporary table
+    -------------------------------------------------------------*/
+
+    UNLOADTABLE ar
+    {
+        INSERT INTO :h_table
+        VALUES (    :ar.contributor_reference,
+                    :ar.contributor_industry,
+                    :ar.previous_value,
+                    :ar.previous_acell,
+                    :ar.current_value,
+                    :ar.current_acell,
+                    :ar.current_value - :ar.previous_value);
+    };
+
+    ret_val = CALLPROC check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading array into ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+}

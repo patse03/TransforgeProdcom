@@ -1,0 +1,214 @@
+/***********************************************************************
+   Standard procedure to check if user can access procedure
+
+   Requires g_access_code or g_user_id to be set.
+***********************************************************************/
+
+PROCEDURE check_access_procs
+        ( p_frpr_name = VARCHAR(36) NOT NULL WITH DEFAULT )=
+
+DECLARE   h_return          = INTEGER1    NOT NULL WITH DEFAULT,
+          h_retries         = INTEGER1    NOT NULL WITH DEFAULT,
+          h_retries_allowed = INTEGER1    NOT NULL WITH DEFAULT,
+          h_retry_or_not    = CHAR(5)     NOT NULL WITH DEFAULT,
+          h_user_class      = CHAR(5)     NOT NULL WITH DEFAULT,
+          h_user_level      = INTEGER1    NOT NULL WITH DEFAULT,
+          h_min_level       = INTEGER1    NOT NULL WITH DEFAULT,
+          h_frpr_name       = VARCHAR(24) NOT NULL WITH DEFAULT,
+          h_text            = VARCHAR(99) NOT NULL WITH DEFAULT,
+
+          lp_error_check      = PROCEDURE RETURNING INTEGER,
+          lp_full_error_check = PROCEDURE RETURNING INTEGER
+
+{
+
+  SELECT DBMSINFO('database') AS g_database;
+  SELECT DBMSINFO('username') AS g_user_id;
+
+  h_frpr_name = 'check_access_procs';
+  h_retries_allowed = 100;
+
+  IF :g_access_code =''
+  THEN
+
+    SELECT access_code AS g_access_code
+    FROM   passwords_new
+    WHERE  user_id = :g_user_id;
+
+    h_return = CALLPROC lp_error_check(p_num_row_ck = 1);
+
+    IF h_return != 0
+    THEN
+      h_text = 'ERROR: Access check failed at stage one.'; 
+      CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+      RETURN 9;
+    ENDIF;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+     Determine user class and and user level from access code.
+  ------------------------------------------------------------------------*/
+
+  h_user_class = UPPER(LEFT(:g_access_code,1));
+  h_user_level = INT(RIGHT(:g_access_code,1));
+
+  /*------------------------------------------------------------------------
+     Full access for Devs and Level 5 access.
+  ------------------------------------------------------------------------*/
+
+  IF h_user_class = 'D'
+  OR h_user_level = 5
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+     No access for Vacant ids. (Let access 0's fall through)
+  ------------------------------------------------------------------------*/
+
+  IF h_user_class = 'V'
+  THEN
+    h_text = 'ACCESS DENIED: User ID marked as VACANT.'; 
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+     Select min access level for users class on given frame or process.
+     If no match on frame and class, deny access.
+  ------------------------------------------------------------------------*/
+
+  h_retry_or_not      = 'RETRY';
+  h_retries           = 0;
+
+  WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+  DO
+
+    h_retries = :h_retries + 1;
+
+    SELECT min_level AS h_min_level
+    FROM   access_settings
+    WHERE  frpr_name = :p_frpr_name
+      AND  class     = :h_user_class; 
+
+    h_return = CALLPROC lp_full_error_check (p_num_row_ck = 1);
+
+    IF h_return <> 7
+    THEN
+      h_retry_or_not = '';
+    ENDIF;
+
+  ENDWHILE;
+
+  IF h_return = 7
+  THEN
+    h_text = 'SYSTEM ERROR: Deadlock detected.'; 
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+
+  ELSEIF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed whilst checking access settings table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+
+  ELSEIF h_return = 1
+  THEN
+    h_text = 'ACCESS DENIED: Your Access Code class ('
+           + :g_user_class +') '
+           + 'does not have access to this process.'; 
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 1;
+
+  ENDIF;
+
+  /*------------------------------------------------------------------------
+     Compare users access level with h_min_access to determine if
+     they have sufficent access code level to access the frame or
+     procedure. If not, deny access.
+  ------------------------------------------------------------------------*/
+
+  IF h_min_level > h_user_level
+  THEN
+    h_text = 'ACCESS DENIED: Your Access Code level ('
+           + VARCHAR(:g_user_level) +') '
+           + 'is not sufficient to run this process.'; 
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 1;
+  ENDIF;
+  
+  /*------------------------------------------------------------------------
+     Not denied yet? Must be OK.
+  ------------------------------------------------------------------------*/
+
+  RETURN 0;
+  
+}
+
+/************************** LOCAL PROCEDURES ******************************/
+
+
+/*=======================================================================
+    Local procedure to fully check sql for errors during online programs.
+    Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_full_error_check (p_num_row_ck = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+                  h_num_row_ck = :p_num_row_ck,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+  RETURN :lp_return;
+
+}
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

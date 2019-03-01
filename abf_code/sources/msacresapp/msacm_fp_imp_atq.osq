@@ -1,0 +1,207 @@
+/*--------------------------------------------------------------
+                     MSACM_FP_IMP_ATQ
+
+    Applies calculated qsi ratios to asi_to_qsi_link table
+    data for each of the three later periods of the year.
+--------------------------------------------------------------*/
+
+PROCEDURE msacm_fp_imp_atq () =
+
+DECLARE   imp_date     = INTEGER4 NOT NULL,
+          impless_date = INTEGER4 NOT NULL,
+          ret_val      = INTEGER1 NOT NULL,
+          h_frpr_name  = VARCHAR(25) NOT NULL
+{
+    h_frpr_name = 'msacm_fp_imp_atq';
+
+    IF g_periods > 5
+    THEN
+        g_row = 5;
+    ELSE
+        g_row = g_periods - 1;
+    ENDIF;
+
+    IF :g_input_period/100 >= 2002
+    THEN
+	DELETE FROM asi_to_qsi_link
+	WHERE  MOD(question,10) <> 1
+	AND    asi_period/100 = :g_input_period/100
+	AND    question NOT IN
+	       (SELECT question 
+		FROM question_library
+	        WHERE period/100 = :g_input_period/100);
+        ENDIF;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error imputing atq for ' + VARCHAR(:imp_date),
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+    WHILE g_row > 0
+    DO
+        imp_date = g_period[:g_row].period;
+        impless_date = g_period[:g_row + 1].period;
+
+        UPDATE  asi_to_qsi_link a
+        FROM    asi_to_qsi_link b,
+                question_period c
+        SET     avalue = (1.0 * b.avalue) * c.imputation_ratio,
+                acell = 'I'
+        WHERE   a.contributor_reference = b.contributor_reference 
+        AND     a.question              = b.question
+        AND     a.question              = c.question
+        AND     a.qsi_period            = c.period
+        AND     a.qsi_period            = :imp_date
+        AND     b.qsi_period            = :impless_date
+        AND     b.acell                 IN ('V','P','A','C','I')
+        AND     a.acell                 IN ('N','I')
+        AND     a.question_industry IN (SELECT industry FROM :g_results_industry)
+        AND     MOD(a.question,10) IN (1,5,6,8,9);
+
+/*        AND     (MOD(a.question,10) IN (1,5,6,8,9)
+                 OR MOD(a.question,10000) = 9100);
+*/
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error imputing atq for ' + VARCHAR(:imp_date),
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        UPDATE  asi_to_qsi_link a
+        FROM    asi_to_qsi_link b,
+                question_period c,
+                question_history d
+        SET     avalue = (1.0 * b.avalue) * c.imputation_ratio,
+                acell = 'I'
+        WHERE   a.contributor_reference = b.contributor_reference 
+        AND     a.question              = d.new_question
+        AND     b.question              = d.old_question
+        AND     a.question              = c.question
+        AND     a.qsi_period            = c.period
+        AND     a.qsi_period            = :imp_date
+        AND     b.qsi_period            = :impless_date
+        AND     b.acell                 IN ('V','P','A','C','I')
+        AND     a.acell                 IN ('N','I')
+        AND     a.question_industry IN (SELECT industry FROM :g_results_industry)
+        AND     MOD(a.question,10) IN (1,5,6,8,9)
+        AND     d.rep_type = 1;
+
+/*
+        AND     (MOD(a.question,10) IN (1,5,6,8,9)
+                 OR MOD(a.question,10000) = 9100)
+        AND     d.rep_type = 1;
+*/
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error imputing QH atq for ' + VARCHAR(:imp_date),
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        /*------------------------------------------------------------
+          Amended 9603 results
+          Where there is an imputed 0 and the previous period had a
+          value  > 0 then change the imputed 0 to an imputed 1
+          This happens when the imputation ratio < 1 eg. previous value
+          is 2 imp_ratio = 0.200 new_value = 0
+        ------------------------------------------------------------*/
+
+        UPDATE asi_to_qsi_link a
+        SET    avalue = 1,
+               acell = 'I'
+        WHERE  a.contributor_reference IN
+        (SELECT contributor_reference 
+        FROM   asi_to_qsi_link b,
+               question_period c
+        WHERE  a.qsi_period = :imp_date
+        AND    b.qsi_period = :impless_date
+        AND    a.question = b.question
+        AND    c.period = :imp_date
+        AND    c.imputation_ratio > 0
+        AND    c.imputation_ratio < 1
+        AND    a.avalue = 0
+        AND    a.acell = 'I'
+        AND    b.avalue > 0
+        AND    a.question = c.question
+        AND    a.question_industry IN (SELECT industry FROM :g_results_industry));
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating 0s for ' + VARCHAR(:imp_date),
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        UPDATE asi_to_qsi_link a
+        SET    avalue = 1,
+               acell = 'I'
+        WHERE  a.contributor_reference IN
+        (SELECT  contributor_reference 
+        FROM   asi_to_qsi_link b,
+               question_period c,
+               question_history d
+        WHERE  a.qsi_period = :imp_date
+        AND    b.qsi_period = :impless_date
+        AND    a.question = d.new_question
+        AND    b.question = d.old_question
+        AND    a.question = c.question
+        AND    c.period = :imp_date
+        AND    c.imputation_ratio > 0
+        AND    c.imputation_ratio < 1
+        AND    a.avalue = 0
+        AND    a.acell = 'I'
+        AND    b.avalue > 0
+        AND    a.question_industry IN (SELECT industry FROM :g_results_industry)
+        AND    d.rep_type = 1);
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_commit = 'Y',
+                  h_rollback = 'N',
+                  h_frpr_name = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating QH 0s for ' + VARCHAR(:imp_date),
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        g_row = g_row - 1;
+
+    ENDWHILE;
+
+    RETURN 0;
+}

@@ -1,0 +1,529 @@
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_max_rows        = INTEGER4 NOT NULL,
+        h_question        = INTEGER4 NOT NULL,
+        h_counter         = INTEGER4 NOT NULL,
+        h_table           = VARCHAR(24) NOT NULL,
+        period1           = INTEGER4 NOT NULL,
+        period2           = INTEGER4 NOT NULL,
+        period3           = INTEGER4 NOT NULL,
+        period4           = INTEGER4 NOT NULL,
+        period5           = INTEGER4 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        lp_load_table     = PROCEDURE RETURNING INTEGER
+
+{    
+    h_retries_allowed = 3;
+    h_frpr_name = 'msach_fr_quest_resp_asi';
+    h_table = 'temp_results2_' + VARCHAR(:g_industry);
+    print_message = '';
+    msa_date = 'now';
+		  
+    SET_FORMS FIELD '' (MODE(tf) = 'UPDATE');
+
+
+    cutoff = 100;	
+    SET_FORMS FIELD '' (DISPLAYONLY(cutoff) = 1,
+			REVERSE(cutoff) = 1,
+			UNDERLINE(cutoff) = 0);
+
+    industry = :g_industry;
+    inquiry = :g_inquiry;
+
+
+
+    curr_period = :g_period[1].period;
+    IF g_periods >= 2
+    THEN
+        prev_period  = :g_period[2].period;
+        prev_period1 = :g_period[3].period;
+    ELSE
+        prev_period = 0;
+    ENDIF;
+
+
+
+
+    /*------------------------------------------------------------------
+      Questions
+    ------------------------------------------------------------------*/
+
+
+    MESSAGE 'Selecting Percentage Figures for Previous Periods . . .';
+
+    ret_val = CALLPROC msa_fp_drop_table (
+              h_table = :h_table);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+
+    /*------------------------------------------------------------------
+    Create Table of all questions used in last five periods
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        CREATE TABLE :h_table
+        AS SELECT    DISTINCT(question),
+                     INT1(0) AS quest_order,
+                     FLOAT8(0) AS perc_diff,
+                     FLOAT8(0) AS perc_ret3,
+                     FLOAT8(0) AS perc_imp3,
+                     FLOAT8(0) AS perc_con3,
+                     FLOAT8(0) AS perc_ret2,
+                     FLOAT8(0) AS perc_imp2,
+                     FLOAT8(0) AS perc_con2,
+                     FLOAT8(0) AS perc_ret1,
+                     FLOAT8(0) AS perc_imp1,
+                     FLOAT8(0) AS perc_con1
+        FROM         question_period
+        WHERE        question_industry = :industry
+        AND          period IN (:curr_period,
+				:prev_period,
+				:prev_period1);
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No Questions were found for this Industry'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Add quest_order
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   question_library b
+        SET    quest_order = b.quest_order
+        WHERE  a.question = b.question
+        AND    b.period = :curr_period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing question'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'No Quest_Orders were found for this Industry'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Delete CSDB Questions (quest_order = 12)
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        DELETE FROM :h_table
+        WHERE       quest_order = 12;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in deleting CSDB from ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+
+    /*------------------------------------------------------------------
+    Update with first Period's data
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   question_period b
+        SET    perc_imp3 = (b.imp_total_value * 100.0 / b.total_value),
+               perc_con3 = (b.con_total_value * 100.0 / b.total_value)
+        WHERE  a.question = b.question
+        AND    b.period = :prev_period1;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error updating first period values from question_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+
+    /*------------------------------------------------------------------
+    Update with second Period's data
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   question_period b
+        SET    perc_imp2 = (b.imp_total_value * 100.0 / b.total_value),
+               perc_con2 = (b.con_total_value * 100.0 / b.total_value)
+        WHERE  a.question = b.question
+        AND    b.period = :prev_period1;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+       MESSAGE 'System error updating second period values from question_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+
+
+    /*------------------------------------------------------------------
+    Update with new Period's data
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   question_period b
+        SET    perc_imp1 = (b.imp_total_value * 100.0 / b.total_value),
+               perc_con1 = (b.con_total_value * 100.0 / b.total_value)
+        WHERE  a.question = b.question
+        AND    b.period = :curr_period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error updating new values from question_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+
+    /*------------------------------------------------------------------
+    Update with returned percentage figures.
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        UPDATE :h_table a
+        FROM   :h_table b
+        SET    perc_ret3 =  100 - (b.perc_imp3 + b.perc_con3),
+               perc_ret2 =  100 - (b.perc_imp2 + b.perc_con2),
+               perc_ret1 =  100 - (b.perc_imp1 + b.perc_con1)
+        WHERE  a.question = b.question;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error updating returned values'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    RESUME FIELD tf;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+}
+
+'AlterLimit', KEY FRSKEY14 =
+{
+    SET_FORMS FIELD '' (DISPLAYONLY(cutoff) = 0,
+			REVERSE(cutoff) = 0,
+		  	UNDERLINE(cutoff) = 1);
+    CLEAR FIELD cutoff;
+    RESUME FIELD cutoff;
+}
+
+FIELD cutoff =
+{
+    SET_FORMS FIELD '' (DISPLAYONLY(cutoff) = 1,
+			REVERSE(cutoff) = 1,
+			UNDERLINE(cutoff) = 0);
+
+    ret_val = CALLPROC lp_load_table ();
+    IF ret_val <> 0
+    THEN
+	RETURN ret_val;
+    ENDIF;
+}
+ 
+'End', KEY FRSKEY6 =
+{
+    MESSAGE 'Exiting Contributor Data Screen . . .';
+    ret_val = CALLPROC msa_fp_drop_table ( h_table = :h_table);
+ 
+    RETURN 0;
+}
+
+
+/*----------------------------------------------------------------------
+                    L O C A L   P R O C E D U R E
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_load_table () =
+{
+    MESSAGE 'Loading Questions . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf =
+
+        SELECT   question,
+                 quest_order,
+                 perc_ret3,
+		 perc_imp3,
+		 perc_con3,
+                 perc_ret2,
+		 perc_imp2,
+		 perc_con2,
+                 perc_ret1,
+		 perc_imp1,
+		 perc_con1
+        FROM     :h_table
+	WHERE    perc_ret1 < :cutoff
+	OR       perc_ret2 < :cutoff
+	OR       perc_ret3 < :cutoff
+        ORDER BY quest_order,
+                 question;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row         = BYREF(:no_of_questions),
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error loading table field'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+
+    msa_date = 'now';
+
+
+
+    RETURN 0;
+}
+

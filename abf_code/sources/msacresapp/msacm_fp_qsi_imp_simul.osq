@@ -1,0 +1,448 @@
+/*----------------------------------------------------------------------
+                MSACM_FP_QSI_IMP_SIMUL
+        Puts all imputed values into sim_calc table
+----------------------------------------------------------------------*/
+
+PROCEDURE msacm_fp_qsi_imp_simul (
+
+          t_calc                = VARCHAR(25) NOT NULL,
+          imp_date              = INTEGER4 NOT NULL,
+          impless_date          = INTEGER4 NOT NULL,
+          row_count             = INTEGER4 NOT NULL,
+          first_time            = CHAR(1)  NOT NULL) =
+
+DECLARE   contributor_reference = CHAR(11) NOT NULL,
+          h_num_rows            = INTEGER4 NOT NULL,
+          h_carry               = INTEGER4 NOT NULL,
+          h_frpr_name           = CHAR(25) NOT NULL,
+          ret_val               = INTEGER4 NOT NULL
+{
+
+    h_frpr_name = 'msacm_fp_qsi_imp_simul';
+
+    row_count := 0;
+
+    /*------------------------------------------------------------------
+       Load current period's imputable data
+    ------------------------------------------------------------------*/
+
+    INSERT INTO :t_calc (
+                status,
+                contributor_reference,
+                question,
+                quest_order,
+                contributor_industry,
+                period,
+                prev_val,
+                prev_acell,
+                value,
+                acell,
+                acell_type,
+                ratio)
+    SELECT      0,
+                contributor_reference,
+                question,
+                quest_order,
+                contributor_industry,
+                period,
+                0,
+                'N',
+                0,
+                'N',
+                acell_type,
+                0
+    FROM        cqpv
+    WHERE       period            = :imp_date
+    AND         acell             IN ('N', 'I')
+    AND         question_industry in
+		(SELECT industry FROM :g_results_industry)
+    AND         (MOD(question,10) IN (1,5,6,8,9)
+                 OR quest_order = 11);
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error inserting data',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Delete introduced Nov 2009 to break link with specified
+    questions. MJE.
+    ------------------------------------------------------------------
+    Not required.
+    DELETE FROM :t_calc a
+    WHERE (a.question/10) in
+	(SELECT eightdig
+	FROM link_breaks b
+	WHERE a.period = b.period);
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error deleting questions.',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+*/
+    /*------------------------------------------------------------------
+       Update from previous period's data. Note -
+       Imputed values for the first_time are obtained from cqpv ;
+       Imputed values for NOT first_time are obtained from sim_calc
+    ------------------------------------------------------------------*/
+
+    IF first_time = 'y'
+    THEN
+
+        UPDATE :t_calc a
+        FROM   cqpv b
+        SET    prev_val = b.avalue,
+               prev_acell = b.acell
+        WHERE  b.acell IN ('V','P','A','C','I','Z')
+        AND    a.contributor_reference = b.contributor_reference
+        AND    a.period = :imp_date
+        AND    b.contributor_inquiry = :g_inquiry
+        AND    b.period = :impless_date
+        AND    a.question = b.question;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating VPIZ imputations',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        UPDATE :t_calc a
+        FROM   cqpv b,
+               question_history c
+        SET    prev_val = b.avalue,
+               prev_acell = b.acell
+        WHERE  b.acell IN ('V','P','A','C','I','Z')
+        AND    a.contributor_reference = b.contributor_reference
+        AND    a.period = :imp_date
+        AND    b.contributor_inquiry = :g_inquiry
+        AND    b.period = :impless_date
+        AND    a.question = c.new_question
+        AND    b.question = c.old_question
+        AND    c.rep_type = 1;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating VPIZ QH imputations',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        Where reclassified, Standard Headings are different, so match
+        by quest_order.
+        --------------------------------------------------------------*/
+
+        UPDATE :t_calc a
+        FROM   cqpv b
+        SET    prev_val = b.avalue,
+               prev_acell = b.acell
+        WHERE  b.acell IN ('V','P','A','C','I','Z')
+        AND    a.contributor_reference = b.contributor_reference
+        AND    a.period = :imp_date
+        AND    b.contributor_inquiry = :g_inquiry
+        AND    b.period = :impless_date
+        AND    MOD(a.question,10000) = MOD(b.question,10000)
+        AND    a.quest_order <> 1
+        AND    a.quest_order = b.quest_order;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating VPIZ StHead imputations',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+    ELSE
+        /*--------------------------------------------------------------
+        Where reclassified, Standard Headings are different, so match
+        by quest_order. 
+        Also: look for imputed values on cqpv if the contributor has
+        reclassified from an industry that has already run.
+        --------------------------------------------------------------*/
+
+        UPDATE :t_calc a
+        FROM   cqpv b
+        SET    prev_val = b.avalue,
+               prev_acell = b.acell
+        WHERE  b.acell IN ('V','P','A','C','I','Z')
+        AND    a.contributor_reference = b.contributor_reference
+        AND    a.period = :imp_date
+        AND    b.contributor_inquiry = :g_inquiry
+        AND    b.period = :impless_date
+        AND    MOD(a.question,10000) = MOD(b.question,10000)
+        AND    a.quest_order <> 1
+        AND    a.quest_order = b.quest_order;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating VPZ+I StHead imputations',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        UPDATE :t_calc a
+        FROM   cqpv b
+        SET    prev_val = b.avalue,
+               prev_acell = b.acell
+        WHERE  b.acell IN ('V','P','A','C','Z')
+        AND    a.contributor_reference = b.contributor_reference
+        AND    a.period = :imp_date
+        AND    b.contributor_inquiry = :g_inquiry
+        AND    b.period = :impless_date
+        AND    a.question = b.question;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating VPZ imputations',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        UPDATE :t_calc a
+        FROM   cqpv b,
+               question_history c
+        SET    prev_val = b.avalue,
+               prev_acell = b.acell
+        WHERE  b.acell IN ('V','P','A','C','Z')
+        AND    a.contributor_reference = b.contributor_reference
+        AND    a.period = :imp_date
+        AND    b.contributor_inquiry = :g_inquiry
+        AND    b.period = :impless_date
+        AND    a.question = c.new_question
+        AND    b.question = c.old_question
+        AND    c.rep_type = 1;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating VPZ QH imputations',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        Where reclassified, Standard Headings are different, so match
+        by quest_order.
+        --------------------------------------------------------------*/
+
+        UPDATE :t_calc a
+        FROM   :t_calc b
+        SET    prev_val = b.value,
+               prev_acell = 'I'
+        WHERE  a.period = :imp_date
+        AND    b.period = :impless_date
+        AND    a.acell IN ('N','I')
+        AND    b.acell = 'I'
+        AND    a.contributor_reference = b.contributor_reference
+        AND    MOD(a.question,10000) = MOD(b.question,10000)
+        AND    a.quest_order <> 1
+        AND    a.quest_order = b.quest_order;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating I StHead imputations',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        UPDATE :t_calc a
+        FROM   :t_calc b
+        SET    prev_val = b.value,
+               prev_acell = 'I'
+        WHERE  a.period = :imp_date
+        AND    b.period = :impless_date
+        AND    a.acell IN ('N','I')
+        AND    b.acell = 'I'
+        AND    a.contributor_reference = b.contributor_reference
+        AND    a.question = b.question;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating I imputations',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        UPDATE :t_calc a
+        FROM   :t_calc b,
+               question_history c
+        SET    prev_val = b.value,
+               prev_acell = 'I'
+        WHERE  a.period = :imp_date
+        AND    b.period = :impless_date
+        AND    a.acell IN ('N','I')
+        AND    b.acell = 'I'
+        AND    a.contributor_reference = b.contributor_reference
+        AND    a.question = c.new_question
+        AND    b.question = c.old_question
+        AND    c.rep_type = 1;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating I QH imputations',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+       Delete rows that couldn't be imputed (no previous data)
+    ------------------------------------------------------------------*/
+
+    DELETE FROM :t_calc
+    WHERE       prev_acell = 'N' ;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error deleting imputations',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+       Update using current period's imputation ratio
+    ------------------------------------------------------------------*/
+
+    UPDATE :t_calc a
+    FROM   question_period b
+    SET    ratio = b.imputation_ratio,
+           value = (b.imputation_ratio * 1.0) * prev_val,
+           acell = 'I'
+    WHERE  a.period = b.period
+    AND    a.question = b.question
+    AND    a.period = :imp_date;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row    = BYREF(:h_num_rows),
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error deleting imputations',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    row_count = row_count + h_num_rows;
+
+    /*------------------------------------------------------------------
+     Update the current value from 0 to 1 where the previous
+     value was > 0 but the imputation ratio was < 1
+    ------------------------------------------------------------------*/
+
+    UPDATE :t_calc
+    SET    value = 1
+    WHERE  value = 0
+    AND    acell = 'I'
+    AND    prev_val > 0
+    AND    ratio BETWEEN 0 AND 1;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error updating zero imputations to one',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    RETURN 0;
+}

@@ -1,0 +1,233 @@
+/***********************************************************************
+   Standard procedure to write data change to audit trail. 
+
+   This is the batch process variant.
+
+   DF 2014
+***********************************************************************/
+
+PROCEDURE write_to_audit_trail
+        ( p_contributor_reference = CHAR(11)    NOT NULL WITH DEFAULT,
+          p_question              = INTEGER4    NOT NULL WITH DEFAULT, 
+          p_period                = INTEGER4    NOT NULL WITH DEFAULT, 
+          p_code                  = INTEGER1    NOT NULL WITH DEFAULT, 
+          p_val_1                 = INTEGER4    NOT NULL WITH DEFAULT, 
+          p_val_2                 = INTEGER4    NOT NULL WITH DEFAULT, 
+          p_val_3                 = VARCHAR(20) NOT NULL WITH DEFAULT,
+          p_frpr_name             = VARCHAR(36) NOT NULL WITH DEFAULT )=
+
+DECLARE  
+  h_return                = INTEGER2     NOT NULL WITH DEFAULT,
+  h_return2               = INTEGER2     NOT NULL WITH DEFAULT,
+  h_dummy                 = INTEGER2     NOT NULL WITH DEFAULT,
+  h_frpr_name             = VARCHAR(36)  NOT NULL WITH DEFAULT,
+  h_time                  = INGRESDATE   NOT NULL WITH DEFAULT,
+  h_question              = VARCHAR(9)   NOT NULL WITH DEFAULT,
+  h_type                  = CHAR(3)      NOT NULL WITH DEFAULT,
+  h_action                = VARCHAR(80)  NOT NULL WITH DEFAULT,
+  h_user_name             = VARCHAR(36)  NOT NULL WITH DEFAULT,
+  h_text                  = VARCHAR(160) NOT NULL WITH DEFAULT,
+
+  lp_error_check          = PROCEDURE RETURNING INTEGER NOT NULL WITH DEFAULT,
+
+{
+
+  SELECT DBMSINFO('username') AS g_user_id;
+
+  /*---------------------------------------------------------------------------
+     Set some variables. 
+  ---------------------------------------------------------------------------*/
+
+  h_frpr_name = 'write_to_audit_trail';
+  h_time      = 'now';
+
+  IF p_question = 0
+  THEN
+    h_question = '000000000';
+  ELSE 
+    h_question = VARCHAR(:p_question);
+  ENDIF;
+
+  IF p_code = 1
+  THEN
+    h_type = 'CRE';
+    h_action = 'Created.';
+
+  ELSEIF p_code = 2
+  THEN
+    h_type = 'PRO';
+    h_action = 'Processed - Batch.';
+
+  ELSEIF p_code = 3
+  THEN
+    h_type = 'PRO';
+    h_action = 'Processed - Desk.';
+
+  ELSEIF p_code = 4
+  THEN
+    h_type = 'VAL';
+    h_action = 'Validated - Batch. Form status set ' 
+             + 'to ' +VARCHAR(:p_val_2) +'.';
+
+  ELSEIF p_code = 5
+  THEN
+    h_type = 'VAL';
+    h_action = 'Validated - Desk. Form status set ' 
+             + 'to ' +VARCHAR(:p_val_2) +'.';
+
+  ELSEIF p_code = 6
+  THEN
+    h_type = 'AED';
+    h_action = 'Autoedit - Retotalled. Value changed '
+             + 'to ' +VARCHAR(:p_val_2) +'.';
+
+  ELSEIF p_code = 7
+  THEN
+    h_type = 'AED';
+    h_action = 'Autoedit - Rounded. Value changed '
+             + 'from ' +VARCHAR(:p_val_1) +' '
+             + 'to '   +VARCHAR(:p_val_2) +'.';
+
+  ELSEIF p_code = 8
+  THEN
+    h_type = 'AED';
+    h_action = 'Autoedit - Constructed. Value changed '
+             + 'to ' +VARCHAR(:p_val_2) +'.';
+ 
+  ELSEIF p_code = 9
+  THEN
+    h_type = 'AED';
+    h_action = 'Autoedit - Imputed. Value changed '
+             + 'to ' +VARCHAR(:p_val_2) +'.';
+ 
+  ELSEIF p_code = 10
+  THEN
+    h_type = 'AED';
+    h_action = 'Autoedit - Euro Conversion. Value changed '
+             + 'from ' +VARCHAR(:p_val_1) +' '
+             + 'to '   +VARCHAR(:p_val_2) +'.';
+
+  ELSEIF p_code = 11
+  THEN
+    h_type   = 'DER';
+    h_action = 'Dereceipted.';
+ 
+  ELSEIF p_code = 12
+  THEN
+    h_type = 'ETD';
+    h_action = 'Edited - Value changed '
+             + 'from ' +VARCHAR(:p_val_1) +' '
+             + 'to '   +VARCHAR(:p_val_2) +'.';
+
+  ELSEIF p_code = 13
+  THEN
+    h_type = 'DEL';
+    h_action = 'Deleted - Question deleted.';
+ 
+  ELSEIF p_code = 14
+  THEN
+    h_type = 'DEL';
+    h_action = 'Deleted - Values removed from form.';
+ 
+  ELSEIF p_code = 15
+  THEN
+    h_type = 'DEL';
+    h_action = 'Deleted - Contributor deselected or deleted.';
+
+  ELSEIF p_code = 16
+  THEN
+    h_type = 'CON';
+    h_action = 'Confirmed - Threshold clearance of credibility failure.';
+ 
+  ELSEIF p_code = 17
+  THEN
+    h_type = 'CON';
+    h_action = 'Confirmed - Manual clearance of credibility failure.';
+ 
+  ELSEIF p_code = 18
+  THEN
+    h_type = 'ACT';
+    h_action = 'Actioned - Unscorable form marked as actioned.';
+
+  ELSEIF p_code = 19
+  THEN
+    h_type = 'RST';
+    h_action = 'Reset - Form reset by re-run of batch take-on process.';
+
+  ELSE
+    h_type = '???';
+    h_action = 'Unknown - Unknown audit code of '+VARCHAR(:p_code) +' '
+             + 'encountered. Contact IM.';
+
+  ENDIF;
+
+  /*--------------------------------------------------------------------------
+     Select user name from passwords_new using g_user_id. 
+     We record actual user names as ID owners change over time.
+  --------------------------------------------------------------------------*/
+
+  SELECT user_name AS h_user_name 
+  FROM   passwords_new
+  WHERE  user_id = :g_user_id;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select user name for audit trail.'; 
+    h_dummy = CALLPROC msacm_fp_log_message
+           ( h_text=:h_text, h_frpr=:h_frpr_name);
+    RETURN 9;
+  ENDIF;
+
+  /*--------------------------------------------------------------------------
+     Write data to audit trail table.
+  --------------------------------------------------------------------------*/
+
+  INSERT INTO audit_trail
+  VALUES    ( :h_time,
+              :p_contributor_reference,
+              :h_question,
+              :p_period,
+              :h_type,
+              :h_action,
+              :h_user_name,
+              :p_frpr_name);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to insert into audit trail.'; 
+    h_dummy = CALLPROC msacm_fp_log_message
+           ( h_text=:h_text, h_frpr=:h_frpr_name);
+    RETURN 9;
+  ENDIF;
+
+  RETURN 0;
+
+}
+
+/**************************** LOCAL PROCEDURES ****************************/
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing 
+            ( h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+

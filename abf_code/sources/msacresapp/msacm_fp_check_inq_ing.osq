@@ -1,0 +1,112 @@
+/*--------------------------------------------------------------
+                MSACM_FP_CHECK_INQ_ING
+
+        (i)  Writes comments to error_log, or
+        (ii) Performs normal error-checking
+--------------------------------------------------------------*/
+
+PROCEDURE msacm_fp_check_inq_ing(
+
+          h_num_row         = INTEGER4  NOT NULL,
+          h_num_row_ck      = INTEGER4  NOT NULL,
+          h_commit          = CHAR(1)   NOT NULL,
+          h_rollback        = CHAR(1)   NOT NULL,
+          h_frpr_name       = CHAR(24)  NOT NULL) =
+         
+DECLARE   h_err_num         = INTEGER4  NOT NULL,
+          h_error_text      = CHAR(256) NOT NULL
+
+{
+    /*--------------------------------------------------------------
+      Find out what's happened
+    --------------------------------------------------------------*/
+
+    INQUIRE_INGRES (h_num_row    = ROWCOUNT,
+                    h_err_num    = ERRORNO,
+                    h_error_text = ERRORTEXT);
+
+    /*--------------------------------------------------------------
+      If there is a system error, then insert error log details
+    --------------------------------------------------------------*/
+
+    IF h_err_num <> 0
+    THEN
+        IF h_rollback = 'Y'
+        THEN
+            ROLLBACK;
+        ENDIF;
+
+        INSERT INTO error_log (
+                    error_time,
+                    error_text,
+                    frpr_name,
+                    error_code,
+		    user_id)
+        VALUES (    'now',
+                    SQUEEZE(:h_error_text),
+                    :h_frpr_name,
+                    :h_err_num,
+		    :g_user_id);
+
+        COMMIT;
+            
+        RETURN 9;
+
+    ENDIF;
+
+    /*--------------------------------------------------------------
+      If rows expected, and no rows occurred
+    --------------------------------------------------------------*/
+
+    IF h_num_row_ck = 1 AND h_num_row = 0
+    THEN
+        IF h_rollback = 'Y'
+        THEN
+            ROLLBACK;
+        ENDIF;
+
+        IF h_commit = 'Y'
+        THEN
+            COMMIT;
+        ENDIF;
+    
+        h_num_row_ck = 0;
+
+        RETURN 1;
+
+    /*--------------------------------------------------------------
+      If no rows expected, and rows occurred
+    --------------------------------------------------------------*/
+
+    ELSEIF h_num_row_ck = 0 AND h_num_row  > 0
+    THEN
+        IF h_rollback = 'Y'
+        THEN
+            ROLLBACK;
+        ENDIF;
+
+        IF h_commit = 'Y'
+        THEN
+            COMMIT;
+        ENDIF;
+
+        h_num_row_ck = h_num_row;
+
+        RETURN 1;
+
+    ENDIF;
+
+   /*--------------------------------------------------------------
+     All OK - rows expected & rows got  
+              or rows not expected and no rows got
+   --------------------------------------------------------------*/
+
+    IF h_commit = 'Y'
+    THEN
+        COMMIT;
+    ENDIF;
+
+    h_num_row_ck = h_num_row;
+
+    RETURN 0;
+}

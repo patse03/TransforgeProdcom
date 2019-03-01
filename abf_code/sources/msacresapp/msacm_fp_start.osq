@@ -1,0 +1,929 @@
+/*----------------------------------------------------------------------
+                         MSACM_FP_START
+----------------------------------------------------------------------*/
+
+PROCEDURE msacm_fp_start () =
+
+DECLARE   ret_val             = INTEGER1 NOT NULL,
+          period              = INTEGER4 NOT NULL,
+          h_inds              = INTEGER4 NOT NULL,
+          results_span        = INTEGER1 NOT NULL,
+          start_proc          = INTEGER1 NOT NULL,
+          end_proc            = INTEGER1 NOT NULL,
+          transfer            = CHAR(1) NOT NULL,
+          store               = CHAR(1) NOT NULL,
+          h_frpr_name         = VARCHAR(25) NOT NULL,
+          h_varchar_variable  = VARCHAR(80) NOT NULL,
+          h_integer_variable  = INTEGER4 NOT NULL,
+          h_param1            = VARCHAR(10) NOT NULL,
+          h_param2            = VARCHAR(10) NOT NULL,
+          h_params            = VARCHAR(80) NOT NULL
+
+{
+    h_frpr_name = 'msacm_fp_start';
+
+    SELECT DBMSINFO('username') AS :g_user_id;
+    SELECT DBMSINFO('database') AS g_dbname;
+
+    IF :g_dbname = 'prodlivedb'
+    THEN
+	g_path_name1 = '/prodcom/live5/files/sas/';
+    ELSE
+/*	g_path_name1 = '/prodcom/source/produser/files/sas/';*/
+	g_path_name1 = '/admin/scratch/derrick/';
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Find out whether Annual or Quarterly and Provisional or Final
+
+     e.g.  -a 15 f   = final quarterly
+           -a 14     = prov annual
+           -a 14 x   = prov annual
+
+    If a 2nd parameter is not supplied OR if it is NOT "f",
+    then default to provisional.
+    ------------------------------------------------------------------*/
+
+    h_params = CALLPROC CommandLineParameters();
+    h_varchar_variable = squeeze (h_params);
+
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param1         =   left (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = shift (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param2         =   left (h_varchar_variable,h_integer_variable - 1);
+
+    g_inquiry = INT1(:h_param1);
+
+    IF :g_inquiry <> 14 AND :g_inquiry <> 15
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Invalid Inquiry = ' + VARCHAR(:g_inquiry),
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    IF LOWERCASE(h_param2) = 'f'
+    THEN
+        IF :g_inquiry = 14
+        THEN
+            g_results_industry = 'results_industry_14f';
+        ELSE
+            g_results_industry = 'results_industry_15f';
+        ENDIF;
+    ELSE
+        IF :g_inquiry = 14
+        THEN
+            g_results_industry = 'results_industry_14p';
+        ELSE
+            g_results_industry = 'results_industry_15p';
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Check table-supplied parameters
+    ------------------------------------------------------------------*/
+
+    SELECT period,
+           results_span,
+           start_proc,
+           end_proc,
+           transfer,
+           store
+    FROM   :g_results_industry;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit = 'Y',
+              h_rollback = 'N',
+              h_frpr_name = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'System Error selecting industries from ' +
+                           :g_results_industry,
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ELSEIF ret_val = 1
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'No industries on ' + :g_results_industry,
+                  h_frpr_name = :h_frpr_name);
+        RETURN 0;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+     Blank out copy of error_log that Control look at
+
+    DELETE FROM control_results_log;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit = 'Y',
+              h_rollback = 'N',
+              h_frpr_name = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error deleting from control_results_log',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+    ------------------------------------------------------------------*/
+
+    /*------------------------------------------------------------------
+     Check count no. of industries on table-supplied parameters
+    ------------------------------------------------------------------*/
+
+    SELECT COUNT(*) AS h_inds
+    FROM   :g_results_industry;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit = 'Y',
+              h_rollback = 'N',
+              h_frpr_name = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'System Error selecting industries from ' +
+                           :g_results_industry,
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Validate parameters
+    ------------------------------------------------------------------*/
+
+    IF :g_inquiry = 15
+    THEN
+        IF :results_span > 5 OR :results_span < 1
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Quarterly span must be between 1 & 5',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    ELSE
+        IF :results_span > 4 OR :results_span < 1
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Annual span must be between 1 & 4',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    ENDIF;
+
+    SELECT   period
+    FROM     inquiry_period
+    WHERE    period = :period
+    AND      inquiry = :g_inquiry;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit = 'Y',
+              h_rollback = 'N',
+              h_frpr_name = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'System Error selecting period from inquiry_period',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ELSEIF ret_val = 1
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Inquiry/Period incompatible',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    IF :start_proc < 1 OR :start_proc > 11
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Invalid start process',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    IF :end_proc < 1 OR :end_proc > 11
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Invalid end process',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    IF :start_proc > :end_proc
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Start Proc > End Proc',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    IF :transfer <> 'N' AND :transfer <> 'Y'
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Transfer should be Y or N not (' +
+                           :transfer + ')',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Store values of results_industry table 
+    ------------------------------------------------------------------*/
+    
+    INSERT INTO results_log(
+                time,
+                industry,
+                period,
+                results_span,
+                start_proc,
+                end_proc,
+                results_type)
+    SELECT      date('now'),
+                industry,
+                period,
+                results_span,
+                start_proc,
+                end_proc,
+                RIGHT(:g_results_industry, 3)
+    FROM :g_results_industry;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit = 'Y',
+              h_rollback = 'N',
+              h_frpr_name = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'System Error inserting into results_log',
+                  h_frpr_name = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+    g_results_span = :results_span;
+    g_input_period = :period;
+    g_transfer     = :transfer;
+    g_store        = :store;
+
+    h_params = SQUEEZE(VARCHAR(:g_inquiry) + ' ' + VARCHAR(:period) + ' ' +
+               VARCHAR(:results_span) + ' ' + VARCHAR(:start_proc)+ ' '+
+               VARCHAR(:end_proc) + ' ' + :g_transfer + ' ' + :g_store +
+               ' (' + VARCHAR(:h_inds) + ' Inds)');
+
+    ret_val = CALLPROC msacm_fp_log_message(
+              h_text = 'msacresapp - Start of Run ' + :h_params,
+              h_frpr_name = :h_frpr_name);
+
+    /*------------------------------------------------------------------
+          Procedure msacm_fp_period_selects sets various
+          global variables used throughout the results run.
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msacm_fp_period_select(
+              h_input_period = :period);
+
+    IF ret_val <> 0
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+       P R O C E S S   1    -   calculate imputation ratios
+    ------------------------------------------------------------------*/
+
+    IF start_proc = 1
+    THEN
+        MESSAGE 'Process 1 . . .';
+
+        ret_val = CALLPROC msacm_fp_simul_imp_calc();
+
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+            h_text = 'Process 1 Failure (please notify IS - imp_uncleared)',
+                      h_frpr_name = :h_frpr_name);
+
+            RETURN 9;
+        ENDIF;
+
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'msacresapp - End Process 1 - ' + :h_params,
+                  h_frpr_name = :h_frpr_name);
+
+        IF end_proc = start_proc
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message(
+                      h_text = 'msacresapp - run ends at process ' +
+                                VARCHAR(:start_proc) + ' OK',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 0;
+        ELSE
+            start_proc = start_proc + 1;
+        ENDIF;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+       P R O C E S S   2    -   apply imputation
+    ------------------------------------------------------------------*/
+
+    IF start_proc = 2
+    THEN
+        MESSAGE 'Process 2 . . .';
+
+        ret_val = CALLPROC msacm_fp_apply_imp();
+
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+             h_text = 'Process 2 Failure (please notify IS - imp_uncleared)',
+                      h_frpr_name = :h_frpr_name);
+
+            RETURN 9;
+        ENDIF;
+
+        ret_val = CALLPROC msacm_fp_log_message(
+                  h_text = 'msacresapp - End Process 2 - ' + :h_params,
+                  h_frpr_name = :h_frpr_name);
+
+        IF end_proc = start_proc
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message(
+                      h_text = 'msacresapp - run ends at process ' +
+                                VARCHAR(:start_proc) + ' OK',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 0;
+        ELSE
+            start_proc = start_proc + 1;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+       P R O C E S S   3    -   Batch Construction
+    ------------------------------------------------------------------*/
+
+    IF start_proc = 3
+    THEN
+        MESSAGE 'Process 3 . . .';
+
+        ret_val = CALLPROC msacm_fp_con_control ();
+
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Process 3 Failure (please notify IS - imp_uncleared)',
+                      h_frpr_name = :h_frpr_name);
+
+            RETURN 9;
+        ENDIF;
+
+        ret_val = CALLPROC msacm_fp_log_message(
+                  h_text = 'msacresapp - End Process 3 - ' + :h_params,
+                  h_frpr_name = :h_frpr_name);
+
+        IF end_proc = start_proc
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message(
+                      h_text = 'msacresapp - run ends at process ' +
+                                VARCHAR(:start_proc) + ' OK',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 0;
+        ELSE
+            start_proc = start_proc + 1;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+       P R O C E S S   4    -   aggregation
+    ------------------------------------------------------------------*/
+
+    IF start_proc = 4
+    THEN
+        MESSAGE 'Process 4 . . .';
+
+        IF g_inquiry = 14
+        THEN
+            ret_val = CALLPROC msacm_fp_mid_carryout (period = :period);
+            IF ret_val <> 0
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                          h_text = 'Process 4 mid_carryout Failure' +
+                                  ' (please notify IS - imp_uncleared)',
+                          h_frpr_name = :h_frpr_name);
+                RETURN 9;
+            ENDIF;
+        ENDIF;
+
+        IF LOWERCASE(h_param2) = 'f'
+        AND g_inquiry = 14
+        THEN
+	 g_results_span = 4
+        ENDIF;
+
+        ret_val = CALLPROC msacm_fp_cr_sim_table();
+
+        IF LOWERCASE(h_param2) = 'f'
+        AND g_inquiry = 14
+        THEN
+	 g_results_span = :results_span
+        ENDIF;
+
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Process 4 create_sim_tables Failure' +
+                               ' (please notify IS - imp_uncleared)',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        ret_val = CALLPROC msacm_fp_log_message(
+                  h_text = 'msacresapp - End Process 4 - ' + :h_params,
+                  h_frpr_name = :h_frpr_name);
+
+        IF end_proc = start_proc
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message(
+                      h_text = 'msacresapp - run ends at process ' +
+                                VARCHAR(:start_proc) + ' OK',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 0;
+        ELSE
+            start_proc = start_proc + 1;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+       P R O C E S S   5    -   aggregation
+    commented out as no longer used
+    ------------------------------------------------------------------*/
+
+    IF start_proc = 5
+    THEN
+        MESSAGE 'Process 5 . . .';
+
+        IF g_inquiry = 15
+        THEN
+	    /*
+            ret_val = CALLPROC msacm_fp_cr_agg_table ();
+	    */
+            IF ret_val <> 0
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                          h_text = 'Process 5 Create AggSim Failure' +
+                                  ' (please notify IS - imp_uncleared)',
+                          h_frpr_name = :h_frpr_name);
+
+                UPDATE results_error
+                SET    results_err = 'N';
+
+                ret_val = CALLPROC msacm_fp_check_inq_ing (
+                          h_num_row_ck = 1,
+                          h_commit     = 'Y',
+                          h_rollback   = 'N',
+                          h_frpr_name  = :h_frpr_name);
+
+                IF ret_val <> 0
+                THEN
+                    ret_val = CALLPROC msacm_fp_log_message (
+                              h_text = 'Error updating results error',
+                              h_frpr_name = :h_frpr_name);
+                    RETURN 9;
+                ENDIF;
+
+                RETURN 9;
+            ENDIF;
+
+            ret_val = CALLPROC msacm_fp_log_message(
+                      h_text = 'msacresapp - End Process 5 - ' + :h_params,
+                      h_frpr_name = :h_frpr_name);
+        ENDIF;
+
+        IF end_proc = start_proc
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message(
+                      h_text = 'msacresapp - run ends at process ' +
+                                VARCHAR(:start_proc) + ' OK',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 0;
+        ELSE
+            start_proc = start_proc + 1;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+       P R O C E S S   6    -   update question_period from sim_tables
+    ------------------------------------------------------------------*/
+
+    IF start_proc = 6
+    THEN
+        MESSAGE 'Process 6 . . .';
+
+        ret_val = CALLPROC msacm_fp_question_totals ();
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Process 6 Failure (please notify IS - totals)',
+                      h_frpr_name = :h_frpr_name);
+
+            UPDATE results_error
+            SET    results_err = 'N';
+
+            ret_val = CALLPROC msacm_fp_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                          h_text = 'Error updating results error',
+                          h_frpr_name = :h_frpr_name);
+                RETURN 9;
+            ENDIF;
+
+            RETURN 9;
+        ENDIF;
+
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'msacresapp - End Process 6 - ' + :h_params,
+                  h_frpr_name = :h_frpr_name);
+
+        IF end_proc = start_proc
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message(
+                      H_text = 'msacresapp - run ends at process ' +
+                                VARCHAR(:start_proc) + ' OK',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 0;
+        ELSE
+            start_proc = start_proc + 1;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+       P R O C E S S   7    -   calculate sph ratios
+    ------------------------------------------------------------------*/
+
+    IF start_proc = 7
+    THEN
+        MESSAGE 'Process 7 . . .';
+
+/*
+        ret_val = CALLPROC msacm_fp_cr_gross_table ();
+
+         ret_val = CALLPROC msacm_fp_sph_calc ();
+*/
+
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Process 7 Failure (please notify IS - sph)',
+                      h_frpr_name = :h_frpr_name);
+
+            UPDATE results_error
+            SET    results_err = 'N';
+
+            ret_val = CALLPROC msacm_fp_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                          h_text = 'Error updating results error',
+                          h_frpr_name = :h_frpr_name);
+                RETURN 9;
+            ENDIF;
+
+            RETURN 9;
+        ENDIF;
+
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'msacresapp - End Process 7 - ' + :h_params,
+                  h_frpr_name = :h_frpr_name);
+
+        IF end_proc = start_proc
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message(
+                      h_text = 'msacresapp - run ends at process ' +
+                                VARCHAR(:start_proc) + ' OK',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 0;
+        ELSE
+            start_proc = start_proc + 1;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+       P R O C E S S   8    -   calculate grossing factor
+    ------------------------------------------------------------------*/
+
+    IF start_proc = 8
+    THEN
+        MESSAGE 'Process 8 . . .';
+
+ /*     message 'new sph';
+        ret_val = CALLPROC msacm_fp_sph_calc_797 ();
+
+           ret_val = CALLPROC msacm_fp_gross_calc ();
+*/
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Process 8 Failure (please notify IS - calc gross)',
+                      h_frpr_name = :h_frpr_name);
+
+            UPDATE results_error
+            SET    results_err = 'N';
+
+            ret_val = CALLPROC msacm_fp_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                          h_text = 'Error updating results error',
+                          h_frpr_name = :h_frpr_name);
+                RETURN 9;
+            ENDIF;
+            RETURN 9;
+        ENDIF;
+
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'msacresapp - End Process 8 - ' + :h_params,
+                  h_frpr_name = :h_frpr_name);
+
+        IF end_proc = start_proc
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message(
+                      h_text = 'msacresapp - run ends at process ' +
+                                VARCHAR(:start_proc) + ' OK',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 0;
+        ELSE
+            start_proc = start_proc + 1;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+       P R O C E S S   9    -   applying grossing factor
+    ------------------------------------------------------------------*/
+
+    IF start_proc = 9
+    THEN
+        MESSAGE 'Process 9 . . .';
+
+/*    message 'new grossing';
+        ret_val = CALLPROC msacm_fp_gross_calc_797 ();
+
+          ret_val = CALLPROC msacm_fp_apply_gross ();
+*/        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Process 9 Failure (please notify IS - apply gross)',
+                      h_frpr_name = :h_frpr_name);
+
+            UPDATE results_error
+            SET    results_err = 'N';
+
+            ret_val = CALLPROC msacm_fp_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                          h_text = 'Error updating results error',
+                          h_frpr_name = :h_frpr_name);
+                RETURN 9;
+            ENDIF;
+            RETURN 9;
+        ENDIF;
+
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'msacresapp - End Process 9 - ' + :h_params,
+                  h_frpr_name = :h_frpr_name);
+
+        IF end_proc = start_proc
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message(
+                      h_text = 'msacresapp - run ends at process ' +
+                                VARCHAR(:start_proc) + ' OK',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 0;
+        ELSE
+            start_proc = start_proc + 1;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+       P R O C E S S   10    -   disclosure & rollup
+
+    test cos results failed on 28/20/98 see julia
+    ------------------------------------------------------------------*/
+
+    IF start_proc = 10
+    THEN
+        MESSAGE 'Process 10 . . .';
+/*           ret_val = CALLPROC msacm_fp_disc_roll_gross ();
+*/
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Process 10 Failure (please notify IS - disclosure)',
+                      h_frpr_name = :h_frpr_name);
+
+            UPDATE results_error
+            SET    results_err = 'N';
+
+            ret_val = CALLPROC msacm_fp_check_inq_ing (
+                      h_num_row_ck = 1,
+                      h_commit     = 'Y',
+                      h_rollback   = 'N',
+                      h_frpr_name  = :h_frpr_name);
+
+            IF ret_val <> 0
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                          h_text = 'Error updating results error',
+                          h_frpr_name = :h_frpr_name);
+                RETURN 9;
+            ENDIF;
+            RETURN 9;
+        ENDIF;
+
+        IF g_inquiry = 15
+        THEN
+	/*
+            ret_val = CALLPROC msacm_fp_agg_ques_period();
+            IF ret_val <> 0
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                          h_text = 'Process 10 - yearly Update fail',
+                          h_frpr_name = :h_frpr_name);
+
+                UPDATE results_error
+                SET    results_err = 'N';
+
+                ret_val = CALLPROC msacm_fp_check_inq_ing (
+                          h_num_row_ck = 1,
+                          h_commit     = 'Y',
+                          h_rollback   = 'N',
+                          h_frpr_name  = :h_frpr_name);
+
+                IF ret_val <> 0
+                THEN
+                    ret_val = CALLPROC msacm_fp_log_message (
+                              h_text = 'Error updating results error',
+                              h_frpr_name = :h_frpr_name);
+                    RETURN 9;
+                ENDIF;
+            ENDIF;
+
+            ret_val = CALLPROC msacm_fp_drg_year();
+            IF ret_val <> 0
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                          h_text = 'Process 10 - yearly disclosure fail',
+                          h_frpr_name = :h_frpr_name);
+
+                UPDATE results_error
+                SET    results_err = 'N';
+
+                ret_val = CALLPROC msacm_fp_check_inq_ing (
+                          h_num_row_ck = 1,
+                          h_commit     = 'Y',
+                          h_rollback   = 'N',
+                          h_frpr_name  = :h_frpr_name);
+
+                IF ret_val <> 0
+                THEN
+                    ret_val = CALLPROC msacm_fp_log_message (
+                              h_text = 'Error updating results error',
+                              h_frpr_name = :h_frpr_name);
+                    RETURN 9;
+                ENDIF;
+
+                RETURN 9;
+            ENDIF;
+
+            ret_val = CALLPROC msacm_fp_diff_disclosure();
+            IF ret_val <> 0
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                          h_text = 'Process 10 - yearly diff disclosure fail',
+                          h_frpr_name = :h_frpr_name);
+
+                UPDATE results_error
+                SET    results_err = 'N';
+
+                ret_val = CALLPROC msacm_fp_check_inq_ing (
+                          h_num_row_ck = 1,
+                          H_commit     = 'Y',
+                          h_rollback   = 'N',
+                          h_frpr_name  = :h_frpr_name);
+
+                IF ret_val <> 0
+                THEN
+                    ret_val = CALLPROC msacm_fp_log_message (
+                              h_text = 'Error updating results error',
+                              h_frpr_name = :h_frpr_name);
+                    RETURN 9;
+                ENDIF;
+
+            ENDIF;
+*/
+        ENDIF;
+
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'msacresapp - End Process 10 - ' + :h_params,
+                  h_frpr_name = :h_frpr_name);
+
+        IF end_proc = start_proc
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message(
+                      h_text = 'msacresapp - run ends at process ' +
+                                VARCHAR(:start_proc) + ' OK',
+                      h_frpr_name = :h_frpr_name);
+            RETURN 0;
+        ELSE
+            start_proc = start_proc + 1;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+       P R O C E S S   11    -   update previously published figures
+       From 200209 quarterly and 200200 there is a new program for this
+       process
+    ------------------------------------------------------------------*/
+
+    IF start_proc = 11
+    THEN
+        MESSAGE 'Process 11 . . .';
+
+        IF :g_transfer = 'Y'
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'msacresapp - creating SAS data extract begins',
+                      h_frpr_name = :h_frpr_name);
+
+	    IF :g_inquiry = 15 
+	    THEN 
+		IF :period >= 200209
+	        THEN
+                    ret_val = CALLPROC msacm_fp_sas_data ();
+                ELSE 
+                    ret_val = CALLPROC msacm_fp_sas_tables ();
+                ENDIF;
+	    ELSEIF :g_inquiry = 14
+	    THEN
+		IF :period >= 200200
+		THEN
+                    ret_val = CALLPROC msacm_fp_sas_data ();
+		ELSE
+                    ret_val = CALLPROC msacm_fp_sas_tables ();
+		ENDIF;
+	    ENDIF;
+
+            IF ret_val <> 0
+            THEN
+                RETURN 9;
+            ENDIF;
+
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'msacresapp - creating SAS data extract ends',
+                      h_frpr_name = :h_frpr_name);
+        ELSE
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'msacresapp - no transfer requested',
+                      h_frpr_name = :h_frpr_name);
+        ENDIF;
+
+        ret_val = CALLPROC msacm_fp_log_message(
+                  h_text = 'msacresapp - run ends at process ' +
+                            VARCHAR(:start_proc) + ' OK',
+                  h_frpr_name = :h_frpr_name);
+
+    ENDIF;
+
+    RETURN 0;
+}

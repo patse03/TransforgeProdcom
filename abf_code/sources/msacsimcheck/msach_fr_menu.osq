@@ -1,0 +1,414 @@
+INITIALIZE () =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        t_cqpv            = VARCHAR(32) NOT NULL,
+        h_display         = INTEGER1 NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+        h_period          = INTEGER4 NOT NULL,
+        span_no           = INTEGER1 NOT NULL
+
+{
+    msa_date = 'now';
+    h_frpr_name = 'msach_fr_menu';
+    h_retries_allowed = 3;
+    results_date = '';
+    results_owner = '';
+
+    SET_FORMS FIELD '' (DISPLAYONLY(inquiry) = 0,
+                        REVERSE(inquiry) = 0,
+                        UNDERLINE(inquiry) = 1,
+                        DISPLAYONLY(industry) = 0,
+                        REVERSE(industry) = 0,
+                        UNDERLINE(industry) = 1,
+                        DISPLAYONLY(period) = 0,
+                        REVERSE(period) = 0,
+                        UNDERLINE(period) = 1);
+
+    g_help = CALLPROC msa_cp_getvar('PROD_HELP');
+
+    SELECT DBMSINFO('database') AS g_database;
+    SELECT user_name AS g_user_id FROM iidbconstants;
+
+    IF :g_user_id NOT LIKE 'piprod%'
+	THEN
+        ret_val = CALLPROC msa_fp_get_user_details (
+                  h_user_name       = BYREF(:g_user_name),
+                  h_user_id         = BYREF(:g_user_id),
+                  h_default_printer = BYREF(:g_printer),
+                  h_access_level    = BYREF(:g_access_level));
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+    ENDIF;
+
+
+}
+
+FIELD inquiry =
+{
+    IF inquiry <> 14 AND inquiry <> 15
+    THEN
+        MESSAGE 'Inquiry must be 14 or 15'
+        WITH STYLE = POPUP;
+        RESUME FIELD inquiry;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(inquiry) = 1,
+                        REVERSE(inquiry) = 1,
+                        UNDERLINE(inquiry) = 0);
+
+    RESUME FIELD industry;
+}
+
+FIELD industry =
+{
+    MESSAGE 'Checking Industry . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+	IF industry <> 15520 AND 
+	   industry <> 15980 AND
+	   industry <> 35110 AND
+	   industry <> 35120
+	THEN
+
+            SELECT industry
+            FROM   industry
+            WHERE  industry = :industry
+            AND    inquiry = :inquiry;
+
+	ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in checking industry table'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'This Industry does not exist for this Inquiry'
+        WITH STYLE = POPUP;
+        RESUME FIELD industry;
+    ENDIF;
+
+    g_inquiry = :inquiry;
+    g_industry = :industry;
+
+    /*------------------------------------------------------------------
+    Load Current Results Owner
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT a.user_name AS results_owner
+        FROM   passwords a,
+               industry b
+        WHERE  b.industry = :industry
+        AND    a.user_id = b.results_owner;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing industry'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        results_owner = 'UNKNOWN';
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(industry) = 1,
+                        REVERSE(industry) = 1,
+                        UNDERLINE(industry) = 0);
+
+    RESUME FIELD period;
+}
+
+FIELD period =
+{
+
+    MESSAGE 'Checking Results Details . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT    industry
+        FROM      industry_period
+        WHERE     period = :period
+        AND       industry = :industry
+        AND       inquiry = :inquiry;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error checking industry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Industry does not exist for this period'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+       Load periods into array
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC ARRAYCLEAR(g_period);
+
+    g_periods = 0;
+
+    SELECT    period AS h_period,
+              span_no
+    FROM      inquiry_period
+    WHERE     span_no <= (   SELECT    span_no
+                             FROM      inquiry_period
+                             WHERE     period = :period)
+    AND       inquiry = :g_inquiry
+    ORDER BY  span_no DESC
+    {
+        g_periods = g_periods + 1;
+        g_period[:g_periods].period = h_period;
+
+        IF g_inquiry = gc_asi AND (h_period = 199300 OR g_periods = 4)
+        THEN
+            ENDLOOP;
+        ENDIF;
+
+        IF g_inquiry = gc_qsi AND (h_period = 199303 OR g_periods = 5)
+        THEN
+            ENDLOOP;
+        ENDIF;
+    };
+
+    ret_val = CALLPROC check_inq_ing (
+              h_num_row_ck      = 1,
+              h_commit          = 'Y',
+              h_rollback        = 'N',
+              h_frpr_name       = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        MESSAGE 'System error in setting up span of periods'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Find Date of sim_table's creation
+    ------------------------------------------------------------------*/
+
+    t_cqpv = 'sim_' + VARCHAR(:industry) + '_' +
+             VARCHAR(:period) + '_cqpv';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT create_date AS results_date
+        FROM   iitables
+        WHERE  table_name = :t_cqpv;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing iitables'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Results table ' + :t_cqpv + ' does not exist'
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(period) = 1,
+                        REVERSE(period) = 1,
+                        UNDERLINE(period) = 0);
+    RESUME FIELD choice;
+
+}
+
+FIELD choice =
+{
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(inquiry));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Inquiry' WITH STYLE = POPUP;
+        RESUME FIELD inquiry;
+    ENDIF;
+
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(industry));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Industry' WITH STYLE = POPUP;
+        RESUME FIELD industry;
+    ENDIF;
+
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(period));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Period' WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    IF choice = 1
+    THEN
+        MESSAGE 'Imputation Ratios Selected . . .';
+        ret_val = CALLFRAME msach_fr_imp_ratios ();
+
+    ELSEIF choice = 2
+    THEN
+        MESSAGE 'Contributor Data Selected . . .';
+        ret_val = CALLFRAME msach_fr_aggregated ();
+
+    ELSEIF choice = 3
+    THEN
+        MESSAGE 'Revisions Selected . . .';
+        ret_val = CALLFRAME msach_fr_rev_quest (
+                  inquiry  = :inquiry,
+                  industry = :industry,
+                  period   = :period);
+
+    ELSEIF choice = 4
+    THEN
+        MESSAGE 'SPH Ratios Selected . . .';
+        ret_val = CALLFRAME msach_fr_sph_ratios ();
+
+    ENDIF;
+
+    msa_date = 'now';
+    RESUME FIELD choice;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    msa_date = 'now';
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'ClearFields' =
+{
+    CLEAR FIELD ALL;
+    SET_FORMS FIELD '' (DISPLAYONLY(inquiry) = 0,
+                        REVERSE(inquiry) = 0,
+                        UNDERLINE(inquiry) = 1,
+                        DISPLAYONLY(industry) = 0,
+                        REVERSE(industry) = 0,
+                        UNDERLINE(industry) = 1,
+                        DISPLAYONLY(period) = 0,
+                        REVERSE(period) = 0,
+                        UNDERLINE(period) = 1);
+    msa_date = 'now';
+    RESUME FIELD inquiry;
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}

@@ -1,0 +1,261 @@
+INITIALIZE (
+
+        h_old_simtable    = CHAR(21) NOT NULL,
+        h_new_simtable    = CHAR(21) NOT NULL,
+        h_num_rows        = INTEGER4 NOT NULL,
+        inquiry           = INTEGER1 NOT NULL,
+        h_position        = INTEGER4 NOT NULL) =
+
+DECLARE h_retries_allowed = INTEGER1 NOT NULL,
+        h_retries         = INTEGER1 NOT NULL,
+        h_retry_or_not    = CHAR(5) NOT NULL,
+        h_frpr_name       = VARCHAR(24) NOT NULL,
+        h_table           = VARCHAR(24) NOT NULL,
+        h_rows            = INTEGER4 NOT NULL,
+        h_field_name      = VARCHAR(24) NOT NULL,
+        h_params          = CHAR(18) NOT NULL,
+        ret_val           = INTEGER1 NOT NULL,
+
+        lp_load_table     = PROCEDURE RETURNING INTEGER
+
+{
+    msa_date = 'now';
+    h_retries_allowed = 3;
+    h_frpr_name = 'msach_fr_rev_cont';
+    h_table = 'cref_revisions';
+
+    SET_FORMS FIELD '' (MODE(tf) = 'READ');
+
+    ret_val = CALLPROC msach_fp_rev_cont (
+              inquiry        = :inquiry,
+              period         = :period,
+              h_table        = :h_table,
+              h_question     = :question,
+              difference     = BYREF(:difference),
+              perc_diff      = BYREF(:perc_diff),
+              h_new_simtable = :h_new_simtable,
+              h_old_simtable = :h_old_simtable);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_table ();
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    RESUME FIELD tf;
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'HELP',
+               FILE = :g_help + '/' + :h_frpr_name + '.hlp');
+
+}
+
+'PreviousQuestion' =
+{
+    msa_date = 'now';
+    IF :h_position = 1
+    THEN
+        MESSAGE 'There are no further questions'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_position = :h_position - 1;
+    question = :g_question_array[:h_position].question;
+
+    ret_val = CALLPROC msach_fp_rev_cont (
+              inquiry        = :inquiry,
+              period         = :period,
+              h_table        = :h_table,
+              h_question     = :question,
+              difference     = BYREF(:difference),
+              perc_diff      = BYREF(:perc_diff),
+              h_new_simtable = :h_new_simtable,
+              h_old_simtable = :h_old_simtable);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_table ();
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+}
+
+'NextQuestion' =
+{
+    msa_date = 'now';
+    IF :h_position = :h_num_rows
+    THEN
+        MESSAGE 'There are no further questions'
+        WITH STYLE = POPUP;
+        RESUME;
+    ENDIF;
+
+    h_position = :h_position + 1;
+    question = :g_question_array[:h_position].question;
+
+    ret_val = CALLPROC msach_fp_rev_cont (
+              inquiry        = :inquiry,
+              period         = :period,
+              h_table        = :h_table,
+              h_question     = :question,
+              difference     = BYREF(:difference),
+              perc_diff      = BYREF(:perc_diff),
+              h_new_simtable = :h_new_simtable,
+              h_old_simtable = :h_old_simtable);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    ret_val = CALLPROC lp_load_table ();
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'Contributor Info' =
+{
+  INQUIRE_FORMS FORM (h_field_name = FIELD);
+
+  IF :h_field_name <> 'tf'
+  THEN
+      MESSAGE 'Please highlight the required Contributor'
+      WITH STYLE = POPUP;
+      RESUME;
+  ENDIF;
+
+  INQUIRE_FORMS TABLE '' (h_rows = DATAROWS(tf));
+
+  IF h_rows = 0
+  THEN
+    MESSAGE 'Please highlight a Contributor'
+    WITH STYLE = POPUP;
+    RESUME;
+  ENDIF;
+
+  h_params = VARCHAR(:period) +' ' +VARCHAR(:tf.contributor_reference);
+
+  SELECT DBMSINFO('username') AS g_user_id;
+
+  IF g_user_id = 'produser'
+  OR g_user_id = 'prodlive'
+  THEN
+    MESSAGE 'DEBUG: period = {' +VARCHAR(:period) +'}' +X'0D'
+          + '       conref = {' +VARCHAR(:tf.contributor_reference) +'}' +X'0D'
+          + '       params = {' +VARCHAR(:h_params) +'}' 
+    WITH STYLE = POPUP;
+  ENDIF;
+
+  CALL APPLICATION(exec='$IMAGES/despatch_app msaeb_fr_desp_contrib',
+                   param=:h_params);
+
+  msa_date = 'now';
+
+}
+
+'End', KEY FRSKEY6 =
+{
+    ret_val = CALLPROC msa_fp_drop_table (h_table = :h_table);
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+    RETURN 0;
+}
+
+'QuickView', KEY FRSKEY7 =
+{
+    CALL APPLICATION (exec = '$IMAGES/quickview_app -numeric_overflow=ignore ');
+}
+
+/*---------------------------------------------------------------------
+                   L O C A L   P R O C E D U R E
+
+     Select from the table to the screen (as ORDERing is required)
+
+---------------------------------------------------------------------*/
+
+PROCEDURE lp_load_table () =
+
+{
+    /*-------------------------------------------------------------
+      Load screen table field from temporary table -
+      in a different order
+
+      Amended June 2000 to exclude contributors that have a differenec
+      of zero - RFC 537
+    -------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        tf = SELECT   contributor_reference,
+                      contributor_industry,
+                      previous_value,
+                      previous_acell,
+                      current_value,
+                      current_acell,
+                      difference,
+                      ABS(difference) AS hidden_difference
+             FROM     :h_table
+	     WHERE    ABS(difference) <> 0
+             ORDER BY hidden_difference DESC,
+                      contributor_reference;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in loading from array'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    question_count = VARCHAR(:h_position) + ' of ' + 
+                     VARCHAR(:h_num_rows);
+
+    REDISPLAY;
+
+    RETURN 0;
+}

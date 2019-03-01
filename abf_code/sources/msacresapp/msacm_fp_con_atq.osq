@@ -1,0 +1,153 @@
+/*----------------------------------------------------------------------
+Controls the running of the Construction based on Contributor Returned
+Data for ANNUAL CONTRIBUTORS TO QUARTERLY RESULTS (atq_link)
+----------------------------------------------------------------------*/
+
+PROCEDURE msacm_fp_con_atq () =
+
+DECLARE   ret_val             = INTEGER1 NOT NULL,
+          h_save_table        = VARCHAR(24) NOT NULL,
+          h_counter           = INTEGER4 NOT NULL,
+          curr_period         = INTEGER4 NOT NULL,
+          off_the_span_period = INTEGER4 NOT NULL,
+          earliest_period     = INTEGER4 NOT NULL,
+          h_frpr_name         = VARCHAR(24) NOT NULL
+{
+
+    h_frpr_name = 'msacm_fp_con_atq';
+    h_save_table = 'temp_cqpv_cons_atq';
+
+    ret_val = CALLPROC msacm_fp_log_message (
+       h_text = 'After quarterlies discontinued no action expected here.',
+       h_frpr_name = :h_frpr_name);
+
+    /*------------------------------------------------------------------
+    Create a table to store all constructions from cqpv for all
+    annual periods in the quarterly span.
+    Just annualise the span end and the span start:
+    e.g. span is 199612-199712, annual periods are 199600 - 199700
+         span is 199603-199703, annual periods are 199600 - 199700
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Creating cqpv-copy of ATQ Constructions . . .';
+
+    ret_val = CALLPROC msacm_fp_drop_table (
+                       h_table = :h_save_table);
+    IF ret_val = 9
+    THEN
+        RETURN 9;
+    ENDIF;
+
+    CREATE TABLE :h_save_table
+    AS SELECT    contributor_reference,
+                 period,
+                 question,
+                 avalue,
+                 acell
+    FROM         cqpv
+    WHERE        question_industry IN (
+                 SELECT industry FROM :g_results_industry)
+
+    AND          period BETWEEN (:g_period[:g_periods].period/100*100 )
+                            AND (:g_period[1].period/100*100)
+
+    AND          MOD(question,10) IN (2,4)
+    AND          contributor_inquiry = :gc_asi
+    AND          acell IN ('C','A','B');
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error creating ' + :h_save_table,
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+
+    ELSEIF ret_val = 1
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'No ATQ Construction to be carried out',
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 0;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Replace all C A Bs on cqpv with B and zero
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Zeroising ATQ Constructions on cqpv . . .';
+
+    UPDATE       cqpv
+    SET          avalue = 0,
+                 acell = 'B'
+    WHERE        question_industry IN (
+                 SELECT industry FROM :g_results_industry)
+
+    AND          period BETWEEN (:g_period[:g_periods].period/100*100 )
+                            AND (:g_period[1].period/100*100)
+
+    AND          contributor_inquiry = :gc_asi
+    AND          MOD(question,10) IN (2,4)
+    AND          acell IN ('C','A','B');
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error zeroising ATQ constructions on cqpv',
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Constructing from Contributor Previous Values:
+
+    Construct for each period in the span (oldest to newest) and
+    re-insert into cqpv.
+
+    Run once for every unique annualised period in the quarterly span:
+    e.g span is 199612-199712, it will run twice (199600 & 199700)
+    ------------------------------------------------------------------*/
+
+    h_counter = g_periods;
+    curr_period = 0;
+
+    WHILE h_counter >= 1
+    DO
+
+        IF curr_period <> :g_period[:h_counter].period / 100 * 100
+        THEN
+            curr_period = :g_period[:h_counter].period / 100 * 100;
+
+            ret_val = CALLPROC msacm_fp_con_cont (
+                      h_inquiry           = :gc_asi,
+                      curr_period         = :curr_period);
+
+            IF ret_val <> 0
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                          h_text = 'Error in calling con_cont for ' +
+                                   VARCHAR(curr_period),
+                          h_frpr_name  = :h_frpr_name);
+                RETURN 9;
+            ENDIF;
+
+        ENDIF;
+
+        h_counter = h_counter - 1;
+
+    ENDWHILE;
+
+    RETURN 0;
+}

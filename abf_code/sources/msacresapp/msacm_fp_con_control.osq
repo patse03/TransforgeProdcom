@@ -1,0 +1,771 @@
+/*----------------------------------------------------------------------
+Controlling Program for Batch Construction:
+
+(1)  Construct on Previous Contributor Returned Data (same inquiry)
+(2)  Calculate mean UVs
+(3)  Construct on mean UVs (same inquiry)
+(3A) Construct on mean UVs (same inquiry) updating impuvs that = 1
+(4)  Copy constructions to 05 06 08 (same inquiry)
+
+(5A) Construct on Previous Contributor Returned Data (MidCarryout)
+(5B) Construct on mean UVs (MidCarryout)
+(5C) Copy constructions to 05 06 08 (MidCarryout)
+
+(6A) Construct on Previous Contributor Returned Data (ATQ)
+(6B) Construct on mean UVs (ATQ)
+(6C) Copy constructions to 05 06 08 (ATQ)
+----------------------------------------------------------------------*/
+
+PROCEDURE msacm_fp_con_control () =
+
+DECLARE   ret_val          = INTEGER1 NOT NULL,
+          h_mean_table     = VARCHAR(24) NOT NULL,
+          h_avg_table1     = VARCHAR(24) NOT NULL,
+          h_avg_table2     = VARCHAR(24) NOT NULL,
+          h_counter        = INTEGER4 NOT NULL,
+          curr_period      = INTEGER4 NOT NULL,
+          h_frpr_name      = VARCHAR(24) NOT NULL
+{
+
+    h_frpr_name = 'msacm_fp_con_control';
+    h_mean_table = 'mean_unit_values';
+    h_avg_table1 = 'temp_avg_mean_uv1';
+    h_avg_table2 = 'temp_avg_mean_uv2';
+
+    /*------------------------------------------------------------------
+    (1) Construct for same-inquiry contributors based on contributor
+    returned data
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC msacm_fp_con_cont_run ();
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    (2) Constructing for Means. The Means are calculated from
+    same-inquiry contributors, and are used for all constructions,
+    whether same-inquiry, MidCarryout or atq.
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Deleting from ' + :h_mean_table + ' . . .';
+
+    DELETE FROM :h_mean_table
+    WHERE       question_industry IN (
+                SELECT industry FROM :g_results_industry)
+    AND         period BETWEEN :g_period[:g_periods].period
+                           AND :g_period[1].period;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error deleting from ' + :h_mean_table,
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    For each period in the span, call the next procedure which will
+    calculate the mean UV for every question and insert it into the
+    main mean table
+    ------------------------------------------------------------------*/
+
+    h_counter = g_periods;
+
+    WHILE h_counter >= 1
+    DO
+
+        curr_period = :g_period[:h_counter].period;
+
+        ret_val = CALLPROC msacm_fp_con_mean (
+                  h_mean_table  = :h_mean_table,
+                  curr_period     = :curr_period);
+
+        IF ret_val <> 0
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error in calling con_mean for ' +
+                               VARCHAR(curr_period),
+                      h_frpr_name  = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        h_counter = h_counter - 1;
+
+    ENDWHILE;
+
+    /*------------------------------------------------------------------
+    (3) Update the mean unit values (same-inquiry contributors)
+    Update the contributors on cqpv and set their cell codes to A
+    (It's the 02/04 rows we're updating, so
+           cqpv a = 01 row
+           cqpv b = 02/04 row
+           mean_unit_values c = 02/04 row)
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Updating Mean UVs on cqpv . . .';
+
+    UPDATE cqpv b
+    FROM   cqpv a,
+           :h_mean_table c
+    SET    avalue = a.avalue * 1000.0 / c.unit_value + 0.5,
+           acell = 'A'
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.period = b.period
+    AND    a.period = c.period
+    AND    a.period BETWEEN :g_period[:g_periods].period
+                        AND :g_period[1].period
+    AND    b.acell = 'B'
+    AND    b.question = c.question
+    AND    a.question = c.question / 10 * 10 + 1
+    AND    a.contributor_inquiry = :g_inquiry
+    AND    a.contributor_inquiry = b.contributor_inquiry
+    AND    b.question_industry IN (
+           SELECT industry FROM :g_results_industry);
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error updating means on cqpv',
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    (3A) Update the mean unit values (same-inquiry contributors)
+    for imputed volumes where the uv has defaulted to 1. New
+    2009.
+    Update the contributors on cqpv and set their cell codes to I
+    (It's the 02/04 rows we're updating, so
+           cqpv a = 01 row
+           cqpv b = 02/04 row
+           mean_unit_values c = 02/04 row)
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Updating Mean IMPUVs on cqpv . . .';
+
+    UPDATE cqpv b
+    FROM   cqpv a,
+           :h_mean_table c
+    SET    avalue = a.avalue * 1000.0 / c.unit_value + 0.5,
+           acell = 'I'
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.period = b.period
+    AND    a.period = c.period
+    AND    a.period BETWEEN :g_period[:g_periods].period
+                        AND :g_period[1].period
+    AND    b.acell = 'I'
+    AND    b.avalue = 0
+    AND    b.question = c.question
+    AND    a.question = c.question / 10 * 10 + 1
+    AND    a.contributor_inquiry = :g_inquiry
+    AND    a.contributor_inquiry = b.contributor_inquiry
+    AND    b.question_industry IN (
+           SELECT industry FROM :g_results_industry);
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error updating means for impuvs on cqpv',
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    (4) Copy the 02 Value/Cell Codes into any 05s & 08s with C A B
+        Copy the 04 Value/Cell Codes into any 06s with C A B
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Updating 05 & 08 Volumes . . .';
+
+    UPDATE cqpv a
+    FROM   cqpv b
+    SET    avalue = b.avalue,
+           acell = b.acell
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.period = b.period
+    AND    a.period BETWEEN :g_period[:g_periods].period
+                        AND :g_period[1].period
+    AND    a.contributor_inquiry = :g_inquiry
+    AND    a.contributor_inquiry = b.contributor_inquiry
+    AND    a.question_industry IN (
+           SELECT industry FROM :g_results_industry)
+    AND    MOD(a.question,10) IN (5,8)
+    AND    a.acell IN ('C','A','B')
+    AND    b.question = a.question / 10 * 10 + 2;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error updating 05s/08s on cqpv',
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+/*#################################################################
+undo the above action for annualised quarterly data.
+#################################################################*/
+
+    UPDATE cqpv a
+    FROM   annualised_cqpv b
+    SET    avalue = b.avalue,
+           acell = b.acell
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.period = b.period
+    AND    a.question = b.question
+    AND    a.period BETWEEN :g_period[:g_periods].period
+                        AND :g_period[1].period
+    AND    a.contributor_inquiry = :g_inquiry
+    AND    a.contributor_inquiry = b.contributor_inquiry
+    AND    a.question_industry IN (
+           SELECT industry FROM :g_results_industry)
+    AND    MOD(a.question,10) IN (5,8)
+    AND    a.acell IN ('C','A','B');
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error updating 05s/08s on cqpv',
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    MESSAGE 'Updating 06 Volumes . . .';
+
+    UPDATE cqpv a
+    FROM   cqpv b
+    SET    avalue = b.avalue,
+           acell = b.acell
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.period = b.period
+    AND    a.period BETWEEN :g_period[:g_periods].period
+                        AND :g_period[1].period
+    AND    a.contributor_inquiry = :g_inquiry
+    AND    a.contributor_inquiry = b.contributor_inquiry
+    AND    a.question_industry IN (
+           SELECT industry FROM :g_results_industry)
+    AND    MOD(a.question,10) = 6
+    AND    a.acell IN ('C','A','B')
+    AND    b.question = a.question / 10 * 10 + 4;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error updating 06s on cqpv',
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+/*#################################################################
+undo the above action for annualised quarterly data.
+#################################################################*/
+
+    UPDATE cqpv a
+    FROM   annualised_cqpv b
+    SET    avalue = b.avalue,
+           acell = b.acell
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.period = b.period
+    AND    a.question = b.question
+    AND    a.period BETWEEN :g_period[:g_periods].period
+                        AND :g_period[1].period
+    AND    a.contributor_inquiry = :g_inquiry
+    AND    a.contributor_inquiry = b.contributor_inquiry
+    AND    a.question_industry IN (
+           SELECT industry FROM :g_results_industry)
+    AND    MOD(a.question,10) = 6
+    AND    a.acell IN ('C','A','B');
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error updating 06s on cqpv',
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    For very small values the constructed volume may result in a 
+    figure < 1 . This means that the system rounds it to zero. In these
+    cases it has been agreed to set the volume to 1
+    ------------------------------------------------------------------*/
+
+    UPDATE cqpv a
+    FROM   cqpv b
+    SET    avalue = 1        
+    WHERE  a.contributor_reference = b.contributor_reference
+    AND    a.period = b.period
+    AND    a.period BETWEEN :g_period[:g_periods].period
+                        AND :g_period[1].period
+    AND    a.contributor_inquiry = :g_inquiry
+    AND    a.contributor_inquiry = b.contributor_inquiry
+    AND    a.question_industry IN (
+           SELECT industry FROM :g_results_industry)
+    AND    MOD(a.question,10) IN (2,4,5,6,8)
+    AND    a.acell IN ('A')
+    AND    a.avalue = 0
+    AND    b.question = a.question / 10 * 10 + 1;
+
+    ret_val = CALLPROC msacm_fp_check_inq_ing(
+              h_num_row_ck = 1,
+              h_rollback   = 'N',
+              h_commit     = 'Y',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        ret_val = CALLPROC msacm_fp_log_message (
+                  h_text = 'Error updating volumes to 1 where they equal 0 and A on cqpv',
+                  h_frpr_name  = :h_frpr_name);
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    (5A) MidCarryout
+         Quarterly Contributors to Annual Results
+         Construction based on Contributor Returned Data
+    ------------------------------------------------------------------*/
+
+    IF :g_inquiry = :gc_asi
+    THEN
+        ret_val = CALLPROC msacm_fp_con_mid ();
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        (5B) MidCarryout
+             Quarterly Contributors to Annual Results
+             Construction based on Mean Data
+        --------------------------------------------------------------*/
+
+        MESSAGE 'Updating MidCarryout Mean UVs on cqpv . . .';
+
+        UPDATE cqpv b
+        FROM   cqpv a,
+               :h_mean_table c
+        SET    avalue = a.avalue * 1000.0 / c.unit_value + 0.5,
+               acell = 'A'
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.period = b.period
+        AND    a.period / 100 * 100 = c.period
+        AND    a.period BETWEEN (:g_period[:g_periods].period + 3)
+                            AND (:g_period[1].period + 12)
+        AND    b.acell = 'B'
+        AND    b.question = c.question
+        AND    a.question = c.question / 10 * 10 + 1
+        AND    a.contributor_inquiry = :gc_qsi
+        AND    a.contributor_inquiry = b.contributor_inquiry
+        AND    a.question_industry IN (
+               SELECT industry FROM :g_results_industry);
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating MidC means on cqpv',
+                      h_frpr_name  = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        (5C) MidCarryout
+        Copy the 02 Value/Cell Codes into any 05s & 08s with C A B
+        Copy the 04 Value/Cell Codes into any 06s with C A B
+        --------------------------------------------------------------*/
+    
+        MESSAGE 'Updating MidCarryout 05 & 08 Volumes . . .';
+    
+        UPDATE cqpv a
+        FROM   cqpv b
+        SET    avalue = b.avalue,
+               acell = b.acell
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.period = b.period
+        AND    a.period BETWEEN (:g_period[:g_periods].period + 3)
+                            AND (:g_period[1].period + 12)
+        AND    a.contributor_inquiry = :gc_qsi
+        AND    a.contributor_inquiry = b.contributor_inquiry
+        AND    a.question_industry IN (
+               SELECT industry FROM :g_results_industry)
+        AND    MOD(a.question,10) IN (5,8)
+        AND    a.acell IN ('C','A','B')
+        AND    b.question = a.question / 10 * 10 + 2;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating MidC 05s/08s on cqpv',
+                      h_frpr_name  = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        MESSAGE 'Updating MidCarryout 06 Volumes . . .';
+    
+        UPDATE cqpv a
+        FROM   cqpv b
+        SET    avalue = b.avalue,
+               acell = b.acell
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.period = b.period
+        AND    a.period BETWEEN (:g_period[:g_periods].period + 3)
+                            AND (:g_period[1].period + 12)
+        AND    a.contributor_inquiry = :gc_qsi
+        AND    a.contributor_inquiry = b.contributor_inquiry
+        AND    a.question_industry IN (
+               SELECT industry FROM :g_results_industry)
+        AND    MOD(a.question,10) = 6
+        AND    a.acell IN ('C','A','B')
+        AND    b.question = a.question / 10 * 10 + 4;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating MidC 06s on cqpv',
+                      h_frpr_name  = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    (6A) ATQ
+         Annual Contributors to Quarterly Results
+         Construction based on Contributor Returned Data
+    ------------------------------------------------------------------*/
+
+    IF :g_inquiry = :gc_qsi
+    THEN
+        ret_val = CALLPROC msacm_fp_con_atq ();
+        IF ret_val <> 0
+        THEN
+            RETURN ret_val;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        (6B) ATQ
+             Annual Contributors to Quarterly Results
+             Construction based on Mean Data
+
+             (The mean data is by quarter, so take the average of
+              the quarters to make the annual figure)
+        --------------------------------------------------------------*/
+
+        MESSAGE 'Creating ATQ Mean Average 1 . . .';
+
+        ret_val = CALLPROC msacm_fp_drop_table (
+                           h_table = :h_avg_table1);
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        CREATE TABLE :h_avg_table1
+        AS SELECT    question,
+                     period / 100 * 100 AS period,
+                     unit_value
+        FROM         :h_mean_table
+        WHERE        question_industry IN (
+                     SELECT industry FROM :g_results_industry)
+        AND          period BETWEEN :g_period[:g_periods].period
+                                AND :g_period[1].period;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error creating ' + :h_avg_table1,
+                      h_frpr_name  = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        Avg Table 1 has the quarterly periods expressed as annual ones.
+        Avg Table 2 is then the average of these annual periods.
+        --------------------------------------------------------------*/
+
+        MESSAGE 'Creating ATQ Mean Average 2 . . .';
+
+        ret_val = CALLPROC msacm_fp_drop_table (
+                           h_table = :h_avg_table2);
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        CREATE TABLE :h_avg_table2
+        AS SELECT    question,
+                     period,
+                     AVG(unit_value) AS unit_value
+        FROM         :h_avg_table1
+        GROUP BY     question,
+                     period;
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error creating ' + :h_avg_table2,
+                      h_frpr_name  = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        Update from the average of the mean UVs
+        --------------------------------------------------------------*/
+
+        MESSAGE 'Updating ATQ Mean UVs on cqpv . . .';
+
+        UPDATE cqpv b
+        FROM   cqpv a,
+               :h_avg_table2 c
+        SET    avalue = a.avalue * 1000.0 / c.unit_value + 0.5,
+               acell = 'A'
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.period = b.period
+        AND    a.period = c.period
+        AND    b.acell = 'B'
+        AND    b.question = c.question
+        AND    a.question = c.question / 10 * 10 + 1
+        AND    a.contributor_inquiry = :gc_asi
+        AND    a.contributor_inquiry = b.contributor_inquiry
+        AND    a.question_industry IN (
+               SELECT industry FROM :g_results_industry);
+
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating ATQ means on cqpv',
+                      h_frpr_name  = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        ret_val = CALLPROC msacm_fp_drop_table (
+                           h_table = :h_avg_table1);
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        ret_val = CALLPROC msacm_fp_drop_table (
+                           h_table = :h_avg_table2);
+        IF ret_val = 9
+        THEN
+            RETURN 9;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        (6C) ATQ
+        Copy the 02 Value/Cell Codes into any 05s & 08s with C A B
+        Copy the 04 Value/Cell Codes into any 06s with C A B
+        --------------------------------------------------------------*/
+    
+        MESSAGE 'Updating ATQ 05 & 08 Volumes . . .';
+    
+        UPDATE cqpv a
+        FROM   cqpv b
+        SET    avalue = b.avalue,
+               acell = b.acell
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.period = b.period
+        AND    a.period BETWEEN (:g_period[:g_periods].period/100*100 )
+                            AND (:g_period[1].period/100*100)
+        AND    a.contributor_inquiry = :gc_asi
+        AND    a.contributor_inquiry = b.contributor_inquiry
+        AND    a.question_industry IN (
+               SELECT industry FROM :g_results_industry)
+        AND    MOD(a.question,10) IN (5,8)
+        AND    a.acell IN ('C','A','B')
+        AND    b.question = a.question / 10 * 10 + 2;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating ATQ 05s/08s on cqpv',
+                      h_frpr_name  = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+    
+        MESSAGE 'Updating ATQ 06 Volumes . . .';
+    
+        UPDATE cqpv a
+        FROM   cqpv b
+        SET    avalue = b.avalue,
+               acell = b.acell
+        WHERE  a.contributor_reference = b.contributor_reference
+        AND    a.period = b.period
+        AND    a.period BETWEEN (:g_period[:g_periods].period/100*100 )
+                            AND (:g_period[1].period/100*100)
+        AND    a.contributor_inquiry = :gc_asi
+        AND    a.contributor_inquiry = b.contributor_inquiry
+        AND    a.question_industry IN (
+               SELECT industry FROM :g_results_industry)
+        AND    MOD(a.question,10) = 6
+        AND    a.acell IN ('C','A','B')
+        AND    b.question = a.question / 10 * 10 + 4;
+    
+        ret_val = CALLPROC msacm_fp_check_inq_ing(
+                  h_num_row_ck = 1,
+                  h_rollback   = 'N',
+                  h_commit     = 'Y',
+                  h_frpr_name  = :h_frpr_name);
+    
+        IF ret_val = 9
+        THEN
+            ret_val = CALLPROC msacm_fp_log_message (
+                      h_text = 'Error updating ATQ 06s on cqpv',
+                      h_frpr_name  = :h_frpr_name);
+            RETURN 9;
+        ENDIF;
+
+        /*--------------------------------------------------------------
+        Once cqpv has its ATQ Constructions reinstated, put them on the
+        asi_to_qsi_link table with the same % split as their values
+        --------------------------------------------------------------*/
+
+        h_counter = 1;
+
+        WHILE h_counter <= 4
+        DO
+
+            MESSAGE 'Updating ATQ Constructions on ATQ_Link' +
+                    ' for Quarter ' + VARCHAR(h_counter) + ' . . .';
+
+            /*----------------------------------------------------------
+            cqpv has the annual construction for the volumes, so get
+            the UV (c.avalue/d.avalue) and apply it to the a.value
+            on the atq_link for each quarter, to get a volume.
+            (The quarters values may not be a 25%-25%-25%-25% split so
+            their volumes should also represent this split).
+            ----------------------------------------------------------*/
+
+            UPDATE asi_to_qsi_link b
+            FROM   asi_to_qsi_link a,
+                   cqpv c,
+                   cqpv d
+            SET    avalue = a.avalue * 1.0 / (c.avalue * 1.0 / d.avalue),
+                   acell = d.acell
+            WHERE  a.contributor_reference = b.contributor_reference
+            AND    a.contributor_reference = c.contributor_reference
+            AND    a.contributor_reference = d.contributor_reference
+            AND    a.qsi_period = b.qsi_period
+            AND    a.asi_period = c.period
+            AND    a.asi_period = d.period
+            AND    a.qsi_period = a.asi_period + (3 * :h_counter) 
+            AND    a.asi_period BETWEEN (:g_period[:g_periods].period/100*100 )
+                                    AND (:g_period[1].period/100*100)
+            AND    d.acell IN ('C','A','B')
+            AND    MOD(b.question,10) IN (2,4,5,6,8)
+            AND    b.question = d.question
+            AND    a.question = b.question / 10 * 10 + 1
+            AND    a.question = c.question
+            AND    c.contributor_inquiry = :gc_asi
+            AND    c.contributor_inquiry = d.contributor_inquiry
+            AND    a.question_industry IN (
+                   SELECT industry FROM :g_results_industry);
+
+            ret_val = CALLPROC msacm_fp_check_inq_ing(
+                      h_num_row_ck = 1,
+                      h_rollback   = 'N',
+                      h_commit     = 'Y',
+                      h_frpr_name  = :h_frpr_name);
+    
+            IF ret_val = 9
+            THEN
+                ret_val = CALLPROC msacm_fp_log_message (
+                          h_text = 'Error updating asi_to_qsi_link' +
+                                   ' for Qtr ' + VARCHAR(h_counter),
+                          h_frpr_name  = :h_frpr_name);
+                RETURN 9;
+            ENDIF;
+
+            h_counter = h_counter + 1;
+
+        ENDWHILE;
+
+    ENDIF;
+
+    RETURN 0;
+}
