@@ -1,0 +1,841 @@
+/*----------------------------------------------------------------------
+  Finds contributors whose names/addresses contain a specified string
+----------------------------------------------------------------------*/
+
+INITIALIZE =
+
+DECLARE     ret_val           = INTEGER NOT NULL,
+            allrows           = INTEGER4 NOT NULL,
+            current_row       = INTEGER4 NOT NULL,
+            c_array           = ARRAY OF contributor_type,
+            h_retries         = INTEGER1 NOT NULL,
+            h_retries_allowed = INTEGER1 NOT NULL,
+            h_retry_or_not    = VARCHAR(5) NOT NULL,
+            h_frpr_name       = VARCHAR(25) NOT NULL,
+            search_array      = ARRAY OF word_type,
+            h_letter          = CHAR(1) NOT NULL,
+            h_letter_counter  = INTEGER4 NOT NULL,
+            h_counter         = INTEGER4 NOT NULL,
+            h_no_search       = INTEGER4 NOT NULL,
+            search            = VARCHAR(100) NOT NULL,
+            s1                = VARCHAR(100) NOT NULL,
+            s2                = VARCHAR(100) NOT NULL,
+            s3                = VARCHAR(100) NOT NULL,
+            s4                = VARCHAR(100) NOT NULL,
+            s5                = VARCHAR(100) NOT NULL,
+            h_leftmost        = VARCHAR(100) NOT NULL,
+            h_add_name1       = CHAR(35) NOT NULL,
+            h_add_name2       = CHAR(35) NOT NULL,
+            h_add_name3       = CHAR(35) NOT NULL,
+            h_add_tradstyle1  = CHAR(35) NOT NULL,
+            h_add_tradstyle2  = CHAR(35) NOT NULL,
+            h_add_tradstyle3  = CHAR(35) NOT NULL,
+            h_add_line1       = CHAR(35) NOT NULL,
+            h_add_line2       = CHAR(35) NOT NULL,
+            h_add_line3       = CHAR(35) NOT NULL,
+            h_add_line4       = CHAR(35) NOT NULL,
+            h_add_line5       = CHAR(35) NOT NULL,
+            h_add_postcode    = CHAR(35) NOT NULL,
+            h_industry        = INTEGER4 NOT NULL,
+            h_inquiry         = INTEGER1 NOT NULL,
+            h_ind_text        = CHAR(60) NOT NULL,
+            h_table           = CHAR(16) NOT NULL,
+            keyresp           = INTEGER1 NOT NULL,
+            lp_setup_screen   = PROCEDURE RETURNING INTEGER
+{
+    g_help = CALLPROC msa_cp_getvar('PROD_HELP');
+
+    h_table = 'contributor_word';
+    h_frpr_name = 'msas_fr_contrib_lookup';
+    h_retries_allowed   = 3;
+    msa_date = 'now';
+
+    SET_FORMS FIELD '' (INVISIBLE(contributor_count)= 1,
+                        INVISIBLE(country)= 1,
+                        INVISIBLE(key_disp)= 1,
+                        DISPLAYONLY(word) = 0,
+                        REVERSE(word) = 0,
+                        UNDERLINE(word) = 1);
+
+    current_row = 0;
+    allrows = 0;
+
+    MESSAGE 'Checking Date of Table . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < :h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+        h_retries = :h_retries + 1;
+
+        SELECT create_date
+        FROM   iitables
+        WHERE  table_name = :h_table;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_rollback        = 'N',
+                  h_commit          = 'Y',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error accessing iitables'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Error finding creation date of ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'help',
+               FILE    = :g_help + '/' + :h_frpr_name + '.hlp');
+}
+
+'Clear' =
+{
+    CLEAR FIELD ref_message, ind_message, add1, add2, add3, add4, add5,
+                add6, add7, add8, add9, add10, add11, add12,
+                word, contributor_count ;
+
+    msa_date = 'now';
+    SET_FORMS FIELD '' (INVISIBLE(contributor_count)= 1,
+                        INVISIBLE(country)= 1,
+                        INVISIBLE(key_disp)= 1,
+                        DISPLAYONLY(word) = 0,
+                        REVERSE(word) = 0,
+                        UNDERLINE(word) = 1);
+    current_row = 0;
+    allrows = 0;
+    RESUME FIELD word;
+}
+
+'Previous' =
+{
+    IF :current_row - 1 <= 0
+    THEN
+        MESSAGE 'There are no more contributors'
+        WITH STYLE = POPUP;
+        RESUME FIELD word;
+    ENDIF;
+
+    current_row = :current_row - 1;
+
+    ret_val = CALLPROC lp_setup_screen;
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'Next' =
+{
+    IF :current_row + 1 > allrows
+    THEN
+        MESSAGE 'There are no more contributors'
+        WITH STYLE = POPUP;
+        RESUME FIELD word;
+    ENDIF;
+
+    current_row = :current_row + 1;
+
+    ret_val = CALLPROC lp_setup_screen;
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'Go', KEY FRSKEY4 =
+{
+    /*------------------------------------------------------------------
+    Build up the search string (could have &'s in it) into arrays: max 5
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC ARRAYCLEAR(search_array);
+
+    IF LEFT(word,LENGTH(word)) = ''
+    THEN
+        MESSAGE 'Nothing to search for'
+        WITH STYLE = POPUP;
+        RESUME FIELD word;
+    ENDIF;
+
+    search = LEFT(word,LENGTH(word));
+    h_counter = 0;
+    h_letter_counter = 1;
+    h_leftmost = '';
+
+    WHILE h_letter_counter <= LENGTH(search)
+    DO
+        h_letter = CHAREXTRACT(search,h_letter_counter);
+        IF h_letter = '&'
+        THEN
+            IF LENGTH(h_leftmost) > 0
+            THEN
+                INSERTROW search_array[h_counter] (word = h_leftmost);
+                h_leftmost = '';
+                h_counter = h_counter + 1;
+            ENDIF;
+
+        ELSEIF h_letter <> ' '
+        THEN
+            h_leftmost = CONCAT(h_leftmost, h_letter);
+        ENDIF;
+        h_letter_counter = h_letter_counter + 1;
+    ENDWHILE;
+    IF LENGTH(h_leftmost) > 0
+    THEN
+        INSERTROW search_array[h_counter] (word = h_leftmost);
+        h_leftmost = '';
+    ENDIF;
+
+    h_no_search = CALLPROC ARRAYALLROWS(search_array);
+
+    IF h_no_search > 5
+    THEN
+        h_no_search = 5;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Redisplay the re-built search string (the variable word)
+    and add a '%' to each search for the SQL statement
+    ------------------------------------------------------------------*/
+
+    s1 = '';
+    s2 = '';
+    s3 = '';
+    s4 = '';
+    s5 = '';
+
+    word = search_array[1].word;
+    s1 = search_array[1].word + '%';
+
+    IF h_no_search > 1
+    THEN
+        s2 = search_array[2].word + '%';
+        word = word + '&' + search_array[2].word;
+        IF h_no_search > 2
+        THEN
+            s3 = search_array[3].word + '%';
+            word = word + '&' + search_array[3].word;
+            IF h_no_search > 3
+            THEN
+                s4 = search_array[4].word + '%';
+                word = word + '&' + search_array[4].word;
+                IF h_no_search > 4
+                THEN
+                    s5 = search_array[5].word + '%';
+                    word = word + '&' + search_array[5].word;
+                ENDIF;
+            ENDIF;
+        ENDIF;
+    ENDIF;
+
+    CLEAR FIELD ref_message, ind_message, add1, add2, add3, add4, add5,
+                add6, add7, add8, add9, add10, add11, add12;
+
+    current_row = 0;
+
+    ret_val = CALLPROC ARRAYCLEAR(c_array);
+
+    MESSAGE 'Searching . . .';
+
+    SET_FORMS FIELD '' (INVISIBLE(contributor_count)= 0,
+                        INVISIBLE(country)= 1,
+                        INVISIBLE(key_disp)= 1);
+    REDISPLAY;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < :h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+        h_retries = :h_retries + 1;
+
+        IF h_no_search = 1
+        THEN
+            c_array = SELECT contributor_reference
+                      FROM   :h_table
+                      WHERE  word LIKE :s1
+        ELSEIF h_no_search = 2
+        THEN
+            c_array = SELECT contributor_reference
+                      FROM   :h_table
+                      WHERE  word LIKE :s1
+                      AND    contributor_reference IN (
+                             SELECT contributor_reference
+                             FROM   :h_table
+                             WHERE word LIKE :s2);
+        ELSEIF h_no_search = 3
+        THEN
+            c_array = SELECT contributor_reference
+                      FROM   :h_table
+                      WHERE  word LIKE :s1
+                      AND    contributor_reference IN (
+                             SELECT contributor_reference
+                             FROM   :h_table
+                             WHERE word LIKE :s2)
+                      AND    contributor_reference IN (
+                             SELECT contributor_reference
+                             FROM   :h_table
+                             WHERE word LIKE :s3);
+        ELSEIF h_no_search = 4
+        THEN
+            c_array = SELECT contributor_reference
+                      FROM   :h_table
+                      WHERE  word LIKE :s1
+                      AND    contributor_reference IN (
+                             SELECT contributor_reference
+                             FROM   :h_table
+                             WHERE word LIKE :s2)
+                      AND    contributor_reference IN (
+                             SELECT contributor_reference
+                             FROM   :h_table
+                             WHERE word LIKE :s3)
+                      AND    contributor_reference IN (
+                             SELECT contributor_reference
+                             FROM   :h_table
+                             WHERE word LIKE :s4);
+        ELSE
+            c_array = SELECT contributor_reference
+                      FROM   :h_table
+                      WHERE  word LIKE :s1
+                      AND    contributor_reference IN (
+                             SELECT contributor_reference
+                             FROM   :h_table
+                             WHERE word LIKE :s2)
+                      AND    contributor_reference IN (
+                             SELECT contributor_reference
+                             FROM   :h_table
+                             WHERE word LIKE :s3)
+                      AND    contributor_reference IN (
+                             SELECT contributor_reference
+                             FROM   :h_table
+                             WHERE word LIKE :s4)
+                      AND    contributor_reference IN (
+                             SELECT contributor_reference
+                             FROM   :h_table
+                             WHERE word LIKE :s5);
+        ENDIF;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_rollback        = 'N',
+                  h_commit          = 'Y',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error accessing ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    allrows = CALLPROC ARRAYALLROWS(c_array);
+
+    IF allrows = 0
+    THEN
+        MESSAGE 'No contributors were found using this search string'
+        WITH STYLE = POPUP;
+        CLEAR FIELD word, contributor_count;
+        RESUME FIELD word;
+    ENDIF;
+
+    SET_FORMS FIELD '' (DISPLAYONLY(word) = 1,
+                        REVERSE(word) = 1,
+                        UNDERLINE(word) = 0);
+
+    current_row = 1;
+
+    ret_val = CALLPROC lp_setup_screen;
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+                   L O C A L   P R O C E D U R E S
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_setup_screen () =
+{
+
+    contributor_count = SQUEEZE( 'Contributor ' + CHAR(:current_row) +
+                       ' of ' + CHAR(:allrows));
+
+    SET_FORMS FIELD '' (INVISIBLE(contributor_count)= 0,
+                        INVISIBLE(country)= 1,
+                        INVISIBLE(key_disp)= 1);
+
+    CLEAR FIELD ref_message, ind_message, add1, add2, add3, add4, add5,
+                add6, add7, add8, add9, add10, add11, add12;
+
+    msa_date = 'now';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < :h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+        h_retries = :h_retries + 1;
+
+        SELECT UPPERCASE(add_name1) AS h_add_name1,
+               UPPERCASE(add_name2) AS h_add_name2,
+               UPPERCASE(add_name3) AS h_add_name3,
+               UPPERCASE(add_tradstyle1) AS h_add_tradstyle1,
+               UPPERCASE(add_tradstyle2) AS h_add_tradstyle2,
+               UPPERCASE(add_tradstyle3) AS h_add_tradstyle3,
+               UPPERCASE(add_line1) AS h_add_line1,
+               UPPERCASE(add_line2) AS h_add_line2,
+               UPPERCASE(add_line3) AS h_add_line3,
+               UPPERCASE(add_line4) AS h_add_line4,
+               UPPERCASE(add_line5) AS h_add_line5,
+               UPPERCASE(add_postcode) AS h_add_postcode
+        FROM   contributor
+        WHERE  contributor_reference = :c_array[:current_row].contributor_reference;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_rollback        = 'N',
+                  h_commit          = 'Y',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error finding contributor ' +
+                VARCHAR(:c_array[:current_row].contributor_reference)
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Error finding contributor ' +
+                 VARCHAR(:c_array[:current_row].contributor_reference)
+        WITH STYLE = POPUP;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Set up address, losing empty space
+    ------------------------------------------------------------------*/
+
+    IF :h_add_name1 <> ''
+    THEN
+        add1 = :h_add_name1;
+    ENDIF;
+
+    IF :h_add_name2 <> ''
+    THEN
+        IF add1 = '' THEN add1 = :h_add_name2;
+                     ELSE add2 = :h_add_name2;
+        ENDIF;
+    ENDIF;
+
+    IF :h_add_name3 <> ''
+    THEN
+        IF     add1 = '' THEN add1 = :h_add_name3;
+        ELSEIF add2 = '' THEN add2 = :h_add_name3;
+                         ELSE add3 = :h_add_name3;
+        ENDIF;
+    ENDIF;
+
+    IF :h_add_tradstyle1 <> ''
+    THEN
+        IF     add1 = '' THEN add1 = CONCAT('T/A> ',:h_add_tradstyle1);
+        ELSEIF add2 = '' THEN add2 = CONCAT('T/A> ',:h_add_tradstyle1);
+        ELSEIF add3 = '' THEN add3 = CONCAT('T/A> ',:h_add_tradstyle1);
+                         ELSE add4 = CONCAT('T/A> ',:h_add_tradstyle1);
+        ENDIF;
+    ENDIF;
+
+    IF :h_add_tradstyle2 <> ''
+    THEN
+        IF     add1 = '' THEN add1 = CONCAT('T/A> ',:h_add_tradstyle2);
+        ELSEIF add2 = '' THEN add2 = CONCAT('T/A> ',:h_add_tradstyle2);
+        ELSEIF add3 = '' THEN add3 = CONCAT('T/A> ',:h_add_tradstyle2);
+        ELSEIF add4 = '' THEN add4 = CONCAT('T/A> ',:h_add_tradstyle2);
+                         ELSE add5 = CONCAT('T/A> ',:h_add_tradstyle2);
+        ENDIF;
+    ENDIF;
+
+    IF :h_add_tradstyle3 <> ''
+    THEN
+        IF     add1 = '' THEN add1 = CONCAT('T/A> ',:h_add_tradstyle3);
+        ELSEIF add2 = '' THEN add2 = CONCAT('T/A> ',:h_add_tradstyle3);
+        ELSEIF add3 = '' THEN add3 = CONCAT('T/A> ',:h_add_tradstyle3);
+        ELSEIF add4 = '' THEN add4 = CONCAT('T/A> ',:h_add_tradstyle3);
+        ELSEIF add5 = '' THEN add5 = CONCAT('T/A> ',:h_add_tradstyle3);
+                         ELSE add6 = CONCAT('T/A> ',:h_add_tradstyle3);
+        ENDIF;
+    ENDIF;
+
+    IF :h_add_line1 <> ''
+    THEN
+        IF     add1 = '' THEN add1 = :h_add_line1;
+        ELSEIF add2 = '' THEN add2 = :h_add_line1;
+        ELSEIF add3 = '' THEN add3 = :h_add_line1;
+        ELSEIF add4 = '' THEN add4 = :h_add_line1;
+        ELSEIF add5 = '' THEN add5 = :h_add_line1;
+        ELSEIF add6 = '' THEN add6 = :h_add_line1;
+                         ELSE add7 = :h_add_line1;
+        ENDIF;
+    ENDIF;
+
+    IF :h_add_line2 <> ''
+    THEN
+        IF     add1 = '' THEN add1 = :h_add_line2;
+        ELSEIF add2 = '' THEN add2 = :h_add_line2;
+        ELSEIF add3 = '' THEN add3 = :h_add_line2;
+        ELSEIF add4 = '' THEN add4 = :h_add_line2;
+        ELSEIF add5 = '' THEN add5 = :h_add_line2;
+        ELSEIF add6 = '' THEN add6 = :h_add_line2;
+        ELSEIF add7 = '' THEN add7 = :h_add_line2;
+                         ELSE add8 = :h_add_line2;
+        ENDIF;
+    ENDIF;
+
+    IF :h_add_line3 <> ''
+    THEN
+        IF     add1 = '' THEN add1 = :h_add_line3;
+        ELSEIF add2 = '' THEN add2 = :h_add_line3;
+        ELSEIF add3 = '' THEN add3 = :h_add_line3;
+        ELSEIF add4 = '' THEN add4 = :h_add_line3;
+        ELSEIF add5 = '' THEN add5 = :h_add_line3;
+        ELSEIF add6 = '' THEN add6 = :h_add_line3;
+        ELSEIF add7 = '' THEN add7 = :h_add_line3;
+        ELSEIF add8 = '' THEN add8 = :h_add_line3;
+                         ELSE add9 = :h_add_line3;
+        ENDIF;
+    ENDIF;
+
+    IF :h_add_line4 <> ''
+    THEN
+        IF     add1 = '' THEN add1 = :h_add_line4;
+        ELSEIF add2 = '' THEN add2 = :h_add_line4;
+        ELSEIF add3 = '' THEN add3 = :h_add_line4;
+        ELSEIF add4 = '' THEN add4 = :h_add_line4;
+        ELSEIF add5 = '' THEN add5 = :h_add_line4;
+        ELSEIF add6 = '' THEN add6 = :h_add_line4;
+        ELSEIF add7 = '' THEN add7 = :h_add_line4;
+        ELSEIF add8 = '' THEN add8 = :h_add_line4;
+        ELSEIF add9 = '' THEN add9 = :h_add_line4;
+                         ELSE add10 = :h_add_line4;
+        ENDIF;
+    ENDIF;
+
+    IF :h_add_line5 <> ''
+    THEN
+        IF     add1 = '' THEN add1 = :h_add_line5;
+        ELSEIF add2 = '' THEN add2 = :h_add_line5;
+        ELSEIF add3 = '' THEN add3 = :h_add_line5;
+        ELSEIF add4 = '' THEN add4 = :h_add_line5;
+        ELSEIF add5 = '' THEN add5 = :h_add_line5;
+        ELSEIF add6 = '' THEN add6 = :h_add_line5;
+        ELSEIF add7 = '' THEN add7 = :h_add_line5;
+        ELSEIF add8 = '' THEN add8 = :h_add_line5;
+        ELSEIF add9 = '' THEN add9 = :h_add_line5;
+        ELSEIF add10 = '' THEN add10 = :h_add_line5;
+                         ELSE add11 = :h_add_line5;
+        ENDIF;
+    ENDIF;
+
+    IF :h_add_postcode <> ''
+    THEN
+        IF     add1 = '' THEN add1 = :h_add_postcode;
+        ELSEIF add2 = '' THEN add2 = :h_add_postcode;
+        ELSEIF add3 = '' THEN add3 = :h_add_postcode;
+        ELSEIF add4 = '' THEN add4 = :h_add_postcode;
+        ELSEIF add5 = '' THEN add5 = :h_add_postcode;
+        ELSEIF add6 = '' THEN add6 = :h_add_postcode;
+        ELSEIF add7 = '' THEN add7 = :h_add_postcode;
+        ELSEIF add8 = '' THEN add8 = :h_add_postcode;
+        ELSEIF add9 = '' THEN add9 = :h_add_postcode;
+        ELSEIF add10 = '' THEN add10 = :h_add_postcode;
+        ELSEIF add11 = '' THEN add11 = :h_add_postcode;
+                         ELSE add12 = :h_add_postcode;
+        ENDIF;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      highlight lines containing search pattern
+    ------------------------------------------------------------------*/
+
+    IF RIGHT(s1,1) = '%'
+    THEN
+        s1 = LEFT(s1,LENGTH(s1) - 1);
+        s2 = LEFT(s2,LENGTH(s2) - 1);
+        s3 = LEFT(s3,LENGTH(s3) - 1);
+        s4 = LEFT(s4,LENGTH(s4) - 1);
+        s5 = LEFT(s5,LENGTH(s5) - 1);
+    ENDIF;
+
+    IF LOCATE(:add1,UPPERCASE(s1)) <= SIZE(:add1)
+    OR LOCATE(:add1,UPPERCASE(s2)) <= SIZE(:add1)
+    OR LOCATE(:add1,UPPERCASE(s3)) <= SIZE(:add1)
+    OR LOCATE(:add1,UPPERCASE(s4)) <= SIZE(:add1)
+    OR LOCATE(:add1,UPPERCASE(s5)) <= SIZE(:add1)
+    THEN
+        SET_FORMS FIELD '' (INTENSITY(add1)= 0);
+    ELSE
+        SET_FORMS FIELD '' (INTENSITY(add1)= 1);
+    ENDIF;
+
+    IF LOCATE(:add2,UPPERCASE(s1)) <= SIZE(:add2)
+    OR LOCATE(:add2,UPPERCASE(s2)) <= SIZE(:add2)
+    OR LOCATE(:add2,UPPERCASE(s3)) <= SIZE(:add2)
+    OR LOCATE(:add2,UPPERCASE(s4)) <= SIZE(:add2)
+    OR LOCATE(:add2,UPPERCASE(s5)) <= SIZE(:add2)
+    THEN
+        SET_FORMS FIELD '' (INTENSITY(add2)= 0);
+    ELSE
+        SET_FORMS FIELD '' (INTENSITY(add2)= 1);
+    ENDIF;
+
+    IF LOCATE(:add3,UPPERCASE(s1)) <= SIZE(:add3)
+    OR LOCATE(:add3,UPPERCASE(s2)) <= SIZE(:add3)
+    OR LOCATE(:add3,UPPERCASE(s3)) <= SIZE(:add3)
+    OR LOCATE(:add3,UPPERCASE(s4)) <= SIZE(:add3)
+    OR LOCATE(:add3,UPPERCASE(s5)) <= SIZE(:add3)
+    THEN
+        SET_FORMS FIELD '' (INTENSITY(add3)= 0);
+    ELSE
+        SET_FORMS FIELD '' (INTENSITY(add3)= 1);
+    ENDIF;
+
+    IF LOCATE(:add4,UPPERCASE(s1)) <= SIZE(:add4)
+    OR LOCATE(:add4,UPPERCASE(s2)) <= SIZE(:add4)
+    OR LOCATE(:add4,UPPERCASE(s3)) <= SIZE(:add4)
+    OR LOCATE(:add4,UPPERCASE(s4)) <= SIZE(:add4)
+    OR LOCATE(:add4,UPPERCASE(s5)) <= SIZE(:add4)
+    THEN
+        SET_FORMS FIELD '' (INTENSITY(add4)= 0);
+    ELSE
+        SET_FORMS FIELD '' (INTENSITY(add4)= 1);
+    ENDIF;
+
+    IF LOCATE(:add5,UPPERCASE(s1)) <= SIZE(:add5)
+    OR LOCATE(:add5,UPPERCASE(s2)) <= SIZE(:add5)
+    OR LOCATE(:add5,UPPERCASE(s3)) <= SIZE(:add5)
+    OR LOCATE(:add5,UPPERCASE(s4)) <= SIZE(:add5)
+    OR LOCATE(:add5,UPPERCASE(s5)) <= SIZE(:add5)
+    THEN
+        SET_FORMS FIELD '' (INTENSITY(add5)= 0);
+    ELSE
+        SET_FORMS FIELD '' (INTENSITY(add5)= 1);
+    ENDIF;
+
+    IF LOCATE(:add6,UPPERCASE(s1)) <= SIZE(:add6)
+    OR LOCATE(:add6,UPPERCASE(s2)) <= SIZE(:add6)
+    OR LOCATE(:add6,UPPERCASE(s3)) <= SIZE(:add6)
+    OR LOCATE(:add6,UPPERCASE(s4)) <= SIZE(:add6)
+    OR LOCATE(:add6,UPPERCASE(s5)) <= SIZE(:add6)
+    THEN
+        SET_FORMS FIELD '' (INTENSITY(add6)= 0);
+    ELSE
+        SET_FORMS FIELD '' (INTENSITY(add6)= 1);
+    ENDIF;
+
+    IF LOCATE(:add7,UPPERCASE(s1)) <= SIZE(:add7)
+    OR LOCATE(:add7,UPPERCASE(s2)) <= SIZE(:add7)
+    OR LOCATE(:add7,UPPERCASE(s3)) <= SIZE(:add7)
+    OR LOCATE(:add7,UPPERCASE(s4)) <= SIZE(:add7)
+    OR LOCATE(:add7,UPPERCASE(s5)) <= SIZE(:add7)
+    THEN
+        SET_FORMS FIELD '' (INTENSITY(add7)= 0);
+    ELSE
+        SET_FORMS FIELD '' (INTENSITY(add7)= 1);
+    ENDIF;
+
+    IF LOCATE(:add8,UPPERCASE(s1)) <= SIZE(:add8)
+    OR LOCATE(:add8,UPPERCASE(s2)) <= SIZE(:add8)
+    OR LOCATE(:add8,UPPERCASE(s3)) <= SIZE(:add8)
+    OR LOCATE(:add8,UPPERCASE(s4)) <= SIZE(:add8)
+    OR LOCATE(:add8,UPPERCASE(s5)) <= SIZE(:add8)
+    THEN
+        SET_FORMS FIELD '' (INTENSITY(add8)= 0);
+    ELSE
+        SET_FORMS FIELD '' (INTENSITY(add8)= 1);
+    ENDIF;
+
+    IF LOCATE(:add9,UPPERCASE(s1)) <= SIZE(:add9)
+    OR LOCATE(:add9,UPPERCASE(s2)) <= SIZE(:add9)
+    OR LOCATE(:add9,UPPERCASE(s3)) <= SIZE(:add9)
+    OR LOCATE(:add9,UPPERCASE(s4)) <= SIZE(:add9)
+    OR LOCATE(:add9,UPPERCASE(s5)) <= SIZE(:add9)
+    THEN
+        SET_FORMS FIELD '' (INTENSITY(add9)= 0);
+    ELSE
+        SET_FORMS FIELD '' (INTENSITY(add9)= 1);
+    ENDIF;
+
+    IF LOCATE(:add10,UPPERCASE(s1)) <= SIZE(:add10)
+    OR LOCATE(:add10,UPPERCASE(s2)) <= SIZE(:add10)
+    OR LOCATE(:add10,UPPERCASE(s3)) <= SIZE(:add10)
+    OR LOCATE(:add10,UPPERCASE(s4)) <= SIZE(:add10)
+    OR LOCATE(:add10,UPPERCASE(s5)) <= SIZE(:add10)
+    THEN
+        SET_FORMS FIELD '' (INTENSITY(add10)= 0);
+    ELSE
+        SET_FORMS FIELD '' (INTENSITY(add10)= 1);
+    ENDIF;
+
+    IF LOCATE(:add11,UPPERCASE(s1)) <= SIZE(:add11)
+    OR LOCATE(:add11,UPPERCASE(s2)) <= SIZE(:add11)
+    OR LOCATE(:add11,UPPERCASE(s3)) <= SIZE(:add11)
+    OR LOCATE(:add11,UPPERCASE(s4)) <= SIZE(:add11)
+    OR LOCATE(:add11,UPPERCASE(s5)) <= SIZE(:add11)
+    THEN
+        SET_FORMS FIELD '' (INTENSITY(add11)= 0);
+    ELSE
+        SET_FORMS FIELD '' (INTENSITY(add11)= 1);
+    ENDIF;
+
+    IF LOCATE(:add12,UPPERCASE(s1)) <= SIZE(:add12)
+    OR LOCATE(:add12,UPPERCASE(s2)) <= SIZE(:add12)
+    OR LOCATE(:add12,UPPERCASE(s3)) <= SIZE(:add12)
+    OR LOCATE(:add12,UPPERCASE(s4)) <= SIZE(:add12)
+    OR LOCATE(:add12,UPPERCASE(s5)) <= SIZE(:add12)
+    THEN
+        SET_FORMS FIELD '' (INTENSITY(add12)= 0);
+    ELSE
+        SET_FORMS FIELD '' (INTENSITY(add12)= 1);
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      Find the contributor's industry, inquiry, industry text etc
+    ------------------------------------------------------------------*/
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT a.contributor_industry AS h_industry,
+               a.inquiry AS h_inquiry,
+	       a.keyresp,
+               d.country,
+               c.industry_text AS h_ind_text
+        FROM   contributor_period a,
+               inquiry b,
+               industry c,
+               region d
+        WHERE  b.span_end = a.period
+        AND    a.contributor_reference = :c_array[:current_row].contributor_reference
+        AND    c.industry = a.contributor_industry
+        AND    a.region = d.region;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in finding contributor industry'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+    /*------------------------------------------------------------------
+      If the contributor isn't selected for current period, blank the
+      display.
+    ------------------------------------------------------------------*/
+
+    IF ret_val = 1
+    THEN
+        ref_message = :c_array[:current_row].contributor_reference;
+        ind_message = '(Industry Unknown - Contributor is not live)';
+    ELSE
+        ref_message = :c_array[:current_row].contributor_reference +
+                      CONCAT(' / ',ASCII(:h_industry));
+        IF :h_inquiry = 14
+        THEN
+            ref_message = :ref_message + ' / 14';
+        ELSE
+            ref_message = :ref_message + ' / 15';
+        ENDIF;
+
+        ind_message = :h_ind_text;
+
+        IF country <> ''
+        THEN
+            SET_FORMS FIELD '' (INVISIBLE(country)= 0);
+        ENDIF;
+
+        IF keyresp = 1
+	THEN
+	    key_disp = 'KEY';
+	    SET_FORMS FIELD '' (INVISIBLE(key_disp) = 0);
+        ENDIF;
+    ENDIF;
+
+    REDISPLAY;
+
+    RETURN 0;
+}

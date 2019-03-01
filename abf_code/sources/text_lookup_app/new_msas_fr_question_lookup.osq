@@ -1,0 +1,515 @@
+/*----------------------------------------------------------------------
+           Finds questions containing a specified string
+----------------------------------------------------------------------*/
+
+INITIALIZE () =
+
+DECLARE     ret_val           = INTEGER NOT NULL,
+            allrows           = INTEGER4 NOT NULL,
+            current_row       = INTEGER4 NOT NULL,
+            q_array           = ARRAY OF question_type,
+            search_array      = ARRAY OF word_type,
+            h_retries         = INTEGER1 NOT NULL,
+            h_max_period      = INTEGER4 NOT NULL,
+            h_retries_allowed = INTEGER1 NOT NULL,
+            h_display         = INTEGER1 NOT NULL,
+            h_retry_or_not    = VARCHAR(5) NOT NULL,
+            h_frpr_name       = VARCHAR(25) NOT NULL,
+            h_letter          = CHAR(1) NOT NULL,
+            h_letter_counter  = INTEGER4 NOT NULL,
+            h_counter         = INTEGER4 NOT NULL,
+            search            = VARCHAR(100) NOT NULL,
+            h_leftmost        = VARCHAR(100) NOT NULL,
+            sql_statement     = VARCHAR(200) NOT NULL,
+            h_position        = INTEGER4 NOT NULL,
+            h_table           = VARCHAR(24) NOT NULL,
+            lp_setup_screen   = PROCEDURE RETURNING INTEGER
+{
+    g_help = CALLPROC msa_cp_getvar('PROD_HELP');
+
+    h_frpr_name = 'msas_fr_question_lookup';
+    h_retries_allowed = 3;
+    msa_date = 'now';
+
+    SET_FORMS FIELD '' ( INVISIBLE(question_count)= 1,
+                         INVISIBLE(question)= 1,
+                         INVISIBLE(question_industry)= 1,
+                         DISPLAYONLY(period) = 0,
+                         REVERSE(period) = 0,
+                         UNDERLINE(period) = 1,
+                         DISPLAYONLY(word) = 0,
+                         REVERSE(word) = 0,
+                         UNDERLINE(word) = 1);
+
+    current_row = 0;
+    allrows = 0;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+
+        h_retries = :h_retries + 1;
+
+        SELECT MAX(period) AS h_max_period
+        FROM   inquiry_period
+        WHERE  inquiry = 14;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_commit          = 'Y',
+                  h_rollback        = 'N',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error in accessing inquiry_period'
+        WITH STYLE = POPUP;
+        RETURN 9;
+
+    ENDIF;
+
+}
+
+FIELD period =
+{
+    /*------------------------------------------------------------------
+     Only search for current annual period and the newer one
+    ------------------------------------------------------------------*/
+
+    IF :period <> :h_max_period AND :period <> :h_max_period + 100
+    THEN
+        MESSAGE 'The only Periods that may be searched for are ' +
+                VARCHAR(:h_max_period) + ' and ' +
+                VARCHAR(:h_max_period + 100)
+        WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    SET_FORMS FIELD '' ( DISPLAYONLY(period) = 1,
+                         REVERSE(period) = 1,
+                         UNDERLINE(period) = 0);
+
+    h_table = 'question_word_' + VARCHAR(:period);
+
+    /*------------------------------------------------------------------
+      Check date on iitables
+    ------------------------------------------------------------------*/
+
+    MESSAGE 'Checking Date of Table . . .';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < :h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+        h_retries = :h_retries + 1;
+
+        SELECT create_date
+        FROM   iitables
+        WHERE  table_name = :h_table;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_rollback        = 'N',
+                  h_commit          = 'Y',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error accessing iitables'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Error finding creation date of ' + :h_table
+        WITH STYLE = POPUP;
+        RETURN 1;
+    ENDIF;
+
+}
+
+'Help', KEY FRSKEY1 =
+{
+    HELP_FORMS(SUBJECT = 'help',
+               FILE    = :g_help + '/' + :h_frpr_name + '.hlp');
+}
+
+'Clear' =
+{
+    CLEAR FIELD question, question_industry, text_line1, text_line2,
+                text_line3, text_line4, text_line5, text_line6,
+                text_line7, text_line8, text_line9, text_line10,
+                word, question_count ;
+    msa_date = 'now';
+    SET_FORMS FIELD '' ( INVISIBLE(question_count)= 1,
+                         INVISIBLE(question)= 1,
+                         INVISIBLE(question_industry)= 1,
+                         DISPLAYONLY(word) = 0,
+                         REVERSE(word) = 0,
+                         UNDERLINE(word) = 1);
+    current_row = 0;
+    allrows = 0;
+    RESUME FIELD word;
+}
+
+'Previous' =
+{
+    IF :current_row - 1 <= 0
+    THEN
+        MESSAGE 'There are no more questions' WITH STYLE = POPUP;
+        RESUME FIELD word;
+    ENDIF;
+
+    current_row = :current_row - 1;
+
+    ret_val = CALLPROC lp_setup_screen;
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'Next' =
+{
+    IF :current_row + 1 > allrows
+    THEN
+        MESSAGE 'There are no more questions' WITH STYLE = POPUP;
+        RESUME FIELD word;
+    ENDIF;
+
+    current_row = :current_row + 1;
+
+    ret_val = CALLPROC lp_setup_screen;
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'Go', KEY FRSKEY4  =
+{
+    INQUIRE_FORMS FIELD '' (h_display = DISPLAYONLY(period));
+    IF :h_display = 0
+    THEN
+        MESSAGE 'Please complete the Period' WITH STYLE = POPUP;
+        RESUME FIELD period;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Build up the search string (could have &'s in it) into arrays
+    ------------------------------------------------------------------*/
+
+    ret_val = CALLPROC ARRAYCLEAR(search_array);
+
+    IF LEFT(word,LENGTH(word)) = ''
+    THEN
+        MESSAGE 'Nothing to search for'
+        WITH STYLE = POPUP;
+        RESUME FIELD word;
+    ENDIF;
+
+    search = LEFT(word,LENGTH(word));
+    h_counter = 0;
+    h_letter_counter = 1;
+    h_leftmost = '';
+
+    WHILE h_letter_counter <= LENGTH(search)
+    DO
+        h_letter = CHAREXTRACT(search,h_letter_counter);
+        IF h_letter = '&'
+        THEN
+            IF LENGTH(h_leftmost) > 0
+            THEN
+                INSERTROW search_array[h_counter] (word = h_leftmost);
+                h_leftmost = '';
+                h_counter = h_counter + 1;
+            ENDIF;
+        
+        ELSEIF h_letter <> ' '
+        THEN
+            h_leftmost = CONCAT(h_leftmost, h_letter);
+        ENDIF;
+        h_letter_counter = h_letter_counter + 1;
+    ENDWHILE;
+    IF LENGTH(h_leftmost) > 0
+    THEN
+        INSERTROW search_array[h_counter] (word = h_leftmost);
+        h_leftmost = '';
+    ENDIF;
+        
+    /*------------------------------------------------------------------
+    Build up the search string from the arrays
+    ------------------------------------------------------------------*/
+
+    sql_statement = 'q_array = SELECT question FROM ' + :h_table + 
+                    ' WHERE ';
+    h_counter = 0;
+
+    UNLOADTABLE search_array
+    {
+        h_counter = h_counter + 1;
+        IF h_counter <> 1
+        THEN
+            sql_statement = sql_statement + ' AND ';
+        ENDIF;
+
+        sql_statement = sql_statement + 'word LIKE ''' +
+                        search_array.word + '%'''  
+    };
+    sql_statement = sql_statement + ';';
+
+message '>' + sql_statement + '<' with style = popup;
+
+    search = CONCAT(:search,'%');
+
+    CLEAR FIELD question, question_industry, text_line1, text_line2,
+                text_line3, text_line4, text_line5, text_line6,
+                text_line7, text_line8, text_line9, text_line10 ;
+
+    SET_FORMS FIELD '' ( INVISIBLE(question)= 1,
+                         INVISIBLE(question_industry)= 1);
+
+    current_row = 0;
+
+    ret_val = CALLPROC ARRAYCLEAR(q_array);
+
+    question_count = 'Searching ... ';
+    SET_FORMS FIELD '' ( INVISIBLE(question_count)= 0);
+    REDISPLAY;
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < :h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+        h_retries = :h_retries + 1;
+
+        EXECUTE IMMEDIATE :sql_statement;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_rollback        = 'N',
+                  h_commit          = 'Y',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error accessing question table'
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ENDIF;
+
+    allrows = CALLPROC ARRAYALLROWS(q_array);
+
+    IF allrows = 0
+    THEN
+        MESSAGE 'No questions were found using this search string'
+        WITH STYLE = POPUP;
+        CLEAR FIELD word, question_count;
+        RESUME FIELD word;
+    ENDIF;
+
+    SET_FORMS FIELD '' ( DISPLAYONLY(word) = 1,
+                         REVERSE(word) = 1,
+                         UNDERLINE(word) = 0);
+
+    current_row = 1;
+
+    ret_val = CALLPROC lp_setup_screen;
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+}
+
+'End', KEY FRSKEY6 =
+{
+    RETURN 0;
+}
+
+/*----------------------------------------------------------------------
+
+                  L O C A L    P R O C E D U R E S
+
+----------------------------------------------------------------------*/
+
+PROCEDURE lp_setup_screen () =
+{
+
+    question_count = SQUEEZE( 'Question ' + CHAR(:current_row) +
+                       ' of ' + CHAR(:allrows));
+
+    SET_FORMS FIELD '' ( INVISIBLE(question_count)= 0,
+                         INVISIBLE(question)= 0,
+                         INVISIBLE(question_industry)= 0);
+
+    msa_date = 'now';
+
+    h_retry_or_not      = 'RETRY';
+    h_retries           = 0;
+
+    WHILE :h_retries < :h_retries_allowed AND :h_retry_or_not = 'RETRY'
+    DO
+        h_retries = :h_retries + 1;
+
+        SELECT question,
+               question_industry,
+               text_line1,
+               text_line2,
+               text_line3,
+               text_line4,
+               text_line5,
+               text_line6,
+               text_line7,
+               text_line8,
+               text_line9,
+               text_line10
+        FROM   question_library
+        WHERE  question = :q_array[:current_row].question
+        AND    period = :period;
+
+        ret_val = CALLPROC check_inq_ing (
+                  h_num_row_ck      = 1,
+                  h_rollback        = 'N',
+                  h_commit          = 'Y',
+                  h_retries         = :h_retries,
+                  h_retries_allowed = :h_retries_allowed,
+                  h_frpr_name       = :h_frpr_name);
+
+        IF ret_val <> 7
+        THEN
+            h_retry_or_not = '';
+        ENDIF;
+
+    ENDWHILE;
+
+    IF ret_val = 7
+    THEN
+        RETURN 7;
+    ELSEIF ret_val = 9
+    THEN
+        MESSAGE 'System error finding question ' + VARCHAR(:q_array[:current_row].question)
+        WITH STYLE = POPUP;
+        RETURN 9;
+    ELSEIF ret_val = 1
+    THEN
+        MESSAGE 'Error finding question ' + VARCHAR(:q_array[:current_row].question)
+        WITH STYLE = POPUP;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+       highlight lines containing search pattern
+    ------------------------------------------------------------------*/
+
+    IF LOCATE(UPPERCASE(:text_line1),UPPERCASE(:word)) <= SIZE(:text_line1)
+    THEN
+        SET_FORMS FIELD '' ( INTENSITY(text_line1)= 0);
+    ELSE
+        SET_FORMS FIELD '' ( INTENSITY(text_line1)= 1);
+    ENDIF;
+
+    IF LOCATE(UPPERCASE(:text_line2),UPPERCASE(:word)) <= SIZE(:text_line2)
+    THEN
+        SET_FORMS FIELD '' ( INTENSITY(text_line2)= 0);
+    ELSE
+        SET_FORMS FIELD '' ( INTENSITY(text_line2)= 1);
+    ENDIF;
+
+    IF LOCATE(UPPERCASE(:text_line3),UPPERCASE(:word)) <= SIZE(:text_line3)
+    THEN
+        SET_FORMS FIELD '' ( INTENSITY(text_line3)= 0);
+    ELSE
+        SET_FORMS FIELD '' ( INTENSITY(text_line3)= 1);
+    ENDIF;
+
+    IF LOCATE(UPPERCASE(:text_line4),UPPERCASE(:word)) <= SIZE(:text_line4)
+    THEN
+        SET_FORMS FIELD '' ( INTENSITY(text_line4)= 0);
+    ELSE
+        SET_FORMS FIELD '' ( INTENSITY(text_line4)= 1);
+    ENDIF;
+
+    IF LOCATE(UPPERCASE(:text_line5),UPPERCASE(:word)) <= SIZE(:text_line5)
+    THEN
+        SET_FORMS FIELD '' ( INTENSITY(text_line5)= 0);
+    ELSE
+        SET_FORMS FIELD '' ( INTENSITY(text_line5)= 1);
+    ENDIF;
+
+    IF LOCATE(UPPERCASE(:text_line6),UPPERCASE(:word)) <= SIZE(:text_line6)
+    THEN
+        SET_FORMS FIELD '' ( INTENSITY(text_line6)= 0);
+    ELSE
+        SET_FORMS FIELD '' ( INTENSITY(text_line6)= 1);
+    ENDIF;
+
+    IF LOCATE(UPPERCASE(:text_line7),UPPERCASE(:word)) <= SIZE(:text_line7)
+    THEN
+        SET_FORMS FIELD '' ( INTENSITY(text_line7)= 0);
+    ELSE
+        SET_FORMS FIELD '' ( INTENSITY(text_line7)= 1);
+    ENDIF;
+
+    IF LOCATE(UPPERCASE(:text_line8),UPPERCASE(:word)) <= SIZE(:text_line8)
+    THEN
+        SET_FORMS FIELD '' ( INTENSITY(text_line8)= 0);
+    ELSE
+        SET_FORMS FIELD '' ( INTENSITY(text_line8)= 1);
+    ENDIF;
+
+    IF LOCATE(UPPERCASE(:text_line9),UPPERCASE(:word)) <= SIZE(:text_line9)
+    THEN
+        SET_FORMS FIELD '' ( INTENSITY(text_line9)= 0);
+    ELSE
+        SET_FORMS FIELD '' ( INTENSITY(text_line9)= 1);
+    ENDIF;
+
+    IF LOCATE(UPPERCASE(:text_line10),UPPERCASE(:word)) <= SIZE(:text_line10)
+    THEN
+        SET_FORMS FIELD '' ( INTENSITY(text_line10)= 0);
+    ELSE
+        SET_FORMS FIELD '' ( INTENSITY(text_line10)= 1);
+    ENDIF;
+
+    REDISPLAY;
+    RETURN 0;
+}
