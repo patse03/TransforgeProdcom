@@ -1,0 +1,331 @@
+/*----------------------------------------------------------------------
+ Rewritten to comply with new standards and procedures, and to remove
+ quarterly code.
+
+ BATCH PROCESS: Access checks and Popups not used. Runs weekly.
+
+ DF 2012 
+----------------------------------------------------------------------*/
+
+PROCEDURE acop_congruence_02_pr () =
+
+DECLARE h_span_end           = INTEGER4     NOT NULL,
+        h_param_list         = VARCHAR(100) NOT NULL,
+        h_file_name_1        = VARCHAR(100) NOT NULL,
+        h_varchar_variable   = VARCHAR(100) NOT NULL,
+        h_integer_variable   = INTEGER1     NOT NULL,
+        h_param1             = VARCHAR(20)  NOT NULL,
+        h_return             = INTEGER4     NOT NULL,
+        h_retries_allowed    = INTEGER1     NOT NULL,
+        h_retries            = INTEGER1     NOT NULL,
+        h_retry_or_not       = CHAR(5)      NOT NULL,
+        h_text               = VARCHAR(60)  NOT NULL,
+        h_dummy              = VARCHAR(60)  NOT NULL,
+        h_main_table         = VARCHAR(36)  NOT NULL,
+        h_table_1            = VARCHAR(36)  NOT NULL,
+        h_table_2            = VARCHAR(36)  NOT NULL,
+        h_table_3            = VARCHAR(36)  NOT NULL,
+        h_frpr_name          = VARCHAR(24)  NOT NULL,
+        h_command            = VARCHAR(300) NOT NULL,
+        h_idbr_year          = CHAR(6)      NOT NULL,
+        h_week_no            = INTEGER1     NOT NULL,
+
+        lp_error_check       = PROCEDURE RETURNING INTEGER NOT NULL,
+        lp_drop_table        = PROCEDURE RETURNING INTEGER NOT NULL,
+
+{
+  SELECT DBMSINFO('username') AS g_user_id;
+  SELECT DBMSINFO('database') AS g_database;
+
+  IF g_database = 'prodlivedb'
+  THEN
+    h_file_name_1 = '/csd/live7/files/congruence/prodadata.cong';
+  ELSE
+    h_file_name_1 = '/admin/scratch/TEST_prodadata.cong';
+  ENDIF;
+
+  h_frpr_name  = 'acop_congruence_02_pr';
+
+  h_table_1    = 'con_acop_match_data';
+  h_table_2    = 'con_acop_sales_data';
+
+  /*------------------------------------------------------------------
+     Get week nummber for logging use.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[1/5] Selecting week number. . .';
+  SLEEP 1;
+
+  SELECT a.week_no AS h_week_no
+  FROM   inquiry_period a
+  WHERE  a.inquiry = 14
+    AND  a.period  = (SELECT MAX(b.period)
+                      FROM   inquiry_period b
+                      WHERE  b.inquiry = 14);
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select week number from inquiry period table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Log start of process
+  ------------------------------------------------------------------*/
+
+  SELECT MAX(log_no) AS g_log_no
+  FROM   con_process_log;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select log number from process log table.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  h_text = 'STARTING: ACOP weekly congruence process for week '
+         + VARCHAR(:h_week_no) + ' started.';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  /*------------------------------------------------------------------
+    Get period from current version of con_acop_match_data to 
+    enable automation of switch between periods. 
+
+    (con_acop_match_data is created by the annual process running) 
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[2/5] Selecting period to run for. . .';
+  SLEEP 1;
+
+  SELECT DISTINCT period AS g_period
+  FROM   con_acop_match_data;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to select period from table con_acop_match_data.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Create temp table to hold incoming data from file.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[3/5] Recreating ' +:h_table_2 +'. . .';
+  SLEEP 1;
+
+  h_return = CALLPROC lp_drop_table (p_table_name = :h_table_2);
+
+  IF h_return != 0
+  THEN
+    h_text = 'ERROR: Failed to drop working table ' +:h_table_2 + '.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  CREATE TABLE :h_table_2 
+  AS 
+  SELECT DISTINCT a.contributor_reference,
+		  :g_period AS period,
+		  a.inquiry AS inq_type,
+                  9200 AS question,
+                  b.contributor_industry,
+                  1 AS cs_type,
+	          b.avalue,
+	          '' AS startdate,
+	          '' AS enddate
+         FROM     :h_table_1 a,
+                  cqpv b,
+     	          contributor_period c
+         WHERE    MOD(b.question,10000) = 9200
+         AND      a.period = :g_period
+         AND      a.period = b.period
+         AND      a.period = c.period
+         AND      a.contributor_reference = b.contributor_reference
+         AND      a.contributor_reference = c.contributor_reference
+         AND      b.quest_order = 10
+         AND      b.acell IN ('V','Z')
+	 AND      c.receipt_date <> '';
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to recreate ' +:h_table_2 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+       Modifying acop sales table.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[4/5] Remodifying ' +VARCHAR(:h_table_2) +'. . .';
+  SLEEP 1;
+
+  MODIFY :h_table_2 TO BTREE UNIQUE ON contributor_reference, period;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to modify ' +:h_table_2 +'.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN :h_return;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+    Copy out sales data file.
+  ------------------------------------------------------------------*/
+
+  MESSAGE '[5/5] Exporting congruence data file. . .';
+  SLEEP 1;
+
+  COPY TABLE :h_table_2 
+         (contributor_reference = c0colon,
+          period                = c0colon,
+          inq_type              = c0colon,
+          question              = c0colon,
+          contributor_industry  = c0colon,
+          cs_type               = c0colon,
+          avalue                = c0colon,
+          startdate             = c0colon,
+          enddate               = c0nl)
+  INTO :h_file_name_1;
+
+  h_return = CALLPROC lp_error_check (p_num_row_ck = 1);
+
+  IF h_return > 1
+  THEN
+    h_text = 'ERROR: Failed to export data file.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  /*------------------------------------------------------------------
+     Log end of process
+  ------------------------------------------------------------------*/
+
+  h_text = 'COMPLETE: ACOP weekly congruence process for week '
+         + VARCHAR(:h_week_no) + ' completed.';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  h_text = '*SIGNOFF*';
+  CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = 0,
+             p_text      = :h_text);
+
+  RETURN 0;
+
+}
+
+/************************* LOCAL PROCEDURES ***************************/
+
+
+/*=======================================================================
+    Local procedure to check sql for errors during sections of code that
+    utilise personal temp tables. Committed, no rollback.
+    BATCH RUN VERSION.
+=======================================================================*/
+
+PROCEDURE lp_error_check (p_num_row_ck  = INTEGER4 NOT NULL WITH DEFAULT) =
+
+DECLARE   lp_return   = INTEGER4  NOT NULL WITH DEFAULT,
+
+{
+
+  lp_return = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = :p_num_row_ck,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+  RETURN IFNULL(:lp_return,9);
+
+}
+
+/*===========================================================================
+    Local procedure for dropping a table if it exists.
+    BATCH RUN VERSION.
+============================================================================*/
+
+PROCEDURE lp_drop_table(p_table_name = CHAR(36) NOT NULL) = 
+
+  DECLARE lp_return = INTEGER4 NOT NULL WITH DEFAULT,
+          lp_table  = CHAR(36) NOT NULL
+
+BEGIN
+
+  SELECT table_name as lp_table 
+    FROM iitables
+   WHERE table_name  = :p_table_name
+     AND table_owner = :g_user_id;
+
+  lp_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF lp_return = 0
+  THEN
+    RETURN 0;
+  ENDIF;
+
+  IF lp_return > 1 
+  THEN
+    h_text = 'SYSTEM ERROR: Failed whilst selecting ' 
+          +  VARCHAR(:p_table_name) + ' from iitables prior to droping.';
+    CALLPROC write_to_process_log
+           ( p_frpr_name = :h_frpr_name,
+             p_code      = :h_return,
+             p_text      = :h_text);
+    RETURN 9;
+  ENDIF;
+
+  MODIFY :p_table_name to TRUNCATED;
+
+  DROP TABLE :p_table_name;
+
+  h_return = CALLPROC lp_error_check(p_num_row_ck  = 0);
+
+  IF h_return != 0 
+  THEN 
+    RETURN 9; 
+  ENDIF;
+
+  RETURN 0;
+
+END
+

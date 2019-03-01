@@ -1,0 +1,301 @@
+/*-s--------------------------------------------------------------------
+ Procedure msata_fp_start - Start of Application
+
+Run twice first time to find matches from both quarterly and annual gb
+contributors and then twice again for matches for ni contributors
+
+e.g. $IMAGES/batch_congruence_app -dprodlivedb -a 14 199700 1 1 gb
+e.g. $IMAGES/batch_congruence_app -dprodlivedb -a 15 199709 1 1 gb
+  14       = inquiry
+  199700   = period (Oct 1998 changed from latest period as selection 
+		     was always loads earlier than the ACOP data was 
+		     available)
+  gb       = country either gb or ni. This needs to be run twice once
+             for each country when files become available from common 
+	     software.  
+	     NB. At present only one set of output files are required.
+	     The nightly run will produce the NI data with the GB data.
+	     Therefor when process 1 has been run for NI the 
+	     acop_matches_ _ni table will have to be inserted into the 
+	     acop_matches_ table.
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msata_fp_start () =
+
+DECLARE start_proc           = INTEGER1 NOT NULL,
+        end_proc             = INTEGER1 NOT NULL,
+        h_param_list         = VARCHAR(100) NOT NULL,
+        h_varchar_variable   = VARCHAR(100) NOT NULL,
+        h_integer_variable   = INTEGER1 NOT NULL,
+        h_param1             = VARCHAR(20) NOT NULL,
+        h_param2             = VARCHAR(20) NOT NULL,
+        h_param3             = VARCHAR(20) NOT NULL,
+        h_param4             = VARCHAR(20) NOT NULL,
+        h_param5             = VARCHAR(20) NOT NULL,
+        country              = VARCHAR(2) NOT NULL,
+        ret_val              = INTEGER1 NOT NULL,
+        h_frpr_name          = VARCHAR(24) NOT NULL
+
+{
+    SELECT DBMSINFO('username') AS g_user_id;
+    SELECT DBMSINFO('database') AS g_database;
+
+    h_frpr_name = 'msata_fp_start';
+
+    h_param_list = CALLPROC CommandLineParameters();
+
+    h_varchar_variable = squeeze (h_param_list);
+
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param1         =   left (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = shift (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param2         =   left (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = shift (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param3         =   left (h_varchar_variable,h_integer_variable - 1);
+    h_varchar_variable = shift (h_varchar_variable, - h_integer_variable);
+    h_integer_variable = locate (h_varchar_variable, ' ');
+    h_param4         =   left (h_varchar_variable,h_integer_variable - 1);
+
+
+    g_inquiry = INT1(:h_param1);
+    start_proc = INT1(:h_param2);
+    end_proc = INT1(:h_param3);
+
+    IF LOWERCASE(:h_param4) = 'gb'
+    THEN
+        country = 'gb';
+    ELSEIF LOWERCASE(:h_param4) = 'ni'
+    THEN
+        country = 'ni';
+    ENDIF;
+
+    IF :country <> 'gb' AND :country <> 'ni'
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid Country = ' + (:h_param4),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF :g_inquiry <> 14 AND :g_inquiry <> 15
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid Inquiry = ' + VARCHAR(:g_inquiry),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Get current period and record in global variable
+    ------------------------------------------------------------------*/
+
+    SELECT span_end AS :g_period
+    FROM   inquiry
+    WHERE  inquiry = :g_inquiry;
+
+    ret_val = CALLPROC batch_check_inq_ing (
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error selecting latest period from table inquiry',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*------------------------------------------------------------------
+    Validate proc selections.
+    ------------------------------------------------------------------*/
+
+    IF :start_proc < 1 OR :start_proc > 2
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid Start = ' + VARCHAR(:start_proc),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF :end_proc < 1 OR :end_proc > 2
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid End = ' + VARCHAR(:end_proc),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF :start_proc > :end_proc
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Invalid Start = ' + VARCHAR(:start_proc) +
+                    ', End = ' + VARCHAR(:end_proc),
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+    /*------------------------------------------------------------------
+    Assign an annual period as quarterly will be matching with annual 
+    when they have selected for the next year
+    eg. 
+    containing annual refs which 
+    ------------------------------------------------------------------*/
+    /*------------------------------------------------------------------
+     Process 1 - Loads file containing acop references into a table
+		 and runs first stage to flag matched references and
+		 pass file to Common Software. Also runs first stage
+		 of sales data.
+    ------------------------------------------------------------------*/
+
+    IF :start_proc = 1 
+    THEN
+        IF :country = 'gb'
+	THEN
+            ret_val = CALLPROC msata_fp_match_data ();
+    
+            IF ret_val <> 0
+            THEN
+                INSERT INTO error_log
+                VALUES(     'now',
+                            'Batch_Congruence_app Fails in Process 1 for inquiry ' +
+    			VARCHAR(:g_inquiry),
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN 9;
+            ELSE
+                INSERT INTO error_log
+                VALUES(     'now',
+                           'Batch_Congruence_app - Process 1 ends OK for inquiry '+
+    		        VARCHAR(:g_inquiry),
+                            :h_frpr_name,
+                            0,
+                            :g_user_id);
+                COMMIT;
+            ENDIF;
+
+     ELSE
+            ret_val = CALLPROC msata_fp_match_ni ();
+    
+            IF ret_val <> 0
+            THEN
+                INSERT INTO error_log
+                VALUES(     'now',
+                            'Batch Congruence NI data Fails in Process 1 for inquiry ' +
+    			VARCHAR(:g_inquiry),
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN 9;
+            ELSE
+                INSERT INTO error_log
+                VALUES(     'now',
+                           'Batch Congruence NI data - Process 1 ends OK for inquiry '+
+    		        VARCHAR(:g_inquiry),
+                            :h_frpr_name,
+                            0,
+                            :g_user_id);
+                COMMIT;
+            ENDIF;
+        ENDIF;
+    ENDIF;
+
+
+    /*------------------------------------------------------------------
+     Process 2 - Subsequent runs of sales data for refs cleared in last
+		 7 days
+    ------------------------------------------------------------------*/
+
+    IF :start_proc <= 2 AND :end_proc >= 2 
+    THEN
+       IF :country = 'gb'
+       THEN
+            ret_val = CALLPROC msata_fp_sales_data ();
+    
+            IF ret_val <> 0
+            THEN
+                INSERT INTO error_log
+                VALUES(     'now',
+                            'Batch_Congruence_app Fails in Process 2 for inquiry ' +
+    			VARCHAR(:g_inquiry),
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN 9;
+            ELSE
+                INSERT INTO error_log
+                VALUES(     'now',
+                            'Batch_Congruence_app - Process 2 ends OK for inquiry '+
+    			VARCHAR(:g_inquiry),
+                            :h_frpr_name,
+                            0,
+                            :g_user_id);
+                COMMIT;
+            ENDIF;
+    
+         ELSE
+            ret_val = CALLPROC msata_fp_sales_ni ();
+    
+            IF ret_val <> 0
+            THEN
+                INSERT INTO error_log
+                VALUES(     'now',
+                            'Batch Congruence NI data Fails in Process 2 for inquiry ' +
+    			VARCHAR(:g_inquiry),
+                            :h_frpr_name,
+                            :ret_val,
+                            :g_user_id);
+                COMMIT;
+                RETURN 9;
+            ELSE
+                INSERT INTO error_log
+                VALUES(     'now',
+                            'Batch Congruence NI data - Process 2 ends OK for inquiry '+
+    			VARCHAR(:g_inquiry),
+                            :h_frpr_name,
+                            0,
+                            :g_user_id);
+                COMMIT;
+            ENDIF;
+        ENDIF;
+    ENDIF;
+
+
+    /*------------------------------------------------------------------
+     End
+    ------------------------------------------------------------------*/
+
+    RETURN 0;
+}

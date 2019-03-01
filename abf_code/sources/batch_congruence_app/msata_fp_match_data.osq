@@ -1,0 +1,476 @@
+/*-S--------------------------------------------------------------------
+Procedure msata_fp_match_data
+
+Run this process once only but for both inquiries, 14 and 15, after the
+acop reference list has been transferred to /csd/live7/files/congruence.
+This will create 2 files congrefs.proda and congrefs.prodq which contain
+all the acop refs but with the marker set to 'Y' where a match was
+found on Prodcom.
+
+It will also create 2 files of sales data (prodadata.cong and
+prodqdata.cong) for all returned references (cleared or not cleared)
+at the initial time of running.
+
+Subsequent runs using process 2 will only find references returned in
+the previous 7 days.
+
+Eg. $IMAGES/batch_congruence_app -dprodlivedb -a 14 199800 1 1 gb
+    $IMAGES/batch_congruence_app -dprodlivedb -a 15 199812 1 1 gb
+
+NB - The earliest period (199806) is hard coded as this job will probably
+be changed in 1998 due to ABI requirements
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msata_fp_match_data () =
+
+DECLARE ret_val       = INTEGER4 NOT NULL,
+        h_table1      = VARCHAR(24) NOT NULL,
+        h_table2      = VARCHAR(24) NOT NULL,
+        h_table3      = VARCHAR(24) NOT NULL,
+        h_table4      = VARCHAR(24) NOT NULL,
+        h_command     = VARCHAR(100) NOT NULL,
+        h_acop_file1  = VARCHAR(100) NOT NULL,
+        h_acop_file2  = VARCHAR(100) NOT NULL,
+        h_acop_file3  = VARCHAR(100) NOT NULL,
+        h_frpr_name   = VARCHAR(24) NOT NULL
+
+{
+
+
+    h_frpr_name = 'msata_fp_match_data';
+    h_table1 = 'acop_refs_' + VARCHAR(:g_period);
+    h_table2 = 'acop_matches_' + VARCHAR(:g_period);
+    h_table3 = 'acop_sales_' + VARCHAR(:g_period);
+    h_table4 = 'temp_acop_matches_' + VARCHAR(:g_period);
+
+    h_acop_file1 = '/csd/live7/files/congruence/acop_selection';
+
+    IF :g_inquiry = 14
+    THEN
+       h_acop_file2 = '/csd/live7/files/congruence/congrefs.proda';
+       h_acop_file3 = '/csd/live7/files/congruence/prodadata.cong';
+    ELSE
+       h_acop_file2 = '/csd/live7/files/congruence/congrefs.prodq';
+       h_acop_file3 = '/csd/live7/files/congruence/prodqdata.cong';
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+     Create the table to hold the references and copy data into it
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table1);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table . . .' + :h_table1;
+
+    CREATE TABLE :h_table1 (
+                 contributor_reference CHAR (11) NOT NULL,
+		 sel_marker            CHAR(1) NOT NULL,
+		 inquiry               CHAR(2) NOT NULL);
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Unable to create ' + :h_table1,
+                    :h_frpr_name,
+                    9,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    message 'Copying table ...' + :h_table1;
+
+    COPY TABLE :h_table1 (contributor_reference = c0colon,
+	                  sel_marker = c0colon,
+			  inquiry = c0nl)
+    FROM :h_acop_file1;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES (    'now',
+                    'Unable to copy from acop file ' + :h_acop_file1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create a table of those acop refs that are also selected on Prodcom
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table2);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table of matched references . . .' + :h_table2;
+
+    IF :g_inquiry = 14
+    THEN
+       CREATE TABLE :h_table2
+       AS SELECT contributor_reference,
+   	         period,
+   	         'PRODA' AS inq_type,
+   	         INT2(9200) AS question,
+   	         contributor_industry,
+   	         INT1(0) AS cs_type,
+   	         INT4(0) AS avalue,
+   	         '' AS startdate,
+   	         '' AS enddate
+       FROM      contributor_period
+       WHERE     period = :g_period
+       AND       inquiry = :g_inquiry
+       AND       contributor_reference IN
+         	      (SELECT contributor_reference
+         	       FROM   :h_table1);
+    ELSE
+       CREATE TABLE :h_table2
+       AS SELECT contributor_reference,
+		 period,
+   	         'PRODQ' AS inq_type,
+   	         INT2(9200) AS question,
+   	         contributor_industry,
+   	         INT1(0) AS cs_type,
+   	         INT4(0) AS avalue,
+   	         '' AS startdate,
+   	         '' AS enddate
+       FROM      contributor_period
+       WHERE     period between 200203 and :g_period
+       AND       inquiry = 15
+       AND       inquiry = :g_inquiry
+       AND       contributor_reference IN
+         	      (SELECT contributor_reference
+         	       FROM   :h_table1);
+    ENDIF;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating table ' +:h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Modify table
+    ----------------------------------------------------------------e-*/
+
+    MODIFY :h_table2 TO
+    BTREE UNIQUE ON
+    contributor_reference,period,contributor_industry;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error modifying table ' +:h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+    /*-s----------------------------------------------------------------
+    Create a temp table of distinct quarterly contributor_refs.
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table4);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    MESSAGE 'Creating table . . .' + :h_table4;
+
+   CREATE TABLE :h_table4
+   AS SELECT DISTINCT contributor_reference
+   FROM      :h_table2;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating table ' +:h_table4,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update original table of acop references to set marker to 'Y' if
+    match found on Prodcom. This procedure only done once at the
+    beginning of the annual cycle
+    ----------------------------------------------------------------e-*/
+
+    UPDATE :h_table1 a
+    FROM   :h_table4 b
+    SET    sel_marker = 'Y'
+    WHERE  a.contributor_reference = b.contributor_reference;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating table ' +:h_table1 + ' from ' + :h_table4,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Copy table to flat file to csd/live7/files/congruence for 
+    Common Software to pick up.
+    ----------------------------------------------------------------e-*/
+
+    COPY TABLE :h_table1
+         (contributor_reference = c0colon,
+	  sel_marker            = c0colon,
+	  inquiry               = c0nl)
+    INTO :h_acop_file2;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error copying table ' + :h_table1 + 'into file',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update table of matched references with cqpv returned data for
+    all forms - stage 1.
+    ----------------------------------------------------------------e-*/
+
+    Message 'Updating . . .' + :h_table1;
+
+    UPDATE :h_table2 a
+    FROM   cqpv b
+    SET    avalue = b.avalue,
+	   cs_type = 1
+    WHERE  a.period = b.period
+    AND    a.contributor_reference = b.contributor_reference
+    AND    b.contributor_inquiry = :g_inquiry
+    AND    b.quest_order = 10
+    AND    b.acell IN ('V','Z');
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating table ' +:h_table2 + ' with returned data',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create table of references with cs_type = 1, convert period to Common
+    Software period.
+    ----------------------------------------------------------------e-*/
+
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table3);
+
+    IF ret_val <> 0
+    THEN
+        RETURN ret_val;
+    ENDIF;
+
+    message 'Creating table . . .' + :h_table3;
+
+    IF :g_inquiry = 14
+    THEN
+       CREATE TABLE :h_table3
+       AS SELECT    contributor_reference,
+		    period,
+   	            inq_type,
+   	            question,
+   	            contributor_industry,
+   	            cs_type,
+   	            avalue,
+   	            startdate,
+   	            enddate
+       FROM         :h_table2
+       WHERE        cs_type = 1
+    ELSE
+       CREATE TABLE :h_table3
+       AS SELECT    contributor_reference,
+		    period,
+   	            inq_type,
+   	            question,
+   	            contributor_industry,
+   	            cs_type,
+   	            avalue,
+   	            startdate,
+   	            enddate
+       FROM         :h_table2
+       WHERE        cs_type = 1;
+
+     ENDIF;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error creating table ' +:h_table3,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Copy table to flat file to csd/live7/files/congruence for 
+    Common Software to pick up.
+    ----------------------------------------------------------------e-*/
+
+    COPY TABLE :h_table3
+         (contributor_reference = c0colon,
+	  period                = c0colon,
+	  inq_type              = c0colon,
+	  question              = c0colon,
+	  contributor_industry  = c0colon,
+	  cs_type                  = c0colon,
+	  avalue                = c0colon,
+	  startdate             = c0colon,
+	  enddate               = c0nl)
+    INTO :h_acop_file3;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error copying table ' + :h_table3 + 'into file',
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Update table of matched references to cs_type = 1 as this is the
+    marker common software require for all the data. They do not
+    want to distinguish between clear and unclear data in the next
+    process
+    ----------------------------------------------------------------e-*/
+
+    UPDATE :h_table2
+    SET    cs_type = 1;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+
+    IF ret_val = 9
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating table ' + :h_table2,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+
+    RETURN 0;
+}
+

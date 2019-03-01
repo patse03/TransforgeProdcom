@@ -1,0 +1,99 @@
+
+/*-s--------------------------------------------------------------------
+INGRES 4GL code for procedure: batch_check_inq_ing
+--------------------------------------------------------------------e-*/
+
+PROCEDURE batch_check_inq_ing (
+
+        h_num_row_ck      = INTEGER4  NOT NULL,
+        h_num_row         = INTEGER4  NOT NULL,
+        h_commit          = CHAR(1)   NOT NULL,
+        h_rollback        = CHAR(1)   NOT NULL,
+        h_frpr_name       = CHAR(24)  NOT NULL) =
+
+DECLARE h_err_num         = INTEGER4  NOT NULL,
+        h_error_text      = CHAR(256) NOT NULL,
+        h_user_id         = VARCHAR(24) NOT NULL,
+        deadlock          = INTEGER4  NOT NULL,
+        timeout           = INTEGER4  NOT NULL
+
+{
+    deadlock  = 4700;
+    timeout   = 4702;
+
+    /*-s----------------------------------------------------------------
+    Error codes for these conditions not yet confirmed
+      deathmask = 4460;
+      duplicity = 4501;
+    ----------------------------------------------------------------e-*/
+
+    INQUIRE_INGRES ( h_num_row    = ROWCOUNT,
+                     h_err_num    = ERRORNO,
+                     h_error_text = ERRORTEXT);
+
+    IF h_err_num <> 0
+    THEN
+        IF h_rollback = 'Y'
+        THEN
+            ROLLBACK;
+        ENDIF;
+
+        SELECT user_name AS h_user_id FROM iidbconstants;
+
+        INSERT INTO error_log(
+                    error_time,
+                    error_text,
+                    frpr_name,
+                    error_code,
+                    user_id)
+        VALUES (    'now',
+                    SQUEEZE(:h_error_text),
+                    :h_frpr_name,
+                    :h_err_num,
+                    :h_user_id);
+
+        INQUIRE_INGRES (h_num_row    = ROWCOUNT,
+                        h_err_num    = ERRORNO,
+                        h_error_text = ERRORTEXT);
+
+        IF h_err_num <> 0 OR h_num_row = 0
+        THEN
+            MESSAGE 'Error inserting into error_log'
+        ENDIF;
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    IF h_num_row_ck = 1 AND h_num_row = 0
+    THEN
+        IF h_rollback = 'Y'
+        THEN
+            ROLLBACK;
+        ENDIF;
+        IF h_commit = 'Y'
+        THEN
+            COMMIT;
+        ENDIF;
+        RETURN 1;
+    ELSEIF h_num_row_ck = 0 AND h_num_row  > 0
+    THEN
+        IF h_rollback = 'Y'
+        THEN
+            ROLLBACK;
+        ENDIF;
+        IF h_commit = 'Y'
+        THEN
+            COMMIT;
+        ENDIF;
+
+        RETURN 1;
+    ENDIF;
+
+    IF h_commit = 'Y'
+    THEN
+        COMMIT;
+    ENDIF;
+
+    RETURN 0;
+
+}

@@ -1,0 +1,158 @@
+
+/*-s--------------------------------------------------------------------
+Procedure msata_fp_sales_data     
+
+
+NB. First period for quarterly is hard coded as this job will probably
+be superceeded with new requirements for ABI
+
+EDITED on 30/6/98 after request from ACOP to select all references receipted
+instead of only those receipted in the last 7 days so that revisions
+will be picked up
+--------------------------------------------------------------------e-*/
+
+PROCEDURE msata_fp_sales_data () =
+
+DECLARE ret_val       = INTEGER4 NOT NULL,
+        h_table1      = VARCHAR(24) NOT NULL,
+        h_table2      = VARCHAR(24) NOT NULL,
+        h_acop_file1  = VARCHAR(100) NOT NULL,
+        h_frpr_name   = VARCHAR(24) NOT NULL
+
+{
+    h_frpr_name = 'msata_fp_sales_data';
+    h_table1 = 'acop_matches_' + VARCHAR(:g_period);
+    h_table2 = 'acop_sales_' + VARCHAR(:g_period);
+
+    IF :g_inquiry = 14
+    THEN
+       h_acop_file1 = '/csd/live7/files/congruence/prodadata.cong';
+    ELSE
+       h_acop_file1 = '/csd/live7/files/congruence/prodqdata.cong';
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Create table of matched references together with cqpv returned data 
+    ----------------------------------------------------------------e-*/
+    
+    ret_val = CALLPROC batch_fp_drop_table(h_table = :h_table2);
+
+    IF ret_val <> 0
+    THEN
+       RETURN ret_val;
+    ENDIF;
+
+    MESSAGE 'Creating Table . . .'  + :h_table2;
+
+    IF :g_inquiry = 14
+    THEN
+         CREATE TABLE :h_table2 
+	 AS SELECT DISTINCT
+		a.contributor_reference,
+		a.period,
+		a.inq_type,
+		a.question,
+		a.contributor_industry,
+		a.cs_type,
+		b.avalue,
+		a.startdate,
+		a.enddate
+         FROM   :h_table1 a,
+		cqpv b,
+     	        contributor_period c
+         WHERE  a.question = MOD(b.question,10000)
+     	 AND    a.contributor_industry = b.contributor_industry
+         AND    a.period = b.period
+         AND    a.period = c.period
+         AND    a.contributor_reference = b.contributor_reference
+         AND    a.contributor_reference = c.contributor_reference
+         AND    b.contributor_inquiry = :g_inquiry
+         AND    b.quest_order = 10
+         AND    b.acell IN ('V','Z')
+	 /*AND    c.receipt_date > (date('today') - '7 days')*/
+	 AND    c.receipt_date <> ''
+    ELSE
+         CREATE TABLE :h_table2 
+	 AS SELECT DISTINCT
+		a.contributor_reference,
+		a.period,
+		a.inq_type,
+		a.question,
+		a.contributor_industry,
+		a.cs_type,
+		b.avalue,
+		a.startdate,
+		a.enddate
+         FROM   :h_table1 a,
+		cqpv b,
+     	        contributor_period c
+         WHERE  a.question = MOD(b.question,10000)
+     	 AND    a.contributor_industry = b.contributor_industry
+         AND    a.period = b.period
+         AND    a.period = c.period
+         AND    a.contributor_reference = b.contributor_reference
+         AND    a.contributor_reference = c.contributor_reference
+         AND    b.contributor_inquiry = :g_inquiry
+         AND    b.quest_order = 10
+         AND    b.acell IN ('V','Z')
+	 /*AND    c.receipt_date > (date('today') - '7 days');*/
+	 AND    c.receipt_date <> '';
+   ENDIF;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error updating table ' +:h_table1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN 9;
+    ENDIF;
+
+    /*-s----------------------------------------------------------------
+    Copy table to flat file to /csd/live7/files/congruence for Common 
+    Software to pick up.
+    ----------------------------------------------------------------e-*/
+
+
+    COPY TABLE :h_table2 (
+                 contributor_reference = c0colon,
+                 period                = c0colon,
+                 inq_type              = c0colon,
+                 question              = c0colon,
+                 contributor_industry  = c0colon,
+                 cs_type                  = c0colon,
+                 avalue                = c0colon,
+                 startdate             = c0colon,
+                 enddate               = c0nl)
+    INTO         :h_acop_file1;
+
+    ret_val = CALLPROC batch_check_inq_ing(
+              h_num_row_ck = 1,
+              h_commit     = 'Y',
+              h_rollback   = 'N',
+              h_frpr_name  = :h_frpr_name);
+    
+    IF ret_val <> 0
+    THEN
+        INSERT INTO error_log
+        VALUES(     'now',
+                    'Error copying ' + h_table1  + ' into ' + :h_acop_file1,
+                    :h_frpr_name,
+                    :ret_val,
+                    :g_user_id);
+        COMMIT;
+        RETURN ret_val;
+    ENDIF;
+
+
+    RETURN 0;
+}
